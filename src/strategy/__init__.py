@@ -1,12 +1,12 @@
 """
 Strategy module for multi-timeframe trading analysis.
 
-Re-exports all public classes for backward compatibility.
+Re-exports all public classes for easy importing.
 
 Usage:
     from src.strategy import MultiTimeframeStrategy, PartialSetup, TradeSignal
 
-    # Or use the new modular classes directly:
+    # Or use the modular classes directly:
     from src.strategy import TimeframeManager, StrategyEngine
 """
 
@@ -17,24 +17,18 @@ from .models import StrategyState, PartialSetup, TradeSignal, SweepInfo, Equilib
 from .timeframe_manager import TimeframeManager
 from .liquidity_detector import LiquidityDetector
 from .event_b_detector import EventBDetector
-from .validation_detector import ValidationDetector
 from .confirmation_detector import ConfirmationDetector
-from .strategy_engine import StrategyEngine
-
-# Strategy II imports
 from .equilibrium_validator import EquilibriumValidator
 from .exit_target_finder import ExitTargetFinder
-from .strategy_engine_v2 import StrategyEngineV2
+from .strategy_engine import StrategyEngine
 
 
 class MultiTimeframeStrategy:
     """
-    Backward-compatible wrapper for the refactored strategy.
+    Convenience wrapper for the strategy engine.
 
-    This class provides the same interface as the original MultiTimeframeStrategy
-    but delegates to the new modular components internally.
-
-    For new code, consider using StrategyEngine directly for more flexibility.
+    This class provides a simplified interface that handles TimeframeManager
+    initialization internally. For more control, use StrategyEngine directly.
     """
 
     def __init__(
@@ -62,7 +56,7 @@ class MultiTimeframeStrategy:
         # Initialize strategy engine
         self._engine = StrategyEngine(self._tm, max_price_deviation_percent)
 
-        # Expose attributes for backward compatibility
+        # Expose attributes for convenience
         self.df_1h = self._tm.df_1h
         self.df_5m = self._tm.df_5m
         self.df_1m = self._tm.df_1m
@@ -140,12 +134,6 @@ class MultiTimeframeStrategy:
             start_time, end_time, entry_direction
         )
 
-    def validate_fvg_or_demand_zone_5m(self, start_time, end_time, entry_direction):
-        """Check if price respects FVG or Demand Zone on 5M."""
-        return self._engine._validation_detector.validate_fvg_or_demand_zone(
-            start_time, end_time, entry_direction
-        )
-
     def detect_final_confirmation_1m(self, start_time, end_time, entry_direction):
         """Detect final confirmation on 1M."""
         return self._engine._confirmation_detector.detect_final_confirmation(
@@ -176,14 +164,11 @@ __all__ = [
     # Detectors
     'LiquidityDetector',
     'EventBDetector',
-    'ValidationDetector',
     'ConfirmationDetector',
-    # Engine (Strategy I)
-    'StrategyEngine',
-    # Strategy II
     'EquilibriumValidator',
     'ExitTargetFinder',
-    'StrategyEngineV2',
-    # Backward compatibility
+    # Engine
+    'StrategyEngine',
+    # Convenience wrapper
     'MultiTimeframeStrategy',
 ]

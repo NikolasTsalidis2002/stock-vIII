@@ -23,7 +23,7 @@ import argparse
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from data_loader import TSLADataLoader
-from strategy import MultiTimeframeStrategy, TradeSignal, TimeframeManager, StrategyEngineV2
+from strategy import MultiTimeframeStrategy
 from tradingview_strategy_analyzer import TradingViewStrategyAnalyzer
 
 
@@ -165,7 +165,7 @@ def generate_master_index(signals, output_dir):
         </div>
 
         <div class="strategy-step">
-            <strong>Step 3:</strong> Validate with <strong>FVG or Demand Zone respect</strong> on 5M
+            <strong>Step 3:</strong> Validate with <strong>Equilibrium Premium/Discount Zone</strong> on 5M
         </div>
 
         <div class="strategy-step">
@@ -173,7 +173,7 @@ def generate_master_index(signals, output_dir):
         </div>
 
         <div class="strategy-step">
-            <strong>Step 5:</strong> <strong>Enter trade</strong> after all conditions met
+            <strong>Step 5:</strong> <strong>Enter trade</strong> with exit target (Order Block at origin) and 2:1 R/R
         </div>
     </div>
 
@@ -195,8 +195,8 @@ def generate_master_index(signals, output_dir):
             <div class="stat-label">BOS Events</div>
         </div>
         <div class="stat-item">
-            <div class="stat-value">{sum(1 for s in signals if s.condition_validation == 'FVG')}</div>
-            <div class="stat-label">FVG Validations</div>
+            <div class="stat-value">{sum(1 for s in signals if s.condition_validation == 'Equilibrium')}</div>
+            <div class="stat-label">Equilibrium Validations</div>
         </div>
     </div>
 
@@ -258,19 +258,11 @@ def main():
         action='store_true',
         help='Generate TradingView frame-by-frame walkthroughs for partial setups (incomplete but close)'
     )
-    parser.add_argument(
-        '--strategy-ii',
-        action='store_true',
-        help='Use Strategy II (Equilibrium Premium/Discount zones with exit targets and 2:1 R/R)'
-    )
 
     args = parser.parse_args()
 
     print("\n" + "="*80)
-    if args.strategy_ii:
-        print("TSLA STRATEGY II ANALYSIS (Equilibrium Zones)")
-    else:
-        print("TSLA MULTI-TIMEFRAME STRATEGY ANALYSIS")
+    print("TSLA MULTI-TIMEFRAME STRATEGY ANALYSIS")
     print("="*80 + "\n")
 
     # Step 1: Load data (force refresh to get latest)
@@ -286,19 +278,12 @@ def main():
     print(f"  ✓ 1M:  {len(df_1m)} candles")
 
     # Step 2: Initialize strategy
-    if args.strategy_ii:
-        print("\n🔧 Initializing Strategy II engine (Equilibrium zones)...")
-        tm = TimeframeManager(df_1h, df_5m, df_1m)
-        engine = StrategyEngineV2(tm)
-        strategy = engine  # For partial_setups access
-    else:
-        print("\n🔧 Initializing strategy engine...")
-        strategy = MultiTimeframeStrategy(df_1h, df_5m, df_1m)
-        engine = strategy
+    print("\n🔧 Initializing strategy engine...")
+    strategy = MultiTimeframeStrategy(df_1h, df_5m, df_1m)
 
     # Step 3: Scan for signals
     print("\n🔍 Scanning for trade setups...")
-    signals = engine.scan_for_signals(max_signals=5)
+    signals = strategy.scan_for_signals(max_signals=5)
 
     # Handle complete signals
     if len(signals) > 0:
@@ -336,16 +321,13 @@ def main():
     print("="*80)
 
     if len(signals) > 0:
-        if args.strategy_ii:
-            print(f"\n✓ Found {len(signals)} Strategy II signals with exit targets:")
-            for i, sig in enumerate(signals, 1):
-                print(f"\n  Signal #{i}: {sig.entry_direction.upper()}")
-                print(f"    Entry: ${sig.price_entry:.2f}")
-                print(f"    Take Profit: ${sig.take_profit_price:.2f}" if sig.take_profit_price else "    Take Profit: N/A")
-                print(f"    Stop Loss: ${sig.stop_loss_price:.2f}" if sig.stop_loss_price else "    Stop Loss: N/A")
-                print(f"    Equilibrium: ${sig.equilibrium_level:.2f}" if sig.equilibrium_level else "    Equilibrium: N/A")
-        else:
-            print(f"\n✓ Found {len(signals)} complete trade signals (visualization pending)")
+        print(f"\n✓ Found {len(signals)} signals with exit targets:")
+        for i, sig in enumerate(signals, 1):
+            print(f"\n  Signal #{i}: {sig.entry_direction.upper()}")
+            print(f"    Entry: ${sig.price_entry:.2f}")
+            print(f"    Take Profit: ${sig.take_profit_price:.2f}" if sig.take_profit_price else "    Take Profit: N/A")
+            print(f"    Stop Loss: ${sig.stop_loss_price:.2f}" if sig.stop_loss_price else "    Stop Loss: N/A")
+            print(f"    Equilibrium: ${sig.equilibrium_level:.2f}" if sig.equilibrium_level else "    Equilibrium: N/A")
 
     if args.animate_partials and len(strategy.partial_setups) > 0:
         print(f"\nGenerated {len(strategy.partial_setups)} TradingView walkthroughs:")

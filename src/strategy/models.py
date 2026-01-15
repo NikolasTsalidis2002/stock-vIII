@@ -68,7 +68,7 @@ class PartialSetup:
 
 @dataclass
 class EquilibriumState:
-    """Tracks the dynamic equilibrium calculation state for Strategy II."""
+    """Tracks the dynamic equilibrium calculation state."""
     fixed_level: float        # Swept level (fixed anchor)
     running_extreme: float    # Running min (SHORT) or max (LONG)
     equilibrium: float        # (fixed_level + running_extreme) / 2
@@ -80,7 +80,7 @@ class EquilibriumState:
 
 @dataclass
 class ExitTarget:
-    """Exit target Order Block information for Strategy II."""
+    """Exit target Order Block information."""
     ob_top: float             # Top of exit Order Block
     ob_bottom: float          # Bottom of exit Order Block
     ob_start_idx: int         # Index where OB starts
@@ -124,7 +124,7 @@ class TradeSignal:
     indices_5m: Tuple[int, int]     # (start, end) indices in 5M data
     indices_1m: Tuple[int, int]     # (start, end) indices in 1M data
 
-    # Strategy II fields (optional, None for Strategy I)
+    # Exit target and risk management
     take_profit_price: Optional[float] = None
     stop_loss_price: Optional[float] = None
     exit_ob_top: Optional[float] = None
@@ -134,7 +134,6 @@ class TradeSignal:
     equilibrium_level: Optional[float] = None
     equilibrium_fixed_level: Optional[float] = None
     equilibrium_running_extreme: Optional[float] = None
-    strategy_version: str = "I"  # "I" or "II"
 
     def calculate_stop_loss(self) -> None:
         """Calculate stop loss based on 2:1 R/R from take profit."""
