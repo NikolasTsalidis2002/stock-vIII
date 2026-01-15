@@ -5,15 +5,13 @@ Scans historical stock data for complete trade setups and generates
 visual walkthroughs showing the step-by-step strategy execution.
 
 Usage:
-    python3 scripts/analyze_strategy.py                    # Default: TSLA
-    python3 scripts/analyze_strategy.py --symbol AAPL      # Use different symbol
-    python3 scripts/analyze_strategy.py --symbol META      # Use different symbol
+    python3 scripts/analyze_strategy.py                         # Default: TSLA
+    python3 scripts/analyze_strategy.py --symbol META           # Use different symbol
+    python3 scripts/analyze_strategy.py --symbol META --visualize  # Generate unified HTML
 
 Output:
-    - results/strategy_examples/trade_1/index.html
-    - results/strategy_examples/trade_2/index.html
-    - results/strategy_examples/trade_3/index.html
-    - results/strategy_examples/master_index.html (overview)
+    --visualize flag generates: results/{symbol}_sweeps.html
+    (Single interactive file with all sweeps, tabs for timeframes, arrow key navigation)
 """
 
 import sys
@@ -26,7 +24,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 
 from data_loader import DataLoader
 from strategy import MultiTimeframeStrategy
-from tradingview_strategy_analyzer import TradingViewStrategyAnalyzer
+from tradingview_strategy_analyzer import StrategySweepVisualizer
 from backtesting import Backtester
 
 
@@ -258,11 +256,6 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        '--animate-partials',
-        action='store_true',
-        help='Generate TradingView frame-by-frame walkthroughs for partial setups (incomplete but close)'
-    )
-    parser.add_argument(
         '--no-backtest',
         action='store_true',
         help='Skip backtest simulation (backtest runs by default)'
@@ -285,6 +278,11 @@ def main():
         type=str,
         default='TSLA',
         help='Stock symbol to analyze (default: TSLA)'
+    )
+    parser.add_argument(
+        '--visualize',
+        action='store_true',
+        help='Generate unified HTML visualization of all sweeps (results/{symbol}_sweeps.html)'
     )
 
     args = parser.parse_args()
@@ -346,30 +344,33 @@ def main():
     elif not args.no_backtest and len(signals) == 0:
         print("\n⚠️  Cannot run backtest - no signals found.")
 
-    # Handle partial setups if requested
-    if args.animate_partials and len(strategy.partial_setups) > 0:
-        print("\n🎬 Generating TradingView frame-by-frame walkthroughs for partial setups...")
-        tv_analyzer = TradingViewStrategyAnalyzer(strategy)
+    # Generate unified visualization if requested
+    if args.visualize:
+        print("\n" + "="*80)
+        print("GENERATING UNIFIED SWEEP VISUALIZATION")
+        print("="*80)
 
-        for i, partial in enumerate(strategy.partial_setups, 1):
-            tv_analyzer.analyze_partial_setup(partial, setup_num=i)
-
-        print("\n✅ TradingView walkthroughs complete!")
-        print(f"   Generated {len(strategy.partial_setups)} interactive walkthroughs")
-
-    elif args.animate_partials and len(strategy.partial_setups) == 0:
-        print("\n⚠️  No partial setups found to animate.")
-
-    # If no complete signals and no partials animated
-    if len(signals) == 0 and not args.animate_partials:
-        print("\n⚠️  No complete trade setups found in the data.")
-        if len(strategy.partial_setups) > 0:
-            print(f"   However, found {len(strategy.partial_setups)} partial setups.")
-            print("   Run with --animate-partials to visualize them:")
-            print("   python3 scripts/analyze_strategy.py --animate-partials")
+        total_sweeps = len(signals) + len(strategy.partial_setups)
+        if total_sweeps > 0:
+            visualizer = StrategySweepVisualizer(strategy, symbol=symbol)
+            output_path = visualizer.generate_html()
+            print(f"\n✅ Generated visualization: {output_path}")
+            print(f"   Total sweeps: {total_sweeps} ({len(signals)} successful, {len(strategy.partial_setups)} failed)")
+            print("   Open the HTML file in your browser to explore all sweeps!")
         else:
-            print("   Try with different date ranges or adjust strategy parameters.")
+            print("\n⚠️  No sweeps found to visualize.")
+
+    # If no sweeps found at all
+    if len(signals) == 0 and len(strategy.partial_setups) == 0:
+        print("\n⚠️  No sweeps found in the data.")
+        print("   Try with different date ranges or adjust strategy parameters.")
         return
+
+    # Suggest visualization if not already done
+    if not args.visualize and (len(signals) > 0 or len(strategy.partial_setups) > 0):
+        total = len(signals) + len(strategy.partial_setups)
+        print(f"\n💡 Found {total} sweeps. Run with --visualize to generate interactive HTML:"
+              f"\n   python3 scripts/analyze_strategy.py --symbol {symbol} --visualize")
 
     # Summary
     print("\n" + "="*80)
@@ -377,25 +378,19 @@ def main():
     print("="*80)
 
     if len(signals) > 0:
-        print(f"\n✓ Found {len(signals)} signals with exit targets:")
+        print(f"\n✓ Found {len(signals)} complete trade signals:")
         for i, sig in enumerate(signals, 1):
             print(f"\n  Signal #{i}: {sig.entry_direction.upper()}")
             print(f"    Entry: ${sig.price_entry:.2f}")
             print(f"    Take Profit: ${sig.take_profit_price:.2f}" if sig.take_profit_price else "    Take Profit: N/A")
             print(f"    Stop Loss: ${sig.stop_loss_price:.2f}" if sig.stop_loss_price else "    Stop Loss: N/A")
-            print(f"    Equilibrium: ${sig.equilibrium_level:.2f}" if sig.equilibrium_level else "    Equilibrium: N/A")
 
-    if args.animate_partials and len(strategy.partial_setups) > 0:
-        print(f"\nGenerated {len(strategy.partial_setups)} TradingView walkthroughs:")
-        for i in range(1, len(strategy.partial_setups) + 1):
-            tv_path = tv_analyzer.output_dir / f"partial_setup_{i}" / "walkthrough_tv.html"
-            print(f"  {i}. {tv_path}")
+    if len(strategy.partial_setups) > 0:
+        print(f"\n✓ Found {len(strategy.partial_setups)} partial setups (failed to complete)")
 
-    if len(signals) > 0:
-        print("\n💡 Open the master index in your browser to explore all trades!")
-    elif args.animate_partials and len(strategy.partial_setups) > 0:
-        print("\n💡 Open the TradingView HTML files to see the professional 3-timeframe walkthrough!")
-        print("   Use arrow keys ← → or buttons to navigate between frames")
+    if args.visualize:
+        print(f"\n💡 Open results/{symbol.lower()}_sweeps.html in your browser!")
+        print("   Use arrow keys ← → to navigate through frames")
 
     print("="*80 + "\n")
 

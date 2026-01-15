@@ -35,8 +35,7 @@ class MultiTimeframeStrategy:
         self,
         df_1h: pd.DataFrame,
         df_5m: pd.DataFrame,
-        df_1m: pd.DataFrame,
-        max_price_deviation_percent: float = 3.0
+        df_1m: pd.DataFrame
     ):
         """
         Initialize strategy with multi-timeframe data.
@@ -45,16 +44,12 @@ class MultiTimeframeStrategy:
             df_1h: 1-hour OHLCV data with 'time' column
             df_5m: 5-minute OHLCV data with 'time' column
             df_1m: 1-minute OHLCV data with 'time' column
-            max_price_deviation_percent: Maximum % price can move from sweep before invalidating setup
         """
-        # Store invalidation threshold
-        self.max_price_deviation_percent = max_price_deviation_percent
-
         # Initialize timeframe manager
         self._tm = TimeframeManager(df_1h, df_5m, df_1m)
 
         # Initialize strategy engine
-        self._engine = StrategyEngine(self._tm, max_price_deviation_percent)
+        self._engine = StrategyEngine(self._tm)
 
         # Expose attributes for convenience
         self.df_1h = self._tm.df_1h

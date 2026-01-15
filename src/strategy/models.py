@@ -65,6 +65,12 @@ class PartialSetup:
     indices_1m: Optional[Tuple[int, int]]
     inflexion_idx: int  # Index of the inflexion point for sweep validation
 
+    # Exit Order Block data (for visualization of TP target)
+    exit_ob_start_time: Optional[datetime] = None
+    exit_ob_end_time: Optional[datetime] = None
+    exit_ob_top: Optional[float] = None
+    exit_ob_bottom: Optional[float] = None
+
 
 @dataclass
 class EquilibriumState:

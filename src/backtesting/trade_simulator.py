@@ -220,6 +220,7 @@ class TradeSimulator:
             max_adverse_excursion=max_adverse,
             max_favorable_excursion=max_favorable,
             gap_exit=gap_exit,
+            entry_candle_idx=start_idx,
             exit_candle_idx=exit_candle_idx,
             total_candles_in_trade=candles_scanned
         )
@@ -308,6 +309,7 @@ class TradeSimulator:
             max_adverse_excursion=max_adverse,
             max_favorable_excursion=max_favorable,
             gap_exit=False,
+            entry_candle_idx=None,
             exit_candle_idx=None,
             total_candles_in_trade=candles_scanned
         )

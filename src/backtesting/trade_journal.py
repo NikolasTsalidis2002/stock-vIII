@@ -58,10 +58,12 @@ class TradeJournal:
                 # Entry details
                 'entry_time': result.entry_time,
                 'entry_price': result.entry_price,
+                'entry_candle_1m': result.entry_candle_idx,
 
                 # Exit details
                 'exit_time': result.exit_time,
                 'exit_price': result.exit_price,
+                'exit_candle_1m': result.exit_candle_idx,
 
                 # Targets
                 'take_profit': result.take_profit_price,

@@ -1,4 +1,4 @@
-# TSLA Smart Money Concepts Trading System
+# Smart Money Concepts Trading System
 
 A sophisticated multi-timeframe trading strategy analyzer for Tesla (TSLA) stock using Smart Money Concepts (SMC) indicators to identify high-probability reversal trades based on institutional order flow patterns.
 

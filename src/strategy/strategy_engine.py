@@ -34,25 +34,21 @@ class StrategyEngine:
 
     def __init__(
         self,
-        timeframe_manager: TimeframeManager,
-        max_price_deviation_percent: float = 3.0
+        timeframe_manager: TimeframeManager
     ) -> None:
         """
         Initialize with pre-configured timeframe manager.
 
         Args:
             timeframe_manager: TimeframeManager with loaded data
-            max_price_deviation_percent: Invalidation threshold
         """
         self._tm = timeframe_manager
-        self.max_price_deviation_percent = max_price_deviation_percent
 
         # Reuse existing detectors from base strategy
         self._liquidity_detector = LiquidityDetector(
             df_1h=self._tm.df_1h,
             inflexions_1h=self._tm.inflexions_1h,
-            bos_1h=self._tm.bos_1h,
-            max_price_deviation_percent=max_price_deviation_percent
+            bos_1h=self._tm.bos_1h
         )
 
         self._event_b_detector = EventBDetector(
@@ -80,6 +76,32 @@ class StrategyEngine:
         self._signals: List[TradeSignal] = []
         self._partial_setups: List[PartialSetup] = []
 
+    def _has_new_sweep_occurred(
+        self,
+        all_sweeps: List[SweepInfo],
+        current_sweep_time: datetime,
+        check_time: datetime
+    ) -> bool:
+        """
+        Check if a new liquidity sweep has occurred after the current sweep.
+
+        If a new sweep occurs during Stages 2-4, the current setup should be
+        abandoned and we should start fresh with the new sweep.
+
+        Args:
+            all_sweeps: List of all detected sweeps
+            current_sweep_time: Timestamp of the sweep we're currently tracking
+            check_time: Current processing time to check against
+
+        Returns:
+            True if a new sweep has occurred (setup should be invalidated)
+        """
+        for sweep in all_sweeps:
+            # Check if this sweep occurred after our current sweep but before/at check_time
+            if sweep.timestamp > current_sweep_time and sweep.timestamp <= check_time:
+                return True
+        return False
+
     def _search_for_confirmation_1m(
         self,
         start_1m: datetime,
@@ -88,22 +110,21 @@ class StrategyEngine:
         time_1h_sweep: datetime,
         sweep_idx: int,
         inflexion_idx: int,
-        price_1h_sweep: float,
-        price_5m_event_b: float,
-        exit_target: Optional[ExitTarget]
-    ) -> Tuple[Optional[Tuple[datetime, str, float]], bool, bool, bool, datetime]:
+        exit_target: Optional[ExitTarget],
+        all_sweeps: List[SweepInfo]
+    ) -> Tuple[Optional[Tuple[datetime, str, float]], bool, bool, datetime]:
         """
         Search for 1M confirmation with invalidation checks.
 
-        Strategy adds additional invalidation check for exit OB break.
+        Strategy adds additional invalidation check for exit OB break
+        and new sweep invalidation.
 
         Returns:
-            (confirmation_tuple, need_new_event_b, need_new_equilibrium, sweep_broken, last_time_scanned)
+            (confirmation_tuple, sweep_broken, new_sweep_occurred, last_time_scanned)
         """
         confirmation = None
-        need_new_event_b = False
-        need_new_equilibrium = False
         sweep_broken = False
+        new_sweep_occurred = False
         last_time_scanned = start_1m
 
         # Progressive scan through each 1M candle
@@ -119,31 +140,17 @@ class StrategyEngine:
                 check_time = time_1h_sweep + timedelta(hours=current_hour_boundary)
                 current_candle_idx = sweep_idx + int(current_hour_boundary) - 1
 
-                # Check 1: Sweep disrespected?
+                # Check: Sweep disrespected?
                 if self._liquidity_detector.is_sweep_broken_at_time(inflexion_idx, check_time, current_candle_idx):
                     print(f"    ⚠️  Sweep broken at {check_time} during 1M scan - abandoning setup")
                     sweep_broken = True
                     break
 
-                # Check 2: Price moved too far?
-                current_1h_price = self._tm.df_1h['close'].iloc[current_candle_idx]
-                if self._liquidity_detector.is_price_moved_too_far(current_1h_price, price_1h_sweep, entry_direction):
-                    print(f"    ⚠️  Price moved too far during 1M scan ({current_1h_price:.2f} vs sweep {price_1h_sweep:.2f}) - abandoning setup")
-                    sweep_broken = True
-                    break
-
-            # Check Event B invalidation (check 5M candles)
-            current_5m_time = time_1m_current.replace(minute=(time_1m_current.minute // 5) * 5, second=0, microsecond=0)
-            if current_5m_time in self._tm.df_5m.index:
-                current_5m_close = self._tm.df_5m['close'].loc[current_5m_time]
-
-                # For long: Event B broken if price closes below Event B level
-                # For short: Event B broken if price closes above Event B level
-                if (entry_direction == 'long' and current_5m_close < price_5m_event_b) or \
-                   (entry_direction == 'short' and current_5m_close > price_5m_event_b):
-                    print(f"    ⚠️  Event B broken during 1M scan at {current_5m_time} - need new Event B")
-                    need_new_event_b = True
-                    break
+            # Check: New sweep occurred? (invalidates current setup)
+            if self._has_new_sweep_occurred(all_sweeps, time_1h_sweep, time_1m_current):
+                print(f"    ⚠️  New sweep occurred during 1M scan - abandoning current setup")
+                new_sweep_occurred = True
+                break
 
             # Strategy: Check if price breaks exit OB (target reached before entry)
             if exit_target is not None:
@@ -170,7 +177,7 @@ class StrategyEngine:
                 print(f"    ✓ Confirmation ({confirmation_type}) at {time_1m_confirmation}")
                 break  # Confirmation found
 
-        return (confirmation, need_new_event_b, need_new_equilibrium, sweep_broken, last_time_scanned)
+        return (confirmation, sweep_broken, new_sweep_occurred, last_time_scanned)
 
     def scan_for_signals(self, max_signals: int = 10) -> List[TradeSignal]:
         """
@@ -293,6 +300,7 @@ class StrategyEngine:
             equilibrium_validation = None
             equilibrium_state = None
             sweep_broken = False
+            new_sweep_occurred = False
             price_5m_event_b = None
 
             # Progressive scan through each 5M candle
@@ -310,24 +318,11 @@ class StrategyEngine:
                         sweep_broken = True
                         break
 
-                    current_1h_price = self._tm.df_1h['close'].iloc[current_candle_idx]
-                    if self._liquidity_detector.is_price_moved_too_far(current_1h_price, price_1h_sweep, entry_direction):
-                        print(f"    ⚠️  Price moved too far - abandoning setup")
-                        sweep_broken = True
-                        break
-
-                # Check Event B invalidation
-                if event_b is not None and price_5m_event_b is not None:
-                    current_5m_close = self._tm.df_5m['close'].loc[time_5m_current]
-
-                    if (entry_direction == 'long' and current_5m_close < price_5m_event_b) or \
-                       (entry_direction == 'short' and current_5m_close > price_5m_event_b):
-                        print(f"    ⚠️  Event B broken at {time_5m_current} - resetting")
-                        event_b = None
-                        equilibrium_validation = None
-                        equilibrium_state = None
-                        start_5m = time_5m_current
-                        continue
+                # Check: New sweep occurred? (invalidates current setup)
+                if self._has_new_sweep_occurred(all_sweeps, time_1h_sweep, time_5m_current):
+                    print(f"    ⚠️  New sweep occurred during 5M scan - abandoning current setup")
+                    new_sweep_occurred = True
+                    break
 
                 # State 1: Looking for Event B
                 if event_b is None:
@@ -363,8 +358,13 @@ class StrategyEngine:
                 last_analysis_end_time = time_5m_current if 'time_5m_current' in dir() else end_5m
                 continue
 
+            # Handle new sweep occurred during 5M scan - abandon and process new sweep
+            if new_sweep_occurred:
+                last_analysis_end_time = time_5m_current if 'time_5m_current' in dir() else end_5m
+                continue
+
             if event_b is None:
-                print(f"    ✗ No Event B found on 5M")
+                # No Event B found - create partial setup
                 self._partial_setups.append(PartialSetup(
                     timestamp_1h_sweep=time_1h_sweep,
                     timestamp_5m_event_b=None,
@@ -381,39 +381,50 @@ class StrategyEngine:
                     condition_validation=None,
                     condition_confirmation=None,
                     conditions_met=1,
-                    failure_reason="No Event B on 5M",
+                    failure_reason="No Event B found",
                     indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
                     indices_5m=None,
                     indices_1m=None,
-                    inflexion_idx=inflexion_idx
+                    inflexion_idx=inflexion_idx,
+                    exit_ob_start_time=exit_target.ob_start_time if exit_target else None,
+                    exit_ob_end_time=exit_target.ob_end_time if exit_target else None,
+                    exit_ob_top=exit_target.ob_top if exit_target else None,
+                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None
                 ))
                 last_analysis_end_time = end_5m
                 continue
 
             if equilibrium_validation is None:
-                print(f"    ✗ No equilibrium zone entry found")
-                time_5m_event_b, event_b_type, price_5m_event_b = event_b
+                # No equilibrium zone entry - create partial setup
+                time_5m_event_b_tmp, event_b_type_tmp, price_5m_event_b_tmp = event_b
                 self._partial_setups.append(PartialSetup(
                     timestamp_1h_sweep=time_1h_sweep,
-                    timestamp_5m_event_b=time_5m_event_b,
+                    timestamp_5m_event_b=time_5m_event_b_tmp,
                     timestamp_5m_validation=None,
                     timestamp_1m_confirmation=None,
                     price_1h_sweep=price_1h_sweep,
-                    price_5m_event_b=price_5m_event_b,
+                    price_5m_event_b=price_5m_event_b_tmp,
                     price_5m_validation=None,
                     price_1m_confirmation=None,
                     trend_1h_before_sweep=trend_1h,
                     entry_direction=entry_direction,
                     condition_liquidity_sweep=f"{sweep_type} liquidity swept",
-                    condition_event_b=event_b_type,
+                    condition_event_b=event_b_type_tmp,
                     condition_validation=None,
                     condition_confirmation=None,
                     conditions_met=2,
                     failure_reason="No equilibrium zone entry",
                     indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
-                    indices_5m=(self._tm.df_5m.index.get_loc(time_5m_event_b), self._tm.df_5m.index.get_loc(time_5m_event_b) + 20),
+                    indices_5m=(
+                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp),
+                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp)
+                    ),
                     indices_1m=None,
-                    inflexion_idx=inflexion_idx
+                    inflexion_idx=inflexion_idx,
+                    exit_ob_start_time=exit_target.ob_start_time if exit_target else None,
+                    exit_ob_end_time=exit_target.ob_end_time if exit_target else None,
+                    exit_ob_top=exit_target.ob_top if exit_target else None,
+                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None
                 ))
                 last_analysis_end_time = end_5m
                 continue
@@ -425,16 +436,15 @@ class StrategyEngine:
             # Step 4: Final confirmation on 1M
             start_1m = time_5m_validation
 
-            confirmation, need_new_event_b, need_new_equilibrium, sweep_broken, last_time_scanned = self._search_for_confirmation_1m(
+            confirmation, sweep_broken, new_sweep_occurred, last_time_scanned = self._search_for_confirmation_1m(
                 start_1m,
                 market_close_cutoff,
                 entry_direction,
                 time_1h_sweep,
                 sweep_idx,
                 inflexion_idx,
-                price_1h_sweep,
-                price_5m_event_b,
-                exit_target
+                exit_target,
+                all_sweeps
             )
 
             # Unpack confirmation if found
@@ -446,15 +456,13 @@ class StrategyEngine:
                 last_analysis_end_time = last_time_scanned
                 continue
 
-            # Handle Event B or Equilibrium broken during 1M scan
-            if need_new_event_b or need_new_equilibrium:
-                print(f"    ⚠️  Event B/Equilibrium broken during 1M scan - abandoning for now")
+            # Handle new sweep occurred during 1M scan - abandon and process new sweep
+            if new_sweep_occurred:
                 last_analysis_end_time = last_time_scanned
                 continue
 
-            # Handle no confirmation found
+            # Handle no confirmation found - create partial setup
             if confirmation is None:
-                print(f"    ✗ No 1M confirmation found")
                 self._partial_setups.append(PartialSetup(
                     timestamp_1h_sweep=time_1h_sweep,
                     timestamp_5m_event_b=time_5m_event_b,
@@ -473,9 +481,19 @@ class StrategyEngine:
                     conditions_met=3,
                     failure_reason="No 1M confirmation",
                     indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
-                    indices_5m=(self._tm.df_5m.index.get_loc(time_5m_event_b), self._tm.df_5m.index.get_loc(time_5m_validation)),
-                    indices_1m=(self._tm.df_1m.index.get_loc(start_1m), min(self._tm.df_1m.index.get_loc(start_1m) + 30, len(self._tm.df_1m) - 1)),
-                    inflexion_idx=inflexion_idx
+                    indices_5m=(
+                        self._tm.df_5m.index.get_loc(time_5m_event_b),
+                        self._tm.df_5m.index.get_loc(time_5m_validation)
+                    ),
+                    indices_1m=(
+                        self._tm.df_1m.index.get_loc(start_1m),
+                        self._tm.df_1m.index.get_loc(last_time_scanned)
+                    ),
+                    inflexion_idx=inflexion_idx,
+                    exit_ob_start_time=exit_target.ob_start_time if exit_target else None,
+                    exit_ob_end_time=exit_target.ob_end_time if exit_target else None,
+                    exit_ob_top=exit_target.ob_top if exit_target else None,
+                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None
                 ))
                 last_analysis_end_time = last_time_scanned
                 continue

@@ -57,7 +57,8 @@ class TradeResult:
 
     # Edge case flags
     gap_exit: bool = False               # True if exit was via gap
-    exit_candle_idx: Optional[int] = None
+    entry_candle_idx: Optional[int] = None  # 1M candle index at entry
+    exit_candle_idx: Optional[int] = None   # 1M candle index at exit
     total_candles_in_trade: int = 0
 
     def risk_amount(self) -> float:

@@ -21,15 +21,13 @@ class LiquidityDetector:
     Responsibilities:
     - Progressive liquidity sweep detection
     - Sweep broken/invalidation checking
-    - Price deviation invalidation
     """
 
     def __init__(
         self,
         df_1h: pd.DataFrame,
         inflexions_1h: pd.DataFrame,
-        bos_1h: pd.DataFrame,
-        max_price_deviation_percent: float = 3.0
+        bos_1h: pd.DataFrame
     ) -> None:
         """
         Initialize with 1H data and indicators.
@@ -38,12 +36,10 @@ class LiquidityDetector:
             df_1h: 1H OHLCV DataFrame with datetime index
             inflexions_1h: Pre-calculated inflexion points
             bos_1h: Pre-calculated BOS data
-            max_price_deviation_percent: Max % price can move before invalidating
         """
         self.df_1h = df_1h
         self.inflexions_1h = inflexions_1h
         self.bos_1h = bos_1h
-        self.max_price_deviation_percent = max_price_deviation_percent
 
     def detect_all_sweeps(self) -> List[SweepInfo]:
         """
@@ -136,34 +132,3 @@ class LiquidityDetector:
             return respected == False
 
         return False
-
-    def is_price_moved_too_far(
-        self,
-        current_price: float,
-        sweep_price: float,
-        entry_direction: str
-    ) -> bool:
-        """
-        Check if price has moved too far in the intended direction.
-
-        If price has already moved beyond the threshold, we've missed the optimal
-        entry opportunity and should abandon the setup.
-
-        Args:
-            current_price: Current 1H price
-            sweep_price: Original liquidity sweep price
-            entry_direction: 'long' or 'short'
-
-        Returns:
-            True if price moved beyond threshold (setup should be invalidated)
-        """
-        threshold_percent = self.max_price_deviation_percent / 100
-
-        if entry_direction == 'short':
-            # For shorts, invalidate if price dropped below sweep - x%
-            threshold_price = sweep_price * (1 - threshold_percent)
-            return current_price < threshold_price
-        else:  # 'long'
-            # For longs, invalidate if price rose above sweep + x%
-            threshold_price = sweep_price * (1 + threshold_percent)
-            return current_price > threshold_price
