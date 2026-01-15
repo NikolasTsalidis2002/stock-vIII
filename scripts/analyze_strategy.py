@@ -24,8 +24,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 
 from data_loader import TSLADataLoader
 from strategy import MultiTimeframeStrategy, TradeSignal
-from visual_analyzer import VisualAnalyzer
-from animated_analyzer import FrameByFrameAnalyzer
 from tradingview_strategy_analyzer import TradingViewStrategyAnalyzer
 
 
