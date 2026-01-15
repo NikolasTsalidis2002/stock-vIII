@@ -25,6 +25,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 from data_loader import TSLADataLoader
 from strategy import MultiTimeframeStrategy
 from tradingview_strategy_analyzer import TradingViewStrategyAnalyzer
+from backtesting import Backtester
 
 
 def generate_master_index(signals, output_dir):
@@ -258,6 +259,23 @@ def main():
         action='store_true',
         help='Generate TradingView frame-by-frame walkthroughs for partial setups (incomplete but close)'
     )
+    parser.add_argument(
+        '--backtest',
+        action='store_true',
+        help='Run backtest simulation on found signals to calculate P&L'
+    )
+    parser.add_argument(
+        '--initial-capital',
+        type=float,
+        default=10000.0,
+        help='Initial capital for backtesting in USD (default: $10,000)'
+    )
+    parser.add_argument(
+        '--export-journal',
+        type=str,
+        default=None,
+        help='Export trade journal to specified CSV path'
+    )
 
     args = parser.parse_args()
 
@@ -289,6 +307,26 @@ def main():
     if len(signals) > 0:
         print(f"\n✅ Found {len(signals)} complete trade setups!")
         print("   (Skipping old visualization - use TradingView analyzer instead)")
+
+    # Run backtest if requested
+    backtester = None
+    if args.backtest and len(signals) > 0:
+        print("\n" + "="*80)
+        print("RUNNING BACKTEST SIMULATION")
+        print("="*80)
+
+        backtester = Backtester.from_strategy(
+            strategy,
+            initial_capital=args.initial_capital
+        )
+        results = backtester.run(signals)
+        backtester.print_summary()
+
+        if args.export_journal:
+            backtester.export_journal(args.export_journal)
+
+    elif args.backtest and len(signals) == 0:
+        print("\n⚠️  Cannot run backtest - no signals found.")
 
     # Handle partial setups if requested
     if args.animate_partials and len(strategy.partial_setups) > 0:
