@@ -25,8 +25,8 @@ from datetime import timedelta
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from strategy import PartialSetup, TradeSignal, MultiTimeframeStrategy
-from src.indicators.smc_custom import smc_custom
-from src.indicators.smc import smc
+from indicators.smc_custom import smc_custom
+from indicators.smc import smc
 
 
 class TradingViewStrategyAnalyzer:
