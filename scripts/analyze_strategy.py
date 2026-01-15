@@ -331,6 +331,17 @@ def main():
         action='store_true',
         help='Allow trades to hold overnight (default: intraday only, exit at market close 21:59)'
     )
+    parser.add_argument(
+        '--bos-exit',
+        action='store_true',
+        default=None,
+        help='Enable BOS-based early exit: exit when opposing BOS occurs while in profit'
+    )
+    parser.add_argument(
+        '--no-bos-exit',
+        action='store_true',
+        help='Disable BOS-based early exit (overrides config file)'
+    )
 
     # Apply JSON config as defaults (CLI args will override these)
     if config:
@@ -346,6 +357,8 @@ def main():
             initial_capital=backtest_cfg.get('initial_capital', 10000.0),
             no_backtest=not backtest_cfg.get('enabled', True),
             hold_overnight=backtest_cfg.get('hold_overnight', False),
+            bos_exit_enabled=backtest_cfg.get('bos_exit_enabled', False),
+            bos_exit_threshold_percent=backtest_cfg.get('bos_exit_threshold_percent', 50.0),
             visualize=output_cfg.get('visualize', False),
             export_journal=output_cfg.get('export_journal', 'auto'),
         )
@@ -356,6 +369,14 @@ def main():
     high_tf = args.high_tf
     mid_tf = args.mid_tf
     low_tf = args.low_tf
+
+    # Resolve bos_exit setting: CLI flags take precedence over config
+    bos_exit_enabled = getattr(args, 'bos_exit_enabled', False)
+    bos_exit_threshold_percent = getattr(args, 'bos_exit_threshold_percent', 50.0)
+    if args.bos_exit:
+        bos_exit_enabled = True
+    elif args.no_bos_exit:
+        bos_exit_enabled = False
 
     # Create timeframe config for display
     timeframe_config = {
@@ -375,6 +396,10 @@ def main():
     print(f"  Initial Capital:  ${args.initial_capital:,.2f}")
     print(f"  Backtest:         {'Disabled' if args.no_backtest else 'Enabled'}")
     print(f"  Hold Overnight:   {'Yes' if args.hold_overnight else 'No (intraday only)'}")
+    if bos_exit_enabled:
+        print(f"  BOS Exit:         Enabled (exit on opposing BOS when profit >= {bos_exit_threshold_percent:.0f}% of TP)")
+    else:
+        print(f"  BOS Exit:         Disabled")
     print(f"  Visualization:    {'Enabled' if args.visualize else 'Disabled'}")
     print(f"  Export Journal:   {args.export_journal if args.export_journal else 'Disabled'}")
     print("")
@@ -415,7 +440,9 @@ def main():
             strategy,
             initial_capital=args.initial_capital,
             symbol=symbol,
-            intraday_only=not args.hold_overnight
+            intraday_only=not args.hold_overnight,
+            bos_exit_enabled=bos_exit_enabled,
+            bos_exit_threshold_percent=bos_exit_threshold_percent
         )
         _results = backtester.run(signals)
         backtester.print_summary()

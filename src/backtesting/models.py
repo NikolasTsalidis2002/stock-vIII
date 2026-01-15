@@ -7,7 +7,7 @@ Contains dataclasses for trade results and performance metrics.
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Optional
+from typing import Optional, List, Tuple
 
 
 class TradeOutcome(Enum):
@@ -21,6 +21,7 @@ class ExitType(Enum):
     TP_HIT = "tp_hit"         # Take profit price was hit
     SL_HIT = "sl_hit"         # Stop loss price was hit
     TIMEOUT = "timeout"       # Neither TP nor SL hit (timeout or end of data)
+    BOS_EXIT = "bos_exit"     # Exited due to opposing BOS signal while in profit
 
 
 @dataclass
@@ -68,6 +69,9 @@ class TradeResult:
     exit_candle_idx: Optional[int] = None   # 1M candle index at exit
     total_candles_in_trade: int = 0
 
+    # Candle-by-candle unrealized P&L series: [(timestamp, unrealized_pnl_dollars), ...]
+    unrealized_pnl_series: List[Tuple[datetime, float]] = None
+
     def risk_amount(self) -> float:
         """Calculate the dollar risk on this trade."""
         return abs(self.entry_price - self.stop_loss_price) * self.shares_traded
@@ -75,6 +79,21 @@ class TradeResult:
     def reward_amount(self) -> float:
         """Calculate the potential dollar reward on this trade."""
         return abs(self.entry_price - self.take_profit_price) * self.shares_traded
+
+    def max_potential_profit_dollars(self) -> float:
+        """Maximum profit if exited at peak favorable excursion."""
+        return self.max_favorable_excursion * self.shares_traded
+
+    def profit_left_on_table(self) -> float:
+        """Difference between max potential and actual profit."""
+        return self.max_potential_profit_dollars() - self.pnl_dollars
+
+    def tp_progress_percent(self) -> float:
+        """Percentage of distance to TP reached at best point."""
+        distance_to_tp = abs(self.take_profit_price - self.entry_price)
+        if distance_to_tp == 0:
+            return 0.0
+        return (self.max_favorable_excursion / distance_to_tp) * 100
 
 
 @dataclass
@@ -90,6 +109,7 @@ class PerformanceMetrics:
     tp_exits: int                        # Trades that hit take profit
     sl_exits: int                        # Trades that hit stop loss
     timeout_exits: int                   # Trades that timed out
+    bos_exits: int                       # Trades that exited on opposing trend
 
     # Win/Loss metrics
     win_rate: float                      # winning_trades / total_trades

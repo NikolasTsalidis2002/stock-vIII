@@ -40,7 +40,11 @@ class Backtester:
         initial_capital: float = 10000.0,
         max_trade_duration_hours: int = 24,
         symbol: str = 'TSLA',
-        intraday_only: bool = True
+        intraday_only: bool = True,
+        bos_exit_enabled: bool = False,
+        bos_exit_threshold_percent: float = 50.0,
+        bos_mid_df: pd.DataFrame = None,
+        df_mid: pd.DataFrame = None
     ) -> None:
         """
         Initialize backtester.
@@ -51,18 +55,28 @@ class Backtester:
             max_trade_duration_hours: Max hours before timeout
             symbol: Stock symbol being backtested
             intraday_only: If True, exit at market close. If False, allow overnight holding.
+            bos_exit_enabled: If True, exit when opposing BOS signal detected while in profit
+            bos_exit_threshold_percent: Min profit as % of TP target before BOS exit allowed (default 50%)
+            bos_mid_df: Mid timeframe BOS DataFrame (columns: BOS, Level, etc.)
+            df_mid: Mid timeframe OHLCV DataFrame with datetime index
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
         self.symbol = symbol.upper()
         self.intraday_only = intraday_only
+        self.bos_exit_enabled = bos_exit_enabled
+        self.bos_exit_threshold_percent = bos_exit_threshold_percent
 
         # Initialize components
         self._simulator = TradeSimulator(
             df_low=df_low,
             initial_capital=initial_capital,
             max_trade_duration_hours=max_trade_duration_hours,
-            intraday_only=intraday_only
+            intraday_only=intraday_only,
+            bos_exit_enabled=bos_exit_enabled,
+            bos_exit_threshold_percent=bos_exit_threshold_percent,
+            bos_mid_df=bos_mid_df,
+            df_mid=df_mid
         )
         self._tracker = PerformanceTracker(initial_capital=initial_capital)
         self._journal = TradeJournal(symbol=self.symbol)
@@ -79,7 +93,9 @@ class Backtester:
         initial_capital: float = 10000.0,
         max_trade_duration_hours: int = 24,
         symbol: str = 'TSLA',
-        intraday_only: bool = True
+        intraday_only: bool = True,
+        bos_exit_enabled: bool = False,
+        bos_exit_threshold_percent: float = 50.0
     ) -> "Backtester":
         """
         Create backtester directly from strategy instance.
@@ -90,6 +106,8 @@ class Backtester:
             max_trade_duration_hours: Max hours before timeout
             symbol: Stock symbol being backtested
             intraday_only: If True, exit at market close. If False, allow overnight holding.
+            bos_exit_enabled: If True, exit when opposing BOS signal detected while in profit
+            bos_exit_threshold_percent: Min profit as % of TP target before BOS exit allowed (default 50%)
 
         Returns:
             Configured Backtester instance
@@ -99,7 +117,11 @@ class Backtester:
             initial_capital=initial_capital,
             max_trade_duration_hours=max_trade_duration_hours,
             symbol=symbol,
-            intraday_only=intraday_only
+            intraday_only=intraday_only,
+            bos_exit_enabled=bos_exit_enabled,
+            bos_exit_threshold_percent=bos_exit_threshold_percent,
+            bos_mid_df=strategy.bos_mid if bos_exit_enabled else None,
+            df_mid=strategy.df_mid if bos_exit_enabled else None  # Use filtered data (matches bos_mid)
         )
 
     def run(self, signals: List[TradeSignal]) -> List[TradeResult]:

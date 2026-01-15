@@ -6,8 +6,10 @@ whether TP or SL was hit first.
 """
 
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 from src.strategy.models import TradeSignal
 from .models import TradeResult, TradeOutcome, ExitType
@@ -29,7 +31,11 @@ class TradeSimulator:
         df_low: pd.DataFrame,
         initial_capital: float = 10000.0,
         max_trade_duration_hours: int = 24,
-        intraday_only: bool = True
+        intraday_only: bool = True,
+        bos_exit_enabled: bool = False,
+        bos_exit_threshold_percent: float = 50.0,
+        bos_mid_df: pd.DataFrame = None,
+        df_mid: pd.DataFrame = None
     ) -> None:
         """
         Initialize trade simulator.
@@ -39,14 +45,29 @@ class TradeSimulator:
             initial_capital: Starting capital (default $10,000)
             max_trade_duration_hours: Max hours before timeout (default 24h)
             intraday_only: If True, exit at market close (21:59). If False, allow overnight holding.
+            bos_exit_enabled: If True, exit when opposing BOS signal detected while in profit
+            bos_exit_threshold_percent: Min profit as % of TP target before BOS exit allowed (default 50%)
+            bos_mid_df: Mid timeframe BOS DataFrame (columns: BOS, Level, etc.)
+            df_mid: Mid timeframe OHLCV DataFrame with datetime index
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
         self.max_trade_duration = timedelta(hours=max_trade_duration_hours)
         self.intraday_only = intraday_only
 
+        # BOS exit configuration
+        self.bos_exit_enabled = bos_exit_enabled
+        self.bos_exit_threshold_percent = bos_exit_threshold_percent
+        self.bos_mid_df = bos_mid_df
+        self.df_mid = df_mid
+        self.low_to_mid_idx: Dict[datetime, int] = {}
+
         # Build lookup: date -> last candle timestamp for that day
         self.last_candle_by_date = df_low.groupby(df_low.index.date).apply(lambda x: x.index.max()).to_dict()
+
+        # Build 1min->5min timestamp mapping if BOS exit is enabled
+        if bos_exit_enabled and bos_mid_df is not None and df_mid is not None:
+            self._build_low_to_mid_mapping()
 
     def simulate_trade(
         self,
@@ -102,6 +123,9 @@ class TradeSimulator:
         max_favorable = 0.0
         max_adverse = 0.0
 
+        # Track unrealized P&L at each candle
+        unrealized_pnl_series = []
+
         # Find starting point in 1M data
         start_idx = self._find_start_index(entry_time)
         if start_idx is None:
@@ -134,6 +158,22 @@ class TradeSimulator:
             candle_open = candle['open']
             candle_high = candle['high']
             candle_low = candle['low']
+
+            # Update excursions FIRST (before any exit checks)
+            # This ensures excursions are tracked even on the exit candle
+            if direction == 'long':
+                favorable = candle_high - entry_price
+                adverse = entry_price - candle_low
+                unrealized_pnl = (candle['close'] - entry_price) * shares
+            else:  # short
+                favorable = entry_price - candle_low
+                adverse = candle_high - entry_price
+                unrealized_pnl = (entry_price - candle['close']) * shares
+            max_favorable = max(max_favorable, favorable)
+            max_adverse = max(max_adverse, adverse)
+
+            # Record unrealized P&L for this candle
+            unrealized_pnl_series.append((candle_time, unrealized_pnl))
 
             # Check for gap opening beyond TP/SL
             gap_result = self._check_gap_exit(
@@ -172,6 +212,23 @@ class TradeSimulator:
                 exit_type = ExitType.SL_HIT
                 break
 
+            # Check for BOS-based early exit (opposing BOS when profit >= threshold % of TP)
+            if self.bos_exit_enabled:
+                bos_exit_price = self._check_bos_exit(
+                    candle_time=candle_time,
+                    entry_price=entry_price,
+                    tp_price=tp_price,
+                    current_close=candle['close'],
+                    shares=shares,
+                    direction=direction
+                )
+                if bos_exit_price is not None:
+                    exit_price = bos_exit_price
+                    exit_time = candle_time
+                    exit_candle_idx = idx
+                    exit_type = ExitType.BOS_EXIT
+                    break
+
             # Check for market close - exit at end of trading day
             # Only applies if intraday_only is True
             # Only check after TP/SL so we can still hit targets on the close candle
@@ -184,17 +241,6 @@ class TradeSimulator:
                     exit_candle_idx = idx
                     exit_type = ExitType.TIMEOUT
                     break
-
-            # Update excursions (no exit yet)
-            if direction == 'long':
-                favorable = candle_high - entry_price
-                adverse = entry_price - candle_low
-            else:  # short
-                favorable = entry_price - candle_low
-                adverse = candle_high - entry_price
-
-            max_favorable = max(max_favorable, favorable)
-            max_adverse = max(max_adverse, adverse)
 
         # If we exited the loop without finding exit
         if exit_price is None:
@@ -255,7 +301,8 @@ class TradeSimulator:
             gap_exit=gap_exit,
             entry_candle_idx=start_idx,
             exit_candle_idx=exit_candle_idx,
-            total_candles_in_trade=candles_scanned
+            total_candles_in_trade=candles_scanned,
+            unrealized_pnl_series=unrealized_pnl_series
         )
 
     def _find_start_index(self, entry_time: datetime) -> Optional[int]:
@@ -309,6 +356,118 @@ class TradeSimulator:
 
         return (tp_hit, sl_hit)
 
+    def _build_low_to_mid_mapping(self) -> None:
+        """
+        Build mapping from 1min candle timestamps to corresponding 5min candle indices.
+
+        For each 1min candle, find which 5min candle it belongs to.
+        A 1min candle at 09:32 belongs to the 5min candle starting at 09:30.
+
+        Uses a timestamp-to-index lookup for O(1) mapping instead of O(n) search.
+        """
+        if self.df_mid is None or len(self.df_mid) == 0:
+            return
+
+        mid_timestamps = self.df_mid.index.tolist()
+
+        # Calculate mid timeframe duration from data (in minutes)
+        if len(mid_timestamps) > 1:
+            mid_duration = mid_timestamps[1] - mid_timestamps[0]
+            mid_minutes = int(mid_duration.total_seconds() / 60)
+        else:
+            mid_minutes = 5  # Default assumption
+
+        # Build lookup: mid_timestamp -> index in bos_mid_df
+        mid_time_to_idx = {ts: i for i, ts in enumerate(mid_timestamps)}
+
+        # Build mapping for each low timeframe candle
+        for low_time in self.df_low.index:
+            # Calculate the floor timestamp (start of the mid timeframe candle)
+            # e.g., 09:32 -> 09:30 for 5min candles
+            minutes_from_midnight = low_time.hour * 60 + low_time.minute
+            floored_minutes = (minutes_from_midnight // mid_minutes) * mid_minutes
+            floored_time = low_time.replace(
+                hour=floored_minutes // 60,
+                minute=floored_minutes % 60,
+                second=0,
+                microsecond=0
+            )
+
+            # Look up the corresponding mid candle index
+            if floored_time in mid_time_to_idx:
+                self.low_to_mid_idx[low_time] = mid_time_to_idx[floored_time]
+
+    def _check_bos_exit(
+        self,
+        candle_time: datetime,
+        entry_price: float,
+        tp_price: float,
+        current_close: float,
+        shares: float,
+        direction: str
+    ) -> Optional[float]:
+        """
+        Check if BOS-based exit condition is met.
+
+        Exit conditions:
+        1. Unrealized P&L >= threshold % of TP target
+        2. Opposing BOS signal detected (bearish BOS for longs, bullish BOS for shorts)
+
+        Uses BOS signals (events) not trend state.
+
+        Args:
+            candle_time: Current 1min candle timestamp
+            entry_price: Original entry price
+            tp_price: Take profit price
+            current_close: Current candle close price
+            shares: Position size in shares
+            direction: 'long' or 'short'
+
+        Returns:
+            Exit price (candle close) if BOS exit triggered, None otherwise
+        """
+        if not self.bos_exit_enabled:
+            return None
+
+        if self.bos_mid_df is None or candle_time not in self.low_to_mid_idx:
+            return None
+
+        # Get the corresponding mid timeframe index
+        mid_idx = self.low_to_mid_idx[candle_time]
+
+        # Calculate unrealized P&L and TP target in dollars
+        if direction == 'long':
+            unrealized_pnl = (current_close - entry_price) * shares
+            tp_dollars = (tp_price - entry_price) * shares
+        else:  # short
+            unrealized_pnl = (entry_price - current_close) * shares
+            tp_dollars = (entry_price - tp_price) * shares
+
+        # Check if profit meets threshold (% of TP target)
+        threshold_dollars = tp_dollars * (self.bos_exit_threshold_percent / 100.0)
+        if unrealized_pnl < threshold_dollars:
+            return None
+
+        # Check for opposing BOS signal (event, not trend state)
+        bos_value = self.bos_mid_df['BOS'].iloc[mid_idx]
+
+        # Skip if no BOS signal at this candle
+        if pd.isna(bos_value):
+            return None
+
+        # Check for opposing BOS
+        if direction == 'long':
+            # Exit LONG on bearish BOS (-1)
+            opposing_bos = (bos_value == -1)
+        else:  # short
+            # Exit SHORT on bullish BOS (+1)
+            opposing_bos = (bos_value == 1)
+
+        if opposing_bos:
+            return current_close
+
+        return None
+
     def _create_timeout_result(
         self,
         signal: TradeSignal,
@@ -345,7 +504,8 @@ class TradeSimulator:
             gap_exit=False,
             entry_candle_idx=None,
             exit_candle_idx=None,
-            total_candles_in_trade=candles_scanned
+            total_candles_in_trade=candles_scanned,
+            unrealized_pnl_series=[]
         )
 
     def simulate_all(
@@ -404,7 +564,8 @@ class TradeSimulator:
             exit_symbol = {
                 ExitType.TP_HIT: "TP",
                 ExitType.SL_HIT: "SL",
-                ExitType.TIMEOUT: "TO"
+                ExitType.TIMEOUT: "TO",
+                ExitType.BOS_EXIT: "BOS"
             }
             outcome_symbol = "WIN " if result.outcome == TradeOutcome.WIN else "LOSS"
 
@@ -413,10 +574,51 @@ class TradeSimulator:
                 f"${result.entry_price:>7.2f} -> ${result.exit_price:>7.2f} "
                 f"[{outcome_symbol}|{exit_symbol[result.exit_type]}] "
                 f"P&L: ${result.pnl_dollars:>+8.2f} "
+                f"(Max: ${result.max_potential_profit_dollars():>7.2f} Left: ${result.profit_left_on_table():>+7.2f} TP: {result.tp_progress_percent():>5.1f}%) "
                 f"Capital: ${result.capital_after:>10,.2f}"
             )
+
+            # Plot unrealized P&L for this trade
+            self.plot_unrealized_pnl(result, i+1)
 
         print("-" * 60)
         print(f"  Final capital: ${current_capital:,.2f}")
 
         return results
+
+    def plot_unrealized_pnl(self, result: TradeResult, trade_num: int) -> None:
+        """Plot unrealized P&L for a single trade."""
+        if not result.unrealized_pnl_series:
+            return
+
+        times = [t.strftime('%H:%M') for t, _ in result.unrealized_pnl_series]
+        pnls = [p for _, p in result.unrealized_pnl_series]
+
+        # Calculate TP/SL in dollar terms
+        shares = result.shares_traded
+        if result.entry_direction == 'long':
+            tp_dollars = (result.take_profit_price - result.entry_price) * shares
+            sl_dollars = (result.stop_loss_price - result.entry_price) * shares
+        else:
+            tp_dollars = (result.entry_price - result.take_profit_price) * shares
+            sl_dollars = (result.entry_price - result.stop_loss_price) * shares
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(range(len(pnls)), pnls, 'b-', linewidth=1.5, label='Unrealized P&L')
+        plt.axhline(y=0, color='black', linestyle='-', linewidth=0.5, label='Entry')
+        plt.axhline(y=tp_dollars, color='green', linestyle='--', label=f'TP: ${tp_dollars:+.2f}')
+        plt.axhline(y=sl_dollars, color='red', linestyle='--', label=f'SL: ${sl_dollars:+.2f}')
+
+        # Mark final exit
+        plt.scatter([len(pnls)-1], [pnls[-1]], color='orange', s=100, zorder=5, label=f'Exit: ${pnls[-1]:+.2f}')
+
+        plt.xlabel('Time')
+        plt.ylabel('Unrealized P&L ($)')
+        plt.title(f'Trade {trade_num} - {result.entry_direction.upper()} @ ${result.entry_price:.2f}')
+        plt.legend()
+        plt.xticks(range(0, len(times), max(1, len(times)//10)),
+                   [times[i] for i in range(0, len(times), max(1, len(times)//10))], rotation=45)
+        plt.tight_layout()
+        plt.savefig(f'results/trades/trade_{trade_num}_pnl.png')
+        plt.close()
+        print(f"    📊 Plot saved: results/trades/trade_{trade_num}_pnl.png")

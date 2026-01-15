@@ -86,6 +86,11 @@ class TradeJournal:
                 'max_adverse_excursion': round(result.max_adverse_excursion, 2),
                 'max_favorable_excursion': round(result.max_favorable_excursion, 2),
 
+                # Max potential profit analysis
+                'max_potential_profit': round(result.max_potential_profit_dollars(), 2),
+                'profit_left_on_table': round(result.profit_left_on_table(), 2),
+                'tp_progress_pct': round(result.tp_progress_percent(), 1),
+
                 # Edge cases
                 'gap_exit': result.gap_exit,
             }
@@ -152,8 +157,8 @@ class TradeJournal:
 
         # Select key columns for display
         display_cols = [
-            'symbol', 'outcome', 'pnl_dollars', 'pnl_percent',
-            'trade_id', 'direction', 'entry_price',
+            'symbol', 'outcome', 'pnl_dollars', 'max_potential_profit',
+            'profit_left_on_table', 'trade_id', 'direction', 'entry_price',
             'exit_price', 'capital_after', 'duration_minutes'
         ]
 
