@@ -13,13 +13,18 @@ Usage:
 import pandas as pd
 from typing import List
 
-from .models import StrategyState, PartialSetup, TradeSignal, SweepInfo
+from .models import StrategyState, PartialSetup, TradeSignal, SweepInfo, EquilibriumState, ExitTarget
 from .timeframe_manager import TimeframeManager
 from .liquidity_detector import LiquidityDetector
 from .event_b_detector import EventBDetector
 from .validation_detector import ValidationDetector
 from .confirmation_detector import ConfirmationDetector
 from .strategy_engine import StrategyEngine
+
+# Strategy II imports
+from .equilibrium_validator import EquilibriumValidator
+from .exit_target_finder import ExitTargetFinder
+from .strategy_engine_v2 import StrategyEngineV2
 
 
 class MultiTimeframeStrategy:
@@ -164,6 +169,8 @@ __all__ = [
     'PartialSetup',
     'TradeSignal',
     'SweepInfo',
+    'EquilibriumState',
+    'ExitTarget',
     # Managers
     'TimeframeManager',
     # Detectors
@@ -171,8 +178,12 @@ __all__ = [
     'EventBDetector',
     'ValidationDetector',
     'ConfirmationDetector',
-    # Engine
+    # Engine (Strategy I)
     'StrategyEngine',
+    # Strategy II
+    'EquilibriumValidator',
+    'ExitTargetFinder',
+    'StrategyEngineV2',
     # Backward compatibility
     'MultiTimeframeStrategy',
 ]

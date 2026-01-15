@@ -23,7 +23,7 @@ import argparse
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from data_loader import TSLADataLoader
-from strategy import MultiTimeframeStrategy, TradeSignal
+from strategy import MultiTimeframeStrategy, TradeSignal, TimeframeManager, StrategyEngineV2
 from tradingview_strategy_analyzer import TradingViewStrategyAnalyzer
 
 
@@ -258,11 +258,19 @@ def main():
         action='store_true',
         help='Generate TradingView frame-by-frame walkthroughs for partial setups (incomplete but close)'
     )
+    parser.add_argument(
+        '--strategy-ii',
+        action='store_true',
+        help='Use Strategy II (Equilibrium Premium/Discount zones with exit targets and 2:1 R/R)'
+    )
 
     args = parser.parse_args()
 
     print("\n" + "="*80)
-    print("TSLA MULTI-TIMEFRAME STRATEGY ANALYSIS")
+    if args.strategy_ii:
+        print("TSLA STRATEGY II ANALYSIS (Equilibrium Zones)")
+    else:
+        print("TSLA MULTI-TIMEFRAME STRATEGY ANALYSIS")
     print("="*80 + "\n")
 
     # Step 1: Load data (force refresh to get latest)
@@ -278,12 +286,19 @@ def main():
     print(f"  ✓ 1M:  {len(df_1m)} candles")
 
     # Step 2: Initialize strategy
-    print("\n🔧 Initializing strategy engine...")
-    strategy = MultiTimeframeStrategy(df_1h, df_5m, df_1m)
+    if args.strategy_ii:
+        print("\n🔧 Initializing Strategy II engine (Equilibrium zones)...")
+        tm = TimeframeManager(df_1h, df_5m, df_1m)
+        engine = StrategyEngineV2(tm)
+        strategy = engine  # For partial_setups access
+    else:
+        print("\n🔧 Initializing strategy engine...")
+        strategy = MultiTimeframeStrategy(df_1h, df_5m, df_1m)
+        engine = strategy
 
     # Step 3: Scan for signals
     print("\n🔍 Scanning for trade setups...")
-    signals = strategy.scan_for_signals(max_signals=5)
+    signals = engine.scan_for_signals(max_signals=5)
 
     # Handle complete signals
     if len(signals) > 0:
@@ -321,7 +336,16 @@ def main():
     print("="*80)
 
     if len(signals) > 0:
-        print(f"\n✓ Found {len(signals)} complete trade signals (visualization pending)")
+        if args.strategy_ii:
+            print(f"\n✓ Found {len(signals)} Strategy II signals with exit targets:")
+            for i, sig in enumerate(signals, 1):
+                print(f"\n  Signal #{i}: {sig.entry_direction.upper()}")
+                print(f"    Entry: ${sig.price_entry:.2f}")
+                print(f"    Take Profit: ${sig.take_profit_price:.2f}" if sig.take_profit_price else "    Take Profit: N/A")
+                print(f"    Stop Loss: ${sig.stop_loss_price:.2f}" if sig.stop_loss_price else "    Stop Loss: N/A")
+                print(f"    Equilibrium: ${sig.equilibrium_level:.2f}" if sig.equilibrium_level else "    Equilibrium: N/A")
+        else:
+            print(f"\n✓ Found {len(signals)} complete trade signals (visualization pending)")
 
     if args.animate_partials and len(strategy.partial_setups) > 0:
         print(f"\nGenerated {len(strategy.partial_setups)} TradingView walkthroughs:")
