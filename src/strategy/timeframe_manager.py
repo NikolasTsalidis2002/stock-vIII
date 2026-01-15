@@ -166,7 +166,7 @@ class TimeframeManager:
         self.inflexions_5m = smc_custom.inflexion_points(self._df_5m)
         self.bos_5m = smc_custom.bos(self._df_5m, self.inflexions_5m, close_break=True)
         self.fvg_5m = smc.fvg(self._df_5m, join_consecutive=True)
-        self.ob_5m = smc.ob(self._df_5m, self.swings_5m)
+        self.ob_5m = smc_custom.ob(self._df_5m, self.bos_5m, self.inflexions_5m)
 
         # 1M Indicators
         print("  [1M] Calculating indicators...")

@@ -313,13 +313,8 @@ class smc_custom:
                 if check_price_high > last_trend_max[1]:
                     # BOS detected!
                     bos[i] = 1
-                    # Level = closest previous convex (valley) before BOS for invalidation
-                    if i in closest_prev_convex:
-                        bos_level[i] = closest_prev_convex[i][1]
-                    elif last_trend_min is not None:
-                        bos_level[i] = last_trend_min[1]
-                    else:
-                        bos_level[i] = last_trend_max[1]
+                    # Level = the HIGH that was broken (structural level)
+                    bos_level[i] = last_trend_max[1]
                     broken_index[i] = i
                     current_trend = 1  # Switch to bullish
                     current_trend_start = i
@@ -333,13 +328,8 @@ class smc_custom:
                 if check_price_low < last_trend_min[1]:
                     # BOS detected!
                     bos[i] = -1
-                    # Level = closest previous concave (peak) before BOS for invalidation
-                    if i in closest_prev_concave:
-                        bos_level[i] = closest_prev_concave[i][1]
-                    elif last_trend_max is not None:
-                        bos_level[i] = last_trend_max[1]
-                    else:
-                        bos_level[i] = last_trend_min[1]
+                    # Level = the LOW that was broken (structural level)
+                    bos_level[i] = last_trend_min[1]
                     broken_index[i] = i
                     current_trend = -1  # Switch to bearish
                     current_trend_start = i

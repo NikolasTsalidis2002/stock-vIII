@@ -69,7 +69,8 @@ class StrategyEngine:
         self._exit_target_finder = ExitTargetFinder(
             df_5m=self._tm.df_5m,
             bos_5m=self._tm.bos_5m,
-            inflexions_5m=self._tm.inflexions_5m
+            inflexions_5m=self._tm.inflexions_5m,
+            ob_5m=self._tm.ob_5m
         )
 
         # Trade signals found
@@ -260,39 +261,28 @@ class StrategyEngine:
                 print(f"    ⚠️  Sweep too close to market close ({market_close}) - skipping")
                 continue
 
-            # Strategy: Find exit OB upfront
-            exit_target = self._exit_target_finder.find_exit_order_block(time_1h_sweep, entry_direction)
-
-            if exit_target is None:
-                print(f"    ⚠️  No exit Order Block found - skipping (Strategy requirement)")
-                self._partial_setups.append(PartialSetup(
-                    timestamp_1h_sweep=time_1h_sweep,
-                    timestamp_5m_event_b=None,
-                    timestamp_5m_validation=None,
-                    timestamp_1m_confirmation=None,
-                    price_1h_sweep=price_1h_sweep,
-                    price_5m_event_b=None,
-                    price_5m_validation=None,
-                    price_1m_confirmation=None,
-                    trend_1h_before_sweep=trend_1h,
-                    entry_direction=entry_direction,
-                    condition_liquidity_sweep=f"{sweep_type} liquidity swept",
-                    condition_event_b=None,
-                    condition_validation=None,
-                    condition_confirmation=None,
-                    conditions_met=1,
-                    failure_reason="No exit Order Block found",
-                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
-                    indices_5m=None,
-                    indices_1m=None,
-                    inflexion_idx=inflexion_idx
-                ))
-                continue
-
-            print(f"    ✓ Exit OB found: top={exit_target.ob_top:.2f}, bottom={exit_target.ob_bottom:.2f}, TP={exit_target.take_profit:.2f}")
+            # Exit target will be found after 5M BOS (Event B) is detected
+            exit_target = None
 
             # Step 2: Progressive 5M scan for Event B → Equilibrium
-            start_5m = time_1h_sweep
+            # Find the actual sweep point within the 1H candle
+            # For LONG: find 5M candle with min low (actual sweep point)
+            # For SHORT: find 5M candle with max high (actual sweep point)
+            time_1h_end = time_1h_sweep + timedelta(hours=1)
+            mask_5m_in_1h = (self._tm.df_5m.index >= time_1h_sweep) & (self._tm.df_5m.index < time_1h_end)
+            candles_5m_in_1h = self._tm.df_5m.loc[mask_5m_in_1h]
+
+            if len(candles_5m_in_1h) > 0:
+                if entry_direction == 'long':
+                    # For LONG: swept a LOW, find the 5M candle with min low
+                    start_5m = candles_5m_in_1h['low'].idxmin()
+                else:
+                    # For SHORT: swept a HIGH, find the 5M candle with max high
+                    start_5m = candles_5m_in_1h['high'].idxmax()
+                print(f"    Actual sweep point: {start_5m}")
+            else:
+                start_5m = time_1h_sweep  # Fallback
+
             end_5m = market_close_cutoff
 
             # State tracking
@@ -332,6 +322,18 @@ class StrategyEngine:
                         event_b = event_b_candidate
                         time_5m_event_b, event_b_type, price_5m_event_b = event_b
                         print(f"    ✓ Event B ({event_b_type}) at {time_5m_event_b}")
+
+                        # Find exit OB using the 5M BOS timestamp (not sweep time)
+                        exit_target = self._exit_target_finder.find_exit_order_block(
+                            time_5m_event_b,
+                            entry_direction
+                        )
+
+                        if exit_target is None:
+                            print(f"    ⚠️  No exit Order Block found after Event B - abandoning setup")
+                            break  # Will be handled by partial setup creation below
+
+                        print(f"    ✓ Exit OB found: top={exit_target.ob_top:.2f}, bottom={exit_target.ob_bottom:.2f}, TP={exit_target.take_profit:.2f}")
 
                 # State 2: Event B found, looking for Equilibrium zone entry
                 elif equilibrium_validation is None:
@@ -390,6 +392,41 @@ class StrategyEngine:
                     exit_ob_end_time=exit_target.ob_end_time if exit_target else None,
                     exit_ob_top=exit_target.ob_top if exit_target else None,
                     exit_ob_bottom=exit_target.ob_bottom if exit_target else None
+                ))
+                last_analysis_end_time = end_5m
+                continue
+
+            # Event B found but no exit OB - create partial setup with 2 conditions met
+            if exit_target is None:
+                time_5m_event_b_tmp, event_b_type_tmp, price_5m_event_b_tmp = event_b
+                self._partial_setups.append(PartialSetup(
+                    timestamp_1h_sweep=time_1h_sweep,
+                    timestamp_5m_event_b=time_5m_event_b_tmp,
+                    timestamp_5m_validation=None,
+                    timestamp_1m_confirmation=None,
+                    price_1h_sweep=price_1h_sweep,
+                    price_5m_event_b=price_5m_event_b_tmp,
+                    price_5m_validation=None,
+                    price_1m_confirmation=None,
+                    trend_1h_before_sweep=trend_1h,
+                    entry_direction=entry_direction,
+                    condition_liquidity_sweep=f"{sweep_type} liquidity swept",
+                    condition_event_b=event_b_type_tmp,
+                    condition_validation=None,
+                    condition_confirmation=None,
+                    conditions_met=2,
+                    failure_reason="No exit Order Block found",
+                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
+                    indices_5m=(
+                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp),
+                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp)
+                    ),
+                    indices_1m=None,
+                    inflexion_idx=inflexion_idx,
+                    exit_ob_start_time=None,
+                    exit_ob_end_time=None,
+                    exit_ob_top=None,
+                    exit_ob_bottom=None
                 ))
                 last_analysis_end_time = end_5m
                 continue
