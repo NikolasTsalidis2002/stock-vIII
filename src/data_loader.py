@@ -1,6 +1,7 @@
 """
-TSLA Data Loader
-Fetches and caches TSLA stock data from Twelve Data API
+Stock Data Loader
+Fetches and caches stock data from Twelve Data API
+Supports any stock symbol (default: TSLA)
 """
 
 import os
@@ -10,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 
 
-class TSLADataLoader:
+class DataLoader:
     """
-    Handles downloading and caching TSLA data from Twelve Data API.
+    Handles downloading and caching stock data from Twelve Data API.
 
     Attributes:
         api_key (str): Twelve Data API key
@@ -22,27 +23,28 @@ class TSLADataLoader:
         timezone (str): Timezone for data (default: Europe/Madrid)
     """
 
-    def __init__(self, api_key=None, data_dir=None):
+    def __init__(self, symbol='TSLA', api_key=None, data_dir=None):
         """
         Initialize the data loader.
 
         Args:
+            symbol (str, optional): Stock symbol to load data for. Default: TSLA
             api_key (str, optional): Twelve Data API key. If None, uses default.
-            data_dir (str, optional): Directory for cached data. If None, uses ../data/tsla
+            data_dir (str, optional): Directory for cached data. If None, uses ../data/{symbol}
         """
         # API Configuration
         self.api_key = api_key or '05bd1cfd57be431f89dfca9dd12f2cd2'
         self.base_url = 'https://api.twelvedata.com/time_series'
 
         # Data Configuration
-        self.symbol = 'TSLA'
+        self.symbol = symbol.upper()
         self.timezone = 'Europe/Madrid'
 
-        # Set up data directory
+        # Set up data directory (use lowercase symbol for directory name)
         if data_dir is None:
             current_file = Path(__file__)
             project_root = current_file.parent.parent
-            self.data_dir = project_root / 'data' / 'tsla'
+            self.data_dir = project_root / 'data' / self.symbol.lower()
         else:
             self.data_dir = Path(data_dir)
 
@@ -130,7 +132,7 @@ class TSLADataLoader:
             df (pd.DataFrame): Data to save
             timeframe (str): Timeframe identifier for filename
         """
-        cache_file = self.data_dir / f"tsla_{timeframe}.csv"
+        cache_file = self.data_dir / f"{self.symbol.lower()}_{timeframe}.csv"
         df.to_csv(cache_file, index=False)
         print(f"💾 Cached data to {cache_file}")
 
@@ -144,7 +146,7 @@ class TSLADataLoader:
         Returns:
             pd.DataFrame or None: Cached data if exists, None otherwise
         """
-        cache_file = self.data_dir / f"tsla_{timeframe}.csv"
+        cache_file = self.data_dir / f"{self.symbol.lower()}_{timeframe}.csv"
 
         if not cache_file.exists():
             return None
@@ -168,7 +170,7 @@ class TSLADataLoader:
         Returns:
             dict: Cache info with keys: exists, file_path, num_candles, start_time, end_time
         """
-        cache_file = self.data_dir / f"tsla_{timeframe}.csv"
+        cache_file = self.data_dir / f"{self.symbol.lower()}_{timeframe}.csv"
 
         info = {
             'exists': cache_file.exists(),
@@ -368,29 +370,37 @@ class TSLADataLoader:
         return pd.DataFrame(summaries)
 
 
+# Backward-compatible alias
+TSLADataLoader = DataLoader
+
+
 # Example usage
 if __name__ == "__main__":
-    # Initialize loader
-    loader = TSLADataLoader()
+    # Initialize loader (default: TSLA)
+    loader = DataLoader()
 
-    # Example 1: Get single timeframe (uses cache if available)
+    # Example 1: Load data for a different symbol
+    # aapl_loader = DataLoader(symbol='AAPL')
+    # df = aapl_loader.get_data('15min')
+
+    # Example 2: Get single timeframe (uses cache if available)
     # df = loader.get_data('15min')
     # print(df.head())
 
-    # Example 2: Download multiple timeframes
+    # Example 3: Download multiple timeframes
     # timeframes = ['5min', '15min', '1h', '1day']
     # data = loader.download_all_timeframes(timeframes)
 
-    # Example 3: Force refresh from API
+    # Example 4: Force refresh from API
     # df = loader.get_data('15min', force_refresh=True)
 
-    # Example 4: Update existing cache
+    # Example 5: Update existing cache
     # df = loader.update_cache('15min')
 
-    # Example 5: Get cache summary
+    # Example 6: Get cache summary
     summary = loader.get_summary()
     print("\n" + "="*80)
-    print("TSLA DATA CACHE SUMMARY")
+    print(f"{loader.symbol} DATA CACHE SUMMARY")
     print("="*80)
     print(summary.to_string(index=False))
     print("="*80 + "\n")

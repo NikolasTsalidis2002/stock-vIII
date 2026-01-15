@@ -17,6 +17,15 @@ class TradeJournal:
     Handles trade journal export and formatting.
     """
 
+    def __init__(self, symbol: str = 'TSLA'):
+        """
+        Initialize trade journal.
+
+        Args:
+            symbol: Stock symbol for this journal
+        """
+        self.symbol = symbol.upper()
+
     def to_dataframe(
         self,
         results: List[TradeResult],
@@ -36,6 +45,12 @@ class TradeJournal:
 
         for result in results:
             row = {
+                # Key info first (symbol, outcome, P&L)
+                'symbol': self.symbol,
+                'outcome': result.outcome.value.upper(),
+                'pnl_dollars': round(result.pnl_dollars, 2),
+                'pnl_percent': round(result.pnl_percent, 4),
+
                 # Trade identification
                 'trade_id': result.signal_index + 1,
                 'direction': result.entry_direction.upper(),
@@ -47,15 +62,12 @@ class TradeJournal:
                 # Exit details
                 'exit_time': result.exit_time,
                 'exit_price': result.exit_price,
-                'outcome': result.outcome.value.upper(),
 
                 # Targets
                 'take_profit': result.take_profit_price,
                 'stop_loss': result.stop_loss_price,
 
-                # P&L
-                'pnl_dollars': round(result.pnl_dollars, 2),
-                'pnl_percent': round(result.pnl_percent, 4),
+                # Additional P&L metrics
                 'pnl_r_multiple': round(result.pnl_r_multiple, 2),
 
                 # Capital (compounding)
@@ -138,9 +150,9 @@ class TradeJournal:
 
         # Select key columns for display
         display_cols = [
+            'symbol', 'outcome', 'pnl_dollars', 'pnl_percent',
             'trade_id', 'direction', 'entry_price',
-            'exit_price', 'outcome', 'pnl_dollars',
-            'capital_after', 'duration_minutes'
+            'exit_price', 'capital_after', 'duration_minutes'
         ]
 
         # Filter to only existing columns

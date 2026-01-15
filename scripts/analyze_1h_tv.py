@@ -4,33 +4,47 @@
 Generates a single HTML file with all frames embedded and dynamic navigation.
 
 Usage:
-    python3 scripts/analyze_1h_tv.py
+    python3 scripts/analyze_1h_tv.py                    # Default: TSLA
+    python3 scripts/analyze_1h_tv.py --symbol AAPL      # Use different symbol
 
 Output:
-    - results/1h_tv_walkthrough/walkthrough.html
+    - results/{symbol}_1h_tv_walkthrough/walkthrough.html
 """
 
 import sys
 import os
+import argparse
 import pandas as pd
 
 # Add src directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from data_loader import TSLADataLoader
+from data_loader import DataLoader
 from src.tradingview_visualizer import TradingViewVisualizer
 
 
 def main():
     """Main execution."""
+    parser = argparse.ArgumentParser(
+        description='1H Candle-by-Candle Walkthrough using TradingView Charts'
+    )
+    parser.add_argument(
+        '--symbol',
+        type=str,
+        default='TSLA',
+        help='Stock symbol to analyze (default: TSLA)'
+    )
+    args = parser.parse_args()
+    symbol = args.symbol.upper()
+
     print("\n" + "="*80)
-    print("1H TIMEFRAME TRADINGVIEW ANALYSIS")
+    print(f"{symbol} 1H TIMEFRAME TRADINGVIEW ANALYSIS")
     print("="*80 + "\n")
 
     # Load all timeframes to determine overlap
-    print("Loading TSLA data for all timeframes...")
-    loader = TSLADataLoader()
+    print(f"Loading {symbol} data for all timeframes...")
+    loader = DataLoader(symbol=symbol)
     df_1h_full = loader.get_data('1h', force_refresh=False)
     df_5m_full = loader.get_data('5min', force_refresh=False)
     df_1m_full = loader.get_data('1min', force_refresh=False)
@@ -70,7 +84,7 @@ def main():
     # Run analysis using unified visualizer
     visualizer = TradingViewVisualizer(
         timeframe_name="1H",
-        output_subdir="1h_tv_walkthrough"
+        output_subdir=f"{symbol.lower()}_1h_tv_walkthrough"
     )
     output_path = visualizer.run(df_1h)
 

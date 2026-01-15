@@ -38,7 +38,8 @@ class Backtester:
         self,
         df_1m: pd.DataFrame,
         initial_capital: float = 10000.0,
-        max_trade_duration_hours: int = 24
+        max_trade_duration_hours: int = 24,
+        symbol: str = 'TSLA'
     ) -> None:
         """
         Initialize backtester.
@@ -47,9 +48,11 @@ class Backtester:
             df_1m: 1M OHLCV DataFrame for exit simulation
             initial_capital: Starting capital (default $10,000)
             max_trade_duration_hours: Max hours before timeout
+            symbol: Stock symbol being backtested
         """
         self.df_1m = df_1m
         self.initial_capital = initial_capital
+        self.symbol = symbol.upper()
 
         # Initialize components
         self._simulator = TradeSimulator(
@@ -58,7 +61,7 @@ class Backtester:
             max_trade_duration_hours=max_trade_duration_hours
         )
         self._tracker = PerformanceTracker(initial_capital=initial_capital)
-        self._journal = TradeJournal()
+        self._journal = TradeJournal(symbol=self.symbol)
 
         # Results storage
         self._results: List[TradeResult] = []
@@ -70,7 +73,8 @@ class Backtester:
         cls,
         strategy,  # MultiTimeframeStrategy
         initial_capital: float = 10000.0,
-        max_trade_duration_hours: int = 24
+        max_trade_duration_hours: int = 24,
+        symbol: str = 'TSLA'
     ) -> "Backtester":
         """
         Create backtester directly from strategy instance.
@@ -79,6 +83,7 @@ class Backtester:
             strategy: Initialized MultiTimeframeStrategy
             initial_capital: Starting capital
             max_trade_duration_hours: Max hours before timeout
+            symbol: Stock symbol being backtested
 
         Returns:
             Configured Backtester instance
@@ -86,7 +91,8 @@ class Backtester:
         return cls(
             df_1m=strategy.df_1m,
             initial_capital=initial_capital,
-            max_trade_duration_hours=max_trade_duration_hours
+            max_trade_duration_hours=max_trade_duration_hours,
+            symbol=symbol
         )
 
     def run(self, signals: List[TradeSignal]) -> List[TradeResult]:
