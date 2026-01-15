@@ -1,5 +1,5 @@
 """
-Event B detection (BOS/IFVG) on 5M timeframe.
+Event B detection (BOS/IFVG) on mid timeframe.
 
 Handles detection of Break of Structure and Inverse Fair Value Gaps
 that signal potential trade entries.
@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 
 class EventBDetector:
     """
-    Detects Event B (BOS or IFVG in opposite direction) on 5M.
+    Detects Event B (BOS or IFVG in opposite direction) on mid TF.
 
     Responsibilities:
     - BOS detection in entry direction
@@ -23,24 +23,24 @@ class EventBDetector:
 
     def __init__(
         self,
-        df_5m: pd.DataFrame,
-        bos_5m: pd.DataFrame,
-        fvg_5m: pd.DataFrame,
-        inflexions_5m: pd.DataFrame
+        df_mid: pd.DataFrame,
+        bos_mid: pd.DataFrame,
+        fvg_mid: pd.DataFrame,
+        inflexions_mid: pd.DataFrame
     ) -> None:
         """
-        Initialize with 5M data and indicators.
+        Initialize with mid TF data and indicators.
 
         Args:
-            df_5m: 5M OHLCV DataFrame with datetime index
-            bos_5m: Pre-calculated BOS data
-            fvg_5m: Pre-calculated FVG data
-            inflexions_5m: Pre-calculated inflexion points
+            df_mid: Mid TF OHLCV DataFrame with datetime index
+            bos_mid: Pre-calculated BOS data
+            fvg_mid: Pre-calculated FVG data
+            inflexions_mid: Pre-calculated inflexion points
         """
-        self.df_5m = df_5m
-        self.bos_5m = bos_5m
-        self.fvg_5m = fvg_5m
-        self.inflexions_5m = inflexions_5m
+        self.df_mid = df_mid
+        self.bos_mid = bos_mid
+        self.fvg_mid = fvg_mid
+        self.inflexions_mid = inflexions_mid
 
     def detect_bos_at_candle(
         self,
@@ -57,12 +57,12 @@ class EventBDetector:
         Returns:
             (timestamp, 'BOS', price) or None if no BOS at this candle
         """
-        idx_5m = self.df_5m.index.get_loc(time_5m)
+        idx_5m = self.df_mid.index.get_loc(time_5m)
         target_bos = 1 if entry_direction == 'long' else -1
-        bos_value = self.bos_5m['BOS'].iloc[idx_5m]
+        bos_value = self.bos_mid['BOS'].iloc[idx_5m]
 
         if not np.isnan(bos_value) and bos_value == target_bos:
-            level = self.bos_5m['Level'].iloc[idx_5m]
+            level = self.bos_mid['Level'].iloc[idx_5m]
             return (time_5m, 'BOS', level)
 
         return None
@@ -85,7 +85,7 @@ class EventBDetector:
         Returns:
             (timestamp, 'IFVG', price) or None if no IFVG at this candle
         """
-        idx_5m = self.df_5m.index.get_loc(time_5m)
+        idx_5m = self.df_mid.index.get_loc(time_5m)
 
         # Determine target FVG type
         # For long entry, we want bearish FVG (-1) that gets disrespected
@@ -93,7 +93,7 @@ class EventBDetector:
         target_fvg = -1 if entry_direction == 'long' else 1
 
         # Check FVGs disrespected at this specific index
-        local_5_fvg = self.fvg_5m.loc[self.fvg_5m['StatusIndex'] == idx_5m]
+        local_5_fvg = self.fvg_mid.loc[self.fvg_mid['StatusIndex'] == idx_5m]
 
         for i in range(len(local_5_fvg)):
             fvg_value = local_5_fvg['FVG'].iloc[i]
@@ -115,9 +115,9 @@ class EventBDetector:
                 # Search backwards from current index for nearest inflexion
                 level = None
                 for j in range(idx_5m - 1, -1, -1):
-                    inflexion_type = self.inflexions_5m['InflexionType'].iloc[j]
+                    inflexion_type = self.inflexions_mid['InflexionType'].iloc[j]
                     if not np.isnan(inflexion_type) and inflexion_type == target_inflexion_type:
-                        level = self.inflexions_5m['Level'].iloc[j]
+                        level = self.inflexions_mid['Level'].iloc[j]
                         break
 
                 return (time_5m, 'IFVG', level)

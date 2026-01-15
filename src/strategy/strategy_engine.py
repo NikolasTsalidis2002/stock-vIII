@@ -25,10 +25,10 @@ class StrategyEngine:
     Main strategy orchestrator using state machine pattern.
 
     Workflow:
-    1. 1H Liquidity Sweep
-    2. 5M Event B - BOS/IFVG
-    3. 5M Equilibrium Zone - Price enters premium/discount
-    4. 1M Confirmation - BOS/IFVG
+    1. High TF Liquidity Sweep
+    2. Mid TF Event B - BOS/IFVG
+    3. Mid TF Equilibrium Zone - Price enters premium/discount
+    4. Low TF Confirmation - BOS/IFVG
     5. Calculate exit target and stop loss
     """
 
@@ -46,31 +46,31 @@ class StrategyEngine:
 
         # Reuse existing detectors from base strategy
         self._liquidity_detector = LiquidityDetector(
-            df_1h=self._tm.df_1h,
-            inflexions_1h=self._tm.inflexions_1h,
-            bos_1h=self._tm.bos_1h
+            df_high=self._tm.df_high,
+            inflexions_high=self._tm.inflexions_high,
+            bos_high=self._tm.bos_high
         )
 
         self._event_b_detector = EventBDetector(
-            df_5m=self._tm.df_5m,
-            bos_5m=self._tm.bos_5m,
-            fvg_5m=self._tm.fvg_5m,
-            inflexions_5m=self._tm.inflexions_5m
+            df_mid=self._tm.df_mid,
+            bos_mid=self._tm.bos_mid,
+            fvg_mid=self._tm.fvg_mid,
+            inflexions_mid=self._tm.inflexions_mid
         )
 
         self._confirmation_detector = ConfirmationDetector(
-            df_1m=self._tm.df_1m,
-            bos_1m=self._tm.bos_1m,
-            fvg_1m=self._tm.fvg_1m,
-            inflexions_1m=self._tm.inflexions_1m
+            df_low=self._tm.df_low,
+            bos_low=self._tm.bos_low,
+            fvg_low=self._tm.fvg_low,
+            inflexions_low=self._tm.inflexions_low
         )
 
         # NEW for Strategy: Exit target finder
         self._exit_target_finder = ExitTargetFinder(
-            df_5m=self._tm.df_5m,
-            bos_5m=self._tm.bos_5m,
-            inflexions_5m=self._tm.inflexions_5m,
-            ob_5m=self._tm.ob_5m
+            df_mid=self._tm.df_mid,
+            bos_mid=self._tm.bos_mid,
+            inflexions_mid=self._tm.inflexions_mid,
+            ob_mid=self._tm.ob_mid
         )
 
         # Trade signals found
@@ -103,19 +103,19 @@ class StrategyEngine:
                 return True
         return False
 
-    def _search_for_confirmation_1m(
+    def _search_for_confirmation_low(
         self,
-        start_1m: datetime,
-        end_1m: datetime,
+        start_low: datetime,
+        end_low: datetime,
         entry_direction: str,
-        time_1h_sweep: datetime,
+        time_high_sweep: datetime,
         sweep_idx: int,
         inflexion_idx: int,
         exit_target: Optional[ExitTarget],
         all_sweeps: List[SweepInfo]
     ) -> Tuple[Optional[Tuple[datetime, str, float]], bool, bool, datetime]:
         """
-        Search for 1M confirmation with invalidation checks.
+        Search for low TF confirmation with invalidation checks.
 
         Strategy adds additional invalidation check for exit OB break
         and new sweep invalidation.
@@ -126,55 +126,59 @@ class StrategyEngine:
         confirmation = None
         sweep_broken = False
         new_sweep_occurred = False
-        last_time_scanned = start_1m
+        last_time_scanned = start_low
 
-        # Progressive scan through each 1M candle
-        for time_1m_current in self._tm.df_1m.loc[start_1m:end_1m].index:
-            last_time_scanned = time_1m_current
+        # Get the high TF duration for boundary checks
+        high_duration = self._tm.high_duration
 
-            # Check if we've crossed into a new 1H candle
-            hours_elapsed = (time_1m_current - time_1h_sweep).total_seconds() / 3600
-            current_hour_boundary = hours_elapsed if hours_elapsed % 1 == 0 else int(hours_elapsed) + 1
+        # Progressive scan through each low TF candle
+        for time_low_current in self._tm.df_low.loc[start_low:end_low].index:
+            last_time_scanned = time_low_current
 
-            if hours_elapsed == current_hour_boundary and hours_elapsed > 0:
-                # We've entered a new 1H candle - check if sweep is still valid
-                check_time = time_1h_sweep + timedelta(hours=current_hour_boundary)
-                current_candle_idx = sweep_idx + int(current_hour_boundary) - 1
+            # Check if we've crossed into a new high TF candle
+            time_elapsed = time_low_current - time_high_sweep
+            candles_elapsed = time_elapsed.total_seconds() / high_duration.total_seconds()
+            current_candle_boundary = int(candles_elapsed) + 1 if candles_elapsed % 1 != 0 else int(candles_elapsed)
+
+            if candles_elapsed == current_candle_boundary and candles_elapsed > 0:
+                # We've entered a new high TF candle - check if sweep is still valid
+                check_time = time_high_sweep + timedelta(seconds=high_duration.total_seconds() * current_candle_boundary)
+                current_candle_idx = sweep_idx + int(current_candle_boundary) - 1
 
                 # Check: Sweep disrespected?
                 if self._liquidity_detector.is_sweep_broken_at_time(inflexion_idx, check_time, current_candle_idx):
-                    print(f"    ⚠️  Sweep broken at {check_time} during 1M scan - abandoning setup")
+                    print(f"    ⚠️  Sweep broken at {check_time} during low TF scan - abandoning setup")
                     sweep_broken = True
                     break
 
             # Check: New sweep occurred? (invalidates current setup)
-            if self._has_new_sweep_occurred(all_sweeps, time_1h_sweep, time_1m_current):
-                print(f"    ⚠️  New sweep occurred during 1M scan - abandoning current setup")
+            if self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_low_current):
+                print(f"    ⚠️  New sweep occurred during low TF scan - abandoning current setup")
                 new_sweep_occurred = True
                 break
 
             # Strategy: Check if price breaks exit OB (target reached before entry)
             if exit_target is not None:
-                current_1m_price = self._tm.df_1m['close'].loc[time_1m_current]
-                if entry_direction == 'short' and current_1m_price < exit_target.ob_bottom:
-                    print(f"    ⚠️  Price broke exit OB ({current_1m_price:.2f} < {exit_target.ob_bottom:.2f}) - abandoning setup")
+                current_low_price = self._tm.df_low['close'].loc[time_low_current]
+                if entry_direction == 'short' and current_low_price < exit_target.ob_bottom:
+                    print(f"    ⚠️  Price broke exit OB ({current_low_price:.2f} < {exit_target.ob_bottom:.2f}) - abandoning setup")
                     sweep_broken = True
                     break
-                elif entry_direction == 'long' and current_1m_price > exit_target.ob_top:
-                    print(f"    ⚠️  Price broke exit OB ({current_1m_price:.2f} > {exit_target.ob_top:.2f}) - abandoning setup")
+                elif entry_direction == 'long' and current_low_price > exit_target.ob_top:
+                    print(f"    ⚠️  Price broke exit OB ({current_low_price:.2f} > {exit_target.ob_top:.2f}) - abandoning setup")
                     sweep_broken = True
                     break
 
             # Look for confirmation progressively
             confirmation_candidate = self._confirmation_detector.detect_confirmation_at_candle(
-                time_1m_current,
+                time_low_current,
                 entry_direction
             )
 
             if confirmation_candidate is not None:
                 confirmation = confirmation_candidate
-                time_1m_confirmation, confirmation_type, price_1m_confirmation = confirmation
-                print(f"    ✓ Confirmation ({confirmation_type}) at {time_1m_confirmation}")
+                time_low_confirmation, confirmation_type, price_low_confirmation = confirmation
+                print(f"    ✓ Confirmation ({confirmation_type}) at {time_low_confirmation}")
                 break  # Confirmation found
 
         return (confirmation, sweep_broken, new_sweep_occurred, last_time_scanned)
@@ -207,6 +211,9 @@ class StrategyEngine:
         # Track last analysis end time to ensure temporal consistency
         last_analysis_end_time = None
 
+        # Get the high TF duration for time calculations
+        high_duration = self._tm.high_duration
+
         # Step 1: Detect all liquidity sweeps upfront
         all_sweeps = self._liquidity_detector.detect_all_sweeps()
 
@@ -219,29 +226,29 @@ class StrategyEngine:
             sweep_type = sweep.sweep_type
             swept_level = sweep.swept_level
             inflexion_idx = sweep.inflexion_idx
-            time_1h_sweep = sweep.timestamp
+            time_high_sweep = sweep.timestamp
 
             # Skip if we've already analyzed a sweep at this timestamp
-            if time_1h_sweep in analyzed_sweep_times:
-                print(f"  Skipping duplicate sweep at {time_1h_sweep}")
+            if time_high_sweep in analyzed_sweep_times:
+                print(f"  Skipping duplicate sweep at {time_high_sweep}")
                 continue
 
             # Skip if sweep time is before or at last analysis end time
-            if last_analysis_end_time is not None and time_1h_sweep <= last_analysis_end_time:
-                print(f"  Skipping sweep at {time_1h_sweep} (overlaps with previous analysis)")
+            if last_analysis_end_time is not None and time_high_sweep <= last_analysis_end_time:
+                print(f"  Skipping sweep at {time_high_sweep} (overlaps with previous analysis)")
                 continue
 
             # Mark this timestamp as analyzed
-            analyzed_sweep_times.add(time_1h_sweep)
+            analyzed_sweep_times.add(time_high_sweep)
 
-            # Get 1H trend before sweep
-            trend_1h = self._tm.get_1h_trend_at_index(sweep_idx)
-            if trend_1h is None:
+            # Get high TF trend before sweep
+            trend_high = self._tm.get_high_trend_at_index(sweep_idx)
+            if trend_high is None:
                 continue
 
-            price_1h_sweep = swept_level
+            price_high_sweep = swept_level
 
-            print(f"\n  Analyzing sweep at {time_1h_sweep} (1H trend: {trend_1h})")
+            print(f"\n  Analyzing sweep at {time_high_sweep} (high TF trend: {trend_high})")
 
             # Determine entry direction based on how liquidity was swept
             if sweep.is_dual_sweep:
@@ -252,7 +259,7 @@ class StrategyEngine:
                 print(f"       Direction from candle color: {entry_direction.upper()}")
             else:
                 # Normal single sweep logic
-                sweep_candle_close = self._tm.df_1h['close'].iloc[sweep_idx]
+                sweep_candle_close = self._tm.df_high['close'].iloc[sweep_idx]
 
                 if sweep_candle_close > swept_level:
                     entry_direction = 'long'
@@ -260,37 +267,37 @@ class StrategyEngine:
                     entry_direction = 'short'
 
             # Get market close time for this trading day
-            market_close = self._tm.get_market_close_for_day(time_1h_sweep)
+            market_close = self._tm.get_market_close_for_day(time_high_sweep)
             market_close_cutoff = market_close - timedelta(minutes=10)
 
             # Skip sweeps that occur too close to market close
-            if time_1h_sweep >= market_close_cutoff:
+            if time_high_sweep >= market_close_cutoff:
                 print(f"    ⚠️  Sweep too close to market close ({market_close}) - skipping")
                 continue
 
-            # Exit target will be found after 5M BOS (Event B) is detected
+            # Exit target will be found after mid TF BOS (Event B) is detected
             exit_target = None
 
-            # Step 2: Progressive 5M scan for Event B → Equilibrium
-            # Find the actual sweep point within the 1H candle
-            # For LONG: find 5M candle with min low (actual sweep point)
-            # For SHORT: find 5M candle with max high (actual sweep point)
-            time_1h_end = time_1h_sweep + timedelta(hours=1)
-            mask_5m_in_1h = (self._tm.df_5m.index >= time_1h_sweep) & (self._tm.df_5m.index < time_1h_end)
-            candles_5m_in_1h = self._tm.df_5m.loc[mask_5m_in_1h]
+            # Step 2: Progressive mid TF scan for Event B → Equilibrium
+            # Find the actual sweep point within the high TF candle
+            # For LONG: find mid TF candle with min low (actual sweep point)
+            # For SHORT: find mid TF candle with max high (actual sweep point)
+            time_high_end = time_high_sweep + high_duration
+            mask_mid_in_high = (self._tm.df_mid.index >= time_high_sweep) & (self._tm.df_mid.index < time_high_end)
+            candles_mid_in_high = self._tm.df_mid.loc[mask_mid_in_high]
 
-            if len(candles_5m_in_1h) > 0:
+            if len(candles_mid_in_high) > 0:
                 if entry_direction == 'long':
-                    # For LONG: swept a LOW, find the 5M candle with min low
-                    start_5m = candles_5m_in_1h['low'].idxmin()
+                    # For LONG: swept a LOW, find the mid TF candle with min low
+                    start_mid = candles_mid_in_high['low'].idxmin()
                 else:
-                    # For SHORT: swept a HIGH, find the 5M candle with max high
-                    start_5m = candles_5m_in_1h['high'].idxmax()
-                print(f"    Actual sweep point: {start_5m}")
+                    # For SHORT: swept a HIGH, find the mid TF candle with max high
+                    start_mid = candles_mid_in_high['high'].idxmax()
+                print(f"    Actual sweep point: {start_mid}")
             else:
-                start_5m = time_1h_sweep  # Fallback
+                start_mid = time_high_sweep  # Fallback
 
-            end_5m = market_close_cutoff
+            end_mid = market_close_cutoff
 
             # State tracking
             event_b = None
@@ -298,17 +305,18 @@ class StrategyEngine:
             equilibrium_state = None
             sweep_broken = False
             new_sweep_occurred = False
-            price_5m_event_b = None
+            price_mid_event_b = None
 
-            # Progressive scan through each 5M candle
-            for time_5m_current in self._tm.df_5m.loc[start_5m:end_5m].index:
-                # Check if we've crossed into a new 1H candle
-                hours_elapsed = (time_5m_current - time_1h_sweep).total_seconds() / 3600
-                current_hour_boundary = hours_elapsed if hours_elapsed % 1 == 0 else int(hours_elapsed) + 1
+            # Progressive scan through each mid TF candle
+            for time_mid_current in self._tm.df_mid.loc[start_mid:end_mid].index:
+                # Check if we've crossed into a new high TF candle
+                time_elapsed = time_mid_current - time_high_sweep
+                candles_elapsed = time_elapsed.total_seconds() / high_duration.total_seconds()
+                current_candle_boundary = int(candles_elapsed) + 1 if candles_elapsed % 1 != 0 else int(candles_elapsed)
 
-                if hours_elapsed == current_hour_boundary and hours_elapsed > 0:
-                    check_time = time_1h_sweep + timedelta(hours=current_hour_boundary)
-                    current_candle_idx = sweep_idx + int(current_hour_boundary) - 1
+                if candles_elapsed == current_candle_boundary and candles_elapsed > 0:
+                    check_time = time_high_sweep + timedelta(seconds=high_duration.total_seconds() * current_candle_boundary)
+                    current_candle_idx = sweep_idx + int(current_candle_boundary) - 1
 
                     if self._liquidity_detector.is_sweep_broken_at_time(inflexion_idx, check_time, current_candle_idx):
                         print(f"    ⚠️  Sweep broken - abandoning setup")
@@ -316,23 +324,23 @@ class StrategyEngine:
                         break
 
                 # Check: New sweep occurred? (invalidates current setup)
-                if self._has_new_sweep_occurred(all_sweeps, time_1h_sweep, time_5m_current):
-                    print(f"    ⚠️  New sweep occurred during 5M scan - abandoning current setup")
+                if self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_mid_current):
+                    print(f"    ⚠️  New sweep occurred during mid TF scan - abandoning current setup")
                     new_sweep_occurred = True
                     break
 
                 # State 1: Looking for Event B
                 if event_b is None:
-                    event_b_candidate = self._event_b_detector.search_for_event_b_at_candle(time_5m_current, entry_direction)
+                    event_b_candidate = self._event_b_detector.search_for_event_b_at_candle(time_mid_current, entry_direction)
 
                     if event_b_candidate is not None:
                         event_b = event_b_candidate
-                        time_5m_event_b, event_b_type, price_5m_event_b = event_b
-                        print(f"    ✓ Event B ({event_b_type}) at {time_5m_event_b}")
+                        time_mid_event_b, event_b_type, price_mid_event_b = event_b
+                        print(f"    ✓ Event B ({event_b_type}) at {time_mid_event_b}")
 
-                        # Find exit OB using the 5M BOS timestamp (not sweep time)
+                        # Find exit OB using the mid TF BOS timestamp (not sweep time)
                         exit_target = self._exit_target_finder.find_exit_order_block(
-                            time_5m_event_b,
+                            time_mid_event_b,
                             entry_direction
                         )
 
@@ -346,28 +354,28 @@ class StrategyEngine:
                 elif equilibrium_validation is None:
                     # Create fresh equilibrium validator for this scan
                     equilibrium_validator = EquilibriumValidator(
-                        df_5m=self._tm.df_5m,
+                        df_mid=self._tm.df_mid,
                         swept_level=swept_level,
                         entry_direction=entry_direction
                     )
 
                     equilibrium_candidate = equilibrium_validator.validate_equilibrium_zone(
-                        time_5m_event_b,
-                        time_5m_current
+                        time_mid_event_b,
+                        time_mid_current
                     )
 
                     if equilibrium_candidate is not None:
-                        time_5m_validation, validation_type, price_5m_validation, equilibrium_state = equilibrium_candidate
-                        equilibrium_validation = (time_5m_validation, validation_type, price_5m_validation)
-                        print(f"    ✓ Equilibrium zone entered at {time_5m_validation} (eq={equilibrium_state.equilibrium:.2f})")
+                        time_mid_validation, validation_type, price_mid_validation, equilibrium_state = equilibrium_candidate
+                        equilibrium_validation = (time_mid_validation, validation_type, price_mid_validation)
+                        print(f"    ✓ Equilibrium zone entered at {time_mid_validation} (eq={equilibrium_state.equilibrium:.2f})")
                         break  # Both Event B and Equilibrium found - move to next step
 
             # Handle cases where conditions weren't met
             if sweep_broken:
-                last_analysis_end_time = time_5m_current if 'time_5m_current' in dir() else end_5m
+                last_analysis_end_time = time_mid_current if 'time_mid_current' in dir() else end_mid
                 continue
 
-            # Handle new sweep occurred during 5M scan - abandon but DON'T update last_analysis_end_time
+            # Handle new sweep occurred during mid TF scan - abandon but DON'T update last_analysis_end_time
             # The new sweep that triggered abandonment should be processed, not blocked
             if new_sweep_occurred:
                 continue
@@ -375,15 +383,15 @@ class StrategyEngine:
             if event_b is None:
                 # No Event B found - create partial setup
                 self._partial_setups.append(PartialSetup(
-                    timestamp_1h_sweep=time_1h_sweep,
+                    timestamp_1h_sweep=time_high_sweep,
                     timestamp_5m_event_b=None,
                     timestamp_5m_validation=None,
                     timestamp_1m_confirmation=None,
-                    price_1h_sweep=price_1h_sweep,
+                    price_1h_sweep=price_high_sweep,
                     price_5m_event_b=None,
                     price_5m_validation=None,
                     price_1m_confirmation=None,
-                    trend_1h_before_sweep=trend_1h,
+                    trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
                     condition_liquidity_sweep=f"{sweep_type} liquidity swept",
                     condition_event_b=None,
@@ -391,7 +399,7 @@ class StrategyEngine:
                     condition_confirmation=None,
                     conditions_met=1,
                     failure_reason="No Event B found",
-                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
+                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_high) - 1, sweep_idx + 5)),
                     indices_5m=None,
                     indices_1m=None,
                     inflexion_idx=inflexion_idx,
@@ -400,22 +408,22 @@ class StrategyEngine:
                     exit_ob_top=exit_target.ob_top if exit_target else None,
                     exit_ob_bottom=exit_target.ob_bottom if exit_target else None
                 ))
-                last_analysis_end_time = end_5m
+                last_analysis_end_time = end_mid
                 continue
 
             # Event B found but no exit OB - create partial setup with 2 conditions met
             if exit_target is None:
-                time_5m_event_b_tmp, event_b_type_tmp, price_5m_event_b_tmp = event_b
+                time_mid_event_b_tmp, event_b_type_tmp, price_mid_event_b_tmp = event_b
                 self._partial_setups.append(PartialSetup(
-                    timestamp_1h_sweep=time_1h_sweep,
-                    timestamp_5m_event_b=time_5m_event_b_tmp,
+                    timestamp_1h_sweep=time_high_sweep,
+                    timestamp_5m_event_b=time_mid_event_b_tmp,
                     timestamp_5m_validation=None,
                     timestamp_1m_confirmation=None,
-                    price_1h_sweep=price_1h_sweep,
-                    price_5m_event_b=price_5m_event_b_tmp,
+                    price_1h_sweep=price_high_sweep,
+                    price_5m_event_b=price_mid_event_b_tmp,
                     price_5m_validation=None,
                     price_1m_confirmation=None,
-                    trend_1h_before_sweep=trend_1h,
+                    trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
                     condition_liquidity_sweep=f"{sweep_type} liquidity swept",
                     condition_event_b=event_b_type_tmp,
@@ -423,10 +431,10 @@ class StrategyEngine:
                     condition_confirmation=None,
                     conditions_met=2,
                     failure_reason="No exit Order Block found",
-                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
+                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_high) - 1, sweep_idx + 5)),
                     indices_5m=(
-                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp),
-                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp)
+                        self._tm.df_mid.index.get_loc(time_mid_event_b_tmp),
+                        self._tm.df_mid.index.get_loc(time_mid_event_b_tmp)
                     ),
                     indices_1m=None,
                     inflexion_idx=inflexion_idx,
@@ -435,22 +443,22 @@ class StrategyEngine:
                     exit_ob_top=None,
                     exit_ob_bottom=None
                 ))
-                last_analysis_end_time = end_5m
+                last_analysis_end_time = end_mid
                 continue
 
             if equilibrium_validation is None:
                 # No equilibrium zone entry - create partial setup
-                time_5m_event_b_tmp, event_b_type_tmp, price_5m_event_b_tmp = event_b
+                time_mid_event_b_tmp, event_b_type_tmp, price_mid_event_b_tmp = event_b
                 self._partial_setups.append(PartialSetup(
-                    timestamp_1h_sweep=time_1h_sweep,
-                    timestamp_5m_event_b=time_5m_event_b_tmp,
+                    timestamp_1h_sweep=time_high_sweep,
+                    timestamp_5m_event_b=time_mid_event_b_tmp,
                     timestamp_5m_validation=None,
                     timestamp_1m_confirmation=None,
-                    price_1h_sweep=price_1h_sweep,
-                    price_5m_event_b=price_5m_event_b_tmp,
+                    price_1h_sweep=price_high_sweep,
+                    price_5m_event_b=price_mid_event_b_tmp,
                     price_5m_validation=None,
                     price_1m_confirmation=None,
-                    trend_1h_before_sweep=trend_1h,
+                    trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
                     condition_liquidity_sweep=f"{sweep_type} liquidity swept",
                     condition_event_b=event_b_type_tmp,
@@ -458,10 +466,10 @@ class StrategyEngine:
                     condition_confirmation=None,
                     conditions_met=2,
                     failure_reason="No equilibrium zone entry",
-                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
+                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_high) - 1, sweep_idx + 5)),
                     indices_5m=(
-                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp),
-                        self._tm.df_5m.index.get_loc(time_5m_event_b_tmp)
+                        self._tm.df_mid.index.get_loc(time_mid_event_b_tmp),
+                        self._tm.df_mid.index.get_loc(time_mid_event_b_tmp)
                     ),
                     indices_1m=None,
                     inflexion_idx=inflexion_idx,
@@ -470,21 +478,21 @@ class StrategyEngine:
                     exit_ob_top=exit_target.ob_top if exit_target else None,
                     exit_ob_bottom=exit_target.ob_bottom if exit_target else None
                 ))
-                last_analysis_end_time = end_5m
+                last_analysis_end_time = end_mid
                 continue
 
             # Unpack results (both Event B and Equilibrium found)
-            time_5m_event_b, event_b_type, price_5m_event_b = event_b
-            time_5m_validation, validation_type, price_5m_validation = equilibrium_validation
+            time_mid_event_b, event_b_type, price_mid_event_b = event_b
+            time_mid_validation, validation_type, price_mid_validation = equilibrium_validation
 
-            # Step 4: Final confirmation on 1M
-            start_1m = time_5m_validation
+            # Step 4: Final confirmation on low TF
+            start_low = time_mid_validation
 
-            confirmation, sweep_broken, new_sweep_occurred, last_time_scanned = self._search_for_confirmation_1m(
-                start_1m,
+            confirmation, sweep_broken, new_sweep_occurred, last_time_scanned = self._search_for_confirmation_low(
+                start_low,
                 market_close_cutoff,
                 entry_direction,
-                time_1h_sweep,
+                time_high_sweep,
                 sweep_idx,
                 inflexion_idx,
                 exit_target,
@@ -493,14 +501,14 @@ class StrategyEngine:
 
             # Unpack confirmation if found
             if confirmation is not None:
-                time_1m_confirmation, confirmation_type, price_1m_confirmation = confirmation
+                time_low_confirmation, confirmation_type, price_low_confirmation = confirmation
 
-            # Handle sweep broken during 1M scan
+            # Handle sweep broken during low TF scan
             if sweep_broken:
                 last_analysis_end_time = last_time_scanned
                 continue
 
-            # Handle new sweep occurred during 1M scan - abandon but DON'T update last_analysis_end_time
+            # Handle new sweep occurred during low TF scan - abandon but DON'T update last_analysis_end_time
             # The new sweep that triggered abandonment should be processed, not blocked
             if new_sweep_occurred:
                 continue
@@ -508,30 +516,30 @@ class StrategyEngine:
             # Handle no confirmation found - create partial setup
             if confirmation is None:
                 self._partial_setups.append(PartialSetup(
-                    timestamp_1h_sweep=time_1h_sweep,
-                    timestamp_5m_event_b=time_5m_event_b,
-                    timestamp_5m_validation=time_5m_validation,
+                    timestamp_1h_sweep=time_high_sweep,
+                    timestamp_5m_event_b=time_mid_event_b,
+                    timestamp_5m_validation=time_mid_validation,
                     timestamp_1m_confirmation=None,
-                    price_1h_sweep=price_1h_sweep,
-                    price_5m_event_b=price_5m_event_b,
-                    price_5m_validation=price_5m_validation,
+                    price_1h_sweep=price_high_sweep,
+                    price_5m_event_b=price_mid_event_b,
+                    price_5m_validation=price_mid_validation,
                     price_1m_confirmation=None,
-                    trend_1h_before_sweep=trend_1h,
+                    trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
                     condition_liquidity_sweep=f"{sweep_type} liquidity swept",
                     condition_event_b=event_b_type,
                     condition_validation=validation_type,
                     condition_confirmation=None,
                     conditions_met=3,
-                    failure_reason="No 1M confirmation",
-                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
+                    failure_reason="No low TF confirmation",
+                    indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_high) - 1, sweep_idx + 5)),
                     indices_5m=(
-                        self._tm.df_5m.index.get_loc(time_5m_event_b),
-                        self._tm.df_5m.index.get_loc(time_5m_validation)
+                        self._tm.df_mid.index.get_loc(time_mid_event_b),
+                        self._tm.df_mid.index.get_loc(time_mid_validation)
                     ),
                     indices_1m=(
-                        self._tm.df_1m.index.get_loc(start_1m),
-                        self._tm.df_1m.index.get_loc(last_time_scanned)
+                        self._tm.df_low.index.get_loc(start_low),
+                        self._tm.df_low.index.get_loc(last_time_scanned)
                     ),
                     inflexion_idx=inflexion_idx,
                     exit_ob_start_time=exit_target.ob_start_time if exit_target else None,
@@ -544,30 +552,30 @@ class StrategyEngine:
 
             # All conditions met - generate Strategy signal with TP/SL
             signal = TradeSignal(
-                timestamp_1h_sweep=time_1h_sweep,
-                timestamp_5m_event_b=time_5m_event_b,
-                timestamp_5m_validation=time_5m_validation,
-                timestamp_1m_confirmation=time_1m_confirmation,
-                timestamp_entry=time_1m_confirmation,
-                trend_1h_before_sweep=trend_1h,
+                timestamp_1h_sweep=time_high_sweep,
+                timestamp_5m_event_b=time_mid_event_b,
+                timestamp_5m_validation=time_mid_validation,
+                timestamp_1m_confirmation=time_low_confirmation,
+                timestamp_entry=time_low_confirmation,
+                trend_1h_before_sweep=trend_high,
                 entry_direction=entry_direction,
-                price_1h_sweep=price_1h_sweep,
-                price_5m_event_b=price_5m_event_b,
-                price_5m_validation=price_5m_validation,
-                price_1m_confirmation=price_1m_confirmation,
-                price_entry=price_1m_confirmation,
+                price_1h_sweep=price_high_sweep,
+                price_5m_event_b=price_mid_event_b,
+                price_5m_validation=price_mid_validation,
+                price_1m_confirmation=price_low_confirmation,
+                price_entry=price_low_confirmation,
                 condition_liquidity_sweep=f"{sweep_type} liquidity swept",
                 condition_event_b=event_b_type,
                 condition_validation=validation_type,
                 condition_confirmation=confirmation_type,
-                indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_1h) - 1, sweep_idx + 5)),
+                indices_1h=(max(0, sweep_idx - 5), min(len(self._tm.df_high) - 1, sweep_idx + 5)),
                 indices_5m=(
-                    self._tm.df_5m.index.get_loc(time_5m_event_b),
-                    self._tm.df_5m.index.get_loc(time_5m_validation)
+                    self._tm.df_mid.index.get_loc(time_mid_event_b),
+                    self._tm.df_mid.index.get_loc(time_mid_validation)
                 ),
                 indices_1m=(
-                    self._tm.df_1m.index.get_loc(start_1m),
-                    self._tm.df_1m.index.get_loc(time_1m_confirmation)
+                    self._tm.df_low.index.get_loc(start_low),
+                    self._tm.df_low.index.get_loc(time_low_confirmation)
                 ),
                 # Exit target and equilibrium fields
                 take_profit_price=exit_target.take_profit,
@@ -587,7 +595,7 @@ class StrategyEngine:
             print(f"    ✅ COMPLETE SIGNAL #{len(signals)} - {entry_direction.upper()} entry")
             print(f"       Entry: {signal.price_entry:.2f}, TP: {signal.take_profit_price:.2f}, SL: {signal.stop_loss_price:.2f}")
 
-            last_analysis_end_time = time_1m_confirmation
+            last_analysis_end_time = time_low_confirmation
 
         print(f"\n✅ Found {len(signals)} complete Strategy trade signals!")
         print(f"📊 Found {len(self._partial_setups)} partial setups:")

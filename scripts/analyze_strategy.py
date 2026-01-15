@@ -5,9 +5,10 @@ Scans historical stock data for complete trade setups and generates
 visual walkthroughs showing the step-by-step strategy execution.
 
 Usage:
-    python3 scripts/analyze_strategy.py                         # Default: TSLA
+    python3 scripts/analyze_strategy.py                         # Default: TSLA with 1h/5min/1min
     python3 scripts/analyze_strategy.py --symbol META           # Use different symbol
     python3 scripts/analyze_strategy.py --symbol META --visualize  # Generate unified HTML
+    python3 scripts/analyze_strategy.py --high-tf 4h --mid-tf 15min --low-tf 5min  # Custom timeframes
 
 Output:
     --visualize flag generates: results/{symbol}_sweeps.html
@@ -16,6 +17,7 @@ Output:
 
 import sys
 import os
+import json
 from pathlib import Path
 import argparse
 
@@ -26,6 +28,25 @@ from data_loader import DataLoader
 from strategy import MultiTimeframeStrategy
 from tradingview_strategy_analyzer import StrategySweepVisualizer
 from backtesting import Backtester
+
+
+def load_config():
+    """Load configuration from JSON file.
+
+    Returns:
+        dict: Configuration values, or empty dict if file not found.
+    """
+    config_path = Path(__file__).parent.parent / 'config' / 'strategy_config.json'
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            print(f"Loaded config from: {config_path}")
+            return config
+        except json.JSONDecodeError as e:
+            print(f"Warning: Invalid JSON in config file: {e}")
+            return {}
+    return {}
 
 
 def generate_master_index(signals, output_dir, symbol='TSLA'):
@@ -250,6 +271,9 @@ def generate_master_index(signals, output_dir, symbol='TSLA'):
 def main():
     """Main execution function."""
 
+    # Load configuration from JSON file
+    config = load_config()
+
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description='Analyze stock trading strategy with multi-timeframe setups',
@@ -284,30 +308,82 @@ def main():
         action='store_true',
         help='Generate unified HTML visualization of all sweeps (results/{symbol}_sweeps.html)'
     )
+    parser.add_argument(
+        '--high-tf',
+        type=str,
+        default='1h',
+        help='High timeframe (default: 1h). Options: 1min, 5min, 15min, 30min, 1h, 4h, 1day'
+    )
+    parser.add_argument(
+        '--mid-tf',
+        type=str,
+        default='5min',
+        help='Mid timeframe (default: 5min). Options: 1min, 5min, 15min, 30min, 1h, 4h, 1day'
+    )
+    parser.add_argument(
+        '--low-tf',
+        type=str,
+        default='1min',
+        help='Low timeframe (default: 1min). Options: 1min, 5min, 15min, 30min, 1h, 4h, 1day'
+    )
+    parser.add_argument(
+        '--hold-overnight',
+        action='store_true',
+        help='Allow trades to hold overnight (default: intraday only, exit at market close 21:59)'
+    )
+
+    # Apply JSON config as defaults (CLI args will override these)
+    if config:
+        timeframes = config.get('timeframes', {})
+        backtest_cfg = config.get('backtest', {})
+        output_cfg = config.get('output', {})
+
+        parser.set_defaults(
+            symbol=config.get('symbol', 'TSLA'),
+            high_tf=timeframes.get('high', '1h'),
+            mid_tf=timeframes.get('mid', '5min'),
+            low_tf=timeframes.get('low', '1min'),
+            initial_capital=backtest_cfg.get('initial_capital', 10000.0),
+            no_backtest=not backtest_cfg.get('enabled', True),
+            hold_overnight=backtest_cfg.get('hold_overnight', False),
+            visualize=output_cfg.get('visualize', False),
+            export_journal=output_cfg.get('export_journal', 'auto'),
+        )
 
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
+    high_tf = args.high_tf
+    mid_tf = args.mid_tf
+    low_tf = args.low_tf
+
+    # Create timeframe config for display
+    timeframe_config = {
+        'high': high_tf.upper(),
+        'mid': mid_tf.upper(),
+        'low': low_tf.upper()
+    }
 
     print("\n" + "="*80)
     print(f"{symbol} MULTI-TIMEFRAME STRATEGY ANALYSIS")
+    print(f"Timeframes: {high_tf} / {mid_tf} / {low_tf}")
     print("="*80 + "\n")
 
     # Step 1: Load data (force refresh to get latest)
     print(f"📂 Downloading fresh {symbol} data for all timeframes...")
     loader = DataLoader(symbol=symbol)
 
-    df_1h = loader.get_data('1h', force_refresh=False)
-    df_5m = loader.get_data('5min', force_refresh=False)
-    df_1m = loader.get_data('1min', force_refresh=False)
+    df_high = loader.get_data(high_tf, force_refresh=False)
+    df_mid = loader.get_data(mid_tf, force_refresh=False)
+    df_low = loader.get_data(low_tf, force_refresh=False)
 
-    print(f"  ✓ 1H:  {len(df_1h)} candles")
-    print(f"  ✓ 5M:  {len(df_5m)} candles")
-    print(f"  ✓ 1M:  {len(df_1m)} candles")
+    print(f"  ✓ {high_tf.upper()}:  {len(df_high)} candles")
+    print(f"  ✓ {mid_tf.upper()}:  {len(df_mid)} candles")
+    print(f"  ✓ {low_tf.upper()}:  {len(df_low)} candles")
 
     # Step 2: Initialize strategy
     print("\n🔧 Initializing strategy engine...")
-    strategy = MultiTimeframeStrategy(df_1h, df_5m, df_1m)
+    strategy = MultiTimeframeStrategy(df_high, df_mid, df_low, timeframe_config)
 
     # Step 3: Scan for signals
     print("\n🔍 Scanning for trade setups...")
@@ -328,9 +404,10 @@ def main():
         backtester = Backtester.from_strategy(
             strategy,
             initial_capital=args.initial_capital,
-            symbol=symbol
+            symbol=symbol,
+            intraday_only=not args.hold_overnight
         )
-        results = backtester.run(signals)
+        _results = backtester.run(signals)
         backtester.print_summary()
 
         if args.export_journal:

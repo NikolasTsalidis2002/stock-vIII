@@ -13,8 +13,10 @@ Output:
 
 import sys
 import os
+import json
 import argparse
 import pandas as pd
+from pathlib import Path
 
 # Add src directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -24,8 +26,25 @@ from data_loader import DataLoader
 from src.tradingview_visualizer import TradingViewVisualizer
 
 
+def load_config():
+    """Load configuration from JSON file."""
+    config_path = Path(__file__).parent.parent / 'config' / 'strategy_config.json'
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            print(f"Loaded config from: {config_path}")
+            return config
+        except json.JSONDecodeError as e:
+            print(f"Warning: Invalid JSON in config file: {e}")
+            return {}
+    return {}
+
+
 def main():
     """Main execution."""
+    config = load_config()
+
     parser = argparse.ArgumentParser(
         description='1H Candle-by-Candle Walkthrough using TradingView Charts'
     )
@@ -35,6 +54,11 @@ def main():
         default='TSLA',
         help='Stock symbol to analyze (default: TSLA)'
     )
+
+    # Apply JSON config as defaults
+    if config:
+        parser.set_defaults(symbol=config.get('symbol', 'TSLA'))
+
     args = parser.parse_args()
     symbol = args.symbol.upper()
 

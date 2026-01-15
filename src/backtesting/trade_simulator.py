@@ -1,7 +1,7 @@
 """
 Trade execution simulator using walk-forward methodology.
 
-Walks through 1M candles from entry timestamp to determine
+Walks through low timeframe candles from entry timestamp to determine
 whether TP or SL was hit first.
 """
 
@@ -15,10 +15,10 @@ from .models import TradeResult, TradeOutcome, ExitType
 
 class TradeSimulator:
     """
-    Simulates trade execution by walking forward through 1M price data.
+    Simulates trade execution by walking forward through low timeframe price data.
 
     Key features:
-    - Uses 1M timeframe for precise exit detection
+    - Uses low timeframe for precise exit detection
     - Handles price gaps (open beyond TP/SL)
     - Tracks maximum adverse/favorable excursion
     - Supports compounding position sizing
@@ -26,21 +26,24 @@ class TradeSimulator:
 
     def __init__(
         self,
-        df_1m: pd.DataFrame,
+        df_low: pd.DataFrame,
         initial_capital: float = 10000.0,
-        max_trade_duration_hours: int = 24
+        max_trade_duration_hours: int = 24,
+        intraday_only: bool = True
     ) -> None:
         """
         Initialize trade simulator.
 
         Args:
-            df_1m: 1M OHLCV DataFrame with datetime index
+            df_low: Low timeframe OHLCV DataFrame with datetime index
             initial_capital: Starting capital (default $10,000)
             max_trade_duration_hours: Max hours before timeout (default 24h)
+            intraday_only: If True, exit at market close (21:59). If False, allow overnight holding.
         """
-        self.df_1m = df_1m
+        self.df_low = df_low
         self.initial_capital = initial_capital
         self.max_trade_duration = timedelta(hours=max_trade_duration_hours)
+        self.intraday_only = intraday_only
 
     def simulate_trade(
         self,
@@ -112,9 +115,9 @@ class TradeSimulator:
         # Market close time (22:00 Madrid = 16:00 ET)
         MARKET_CLOSE_HOUR = 22
 
-        for idx in range(start_idx, len(self.df_1m)):
-            candle = self.df_1m.iloc[idx]
-            candle_time = self.df_1m.index[idx]
+        for idx in range(start_idx, len(self.df_low)):
+            candle = self.df_low.iloc[idx]
+            candle_time = self.df_low.index[idx]
             candles_scanned += 1
 
             # Check timeout (24h max)
@@ -167,17 +170,17 @@ class TradeSimulator:
                 break
 
             # Check for market close - exit at end of trading day (21:59 Madrid = ~4PM ET)
+            # Only applies if intraday_only is True
             # Only check after TP/SL so we can still hit targets on the close candle
-            # Use == to enforce same-day exit (intraday only)
-            # Last candle of each day is at 21:59, so check for that
-            if (candle_time.hour == 21 and
-                candle_time.minute == 59 and
-                candle_time.date() == entry_time.date()):
-                exit_price = candle['close']
-                exit_time = candle_time
-                exit_candle_idx = idx
-                exit_type = ExitType.TIMEOUT
-                break
+            if self.intraday_only:
+                if (candle_time.hour == 21 and
+                    candle_time.minute == 59 and
+                    candle_time.date() == entry_time.date()):
+                    exit_price = candle['close']
+                    exit_time = candle_time
+                    exit_candle_idx = idx
+                    exit_type = ExitType.TIMEOUT
+                    break
 
             # Update excursions (no exit yet)
             if direction == 'long':
@@ -192,10 +195,10 @@ class TradeSimulator:
 
         # If we exited the loop without finding exit
         if exit_price is None:
-            last_candle = self.df_1m.iloc[-1]
+            last_candle = self.df_low.iloc[-1]
             exit_price = last_candle['close']
-            exit_time = self.df_1m.index[-1]
-            exit_candle_idx = len(self.df_1m) - 1
+            exit_time = self.df_low.index[-1]
+            exit_candle_idx = len(self.df_low) - 1
             exit_type = ExitType.TIMEOUT
 
         # Calculate P&L
@@ -254,16 +257,16 @@ class TradeSimulator:
 
     def _find_start_index(self, entry_time: datetime) -> Optional[int]:
         """Find the index in df_1m at or after entry_time."""
-        if entry_time in self.df_1m.index:
-            return self.df_1m.index.get_loc(entry_time)
+        if entry_time in self.df_low.index:
+            return self.df_low.index.get_loc(entry_time)
 
         # Find nearest candle at or after entry
-        mask = self.df_1m.index >= entry_time
+        mask = self.df_low.index >= entry_time
         if not mask.any():
             return None
 
-        start_time = self.df_1m.index[mask][0]
-        return self.df_1m.index.get_loc(start_time)
+        start_time = self.df_low.index[mask][0]
+        return self.df_low.index.get_loc(start_time)
 
     def _check_gap_exit(
         self,

@@ -1,5 +1,5 @@
 """
-Liquidity sweep detection and invalidation checking on 1H timeframe.
+Liquidity sweep detection and invalidation checking on high timeframe.
 
 Handles progressive liquidity sweep detection and validation of sweeps
 during the strategy workflow.
@@ -16,7 +16,7 @@ from .models import SweepInfo
 
 class LiquidityDetector:
     """
-    Detects liquidity sweeps on 1H timeframe.
+    Detects liquidity sweeps on high timeframe.
 
     Responsibilities:
     - Progressive liquidity sweep detection
@@ -25,21 +25,21 @@ class LiquidityDetector:
 
     def __init__(
         self,
-        df_1h: pd.DataFrame,
-        inflexions_1h: pd.DataFrame,
-        bos_1h: pd.DataFrame
+        df_high: pd.DataFrame,
+        inflexions_high: pd.DataFrame,
+        bos_high: pd.DataFrame
     ) -> None:
         """
-        Initialize with 1H data and indicators.
+        Initialize with high timeframe data and indicators.
 
         Args:
-            df_1h: 1H OHLCV DataFrame with datetime index
-            inflexions_1h: Pre-calculated inflexion points
-            bos_1h: Pre-calculated BOS data
+            df_high: High TF OHLCV DataFrame with datetime index
+            inflexions_high: Pre-calculated inflexion points
+            bos_high: Pre-calculated BOS data
         """
-        self.df_1h = df_1h
-        self.inflexions_1h = inflexions_1h
-        self.bos_1h = bos_1h
+        self.df_high = df_high
+        self.inflexions_high = inflexions_high
+        self.bos_high = bos_high
 
     def detect_all_sweeps(self) -> List[SweepInfo]:
         """
@@ -54,15 +54,15 @@ class LiquidityDetector:
         Returns:
             List of SweepInfo objects for ALL sweeps found
         """
-        print(f"  Progressively scanning {len(self.df_1h)} candles for liquidity sweeps...")
+        print(f"  Progressively scanning {len(self.df_high)} candles for liquidity sweeps...")
 
         all_sweeps = []
         seen_sweeps = set()  # Track (inflexion_idx, sweep_type) to avoid duplicates
 
         # Scan progressively (EXACT same as walkthrough lines 652-662)
-        for i in range(len(self.df_1h)):
+        for i in range(len(self.df_high)):
             # Get slice up to current candle ONLY (no future data)
-            df_slice = self.df_1h.iloc[:i+1]
+            df_slice = self.df_high.iloc[:i+1]
 
             # Calculate indicators on this slice (same as walkthrough line 55)
             inflexions_slice = smc_custom.inflexion_points(df_slice)
@@ -89,11 +89,11 @@ class LiquidityDetector:
                         else:
                             new_low_sweeps.append((j, level))
 
-            timestamp = self.df_1h.index[i]
+            timestamp = self.df_high.index[i]
 
             # Check for DUAL SWEEP: same candle sweeps both high AND low
             if new_high_sweeps and new_low_sweeps:
-                candle = self.df_1h.iloc[i]
+                candle = self.df_high.iloc[i]
                 is_green = candle['close'] > candle['open']
 
                 # Use closest levels if multiple
@@ -181,7 +181,7 @@ class LiquidityDetector:
             True if broken (Respected == False) by end_time, False if still valid
         """
         # Only use data UP TO end_time (no future data leakage)
-        df_slice = self.df_1h.loc[:end_time]
+        df_slice = self.df_high.loc[:end_time]
 
         # Calculate inflexions on this time-limited slice
         inflexions_slice = smc_custom.inflexion_points(df_slice)

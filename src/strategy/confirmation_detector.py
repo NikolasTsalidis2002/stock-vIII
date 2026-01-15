@@ -1,5 +1,5 @@
 """
-Final confirmation detection (BOS/IFVG) on 1M timeframe.
+Final confirmation detection (BOS/IFVG) on low timeframe.
 
 Handles detection of Break of Structure and Inverse Fair Value Gaps
 that provide final entry confirmation.
@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 
 class ConfirmationDetector:
     """
-    Detects final confirmation (BOS or IFVG) on 1M.
+    Detects final confirmation (BOS or IFVG) on low TF.
 
     Responsibilities:
     - BOS detection in entry direction
@@ -22,24 +22,24 @@ class ConfirmationDetector:
 
     def __init__(
         self,
-        df_1m: pd.DataFrame,
-        bos_1m: pd.DataFrame,
-        fvg_1m: pd.DataFrame,
-        inflexions_1m: pd.DataFrame
+        df_low: pd.DataFrame,
+        bos_low: pd.DataFrame,
+        fvg_low: pd.DataFrame,
+        inflexions_low: pd.DataFrame
     ) -> None:
         """
-        Initialize with 1M data and indicators.
+        Initialize with low TF data and indicators.
 
         Args:
-            df_1m: 1M OHLCV DataFrame with datetime index
-            bos_1m: Pre-calculated BOS data
-            fvg_1m: Pre-calculated FVG data
-            inflexions_1m: Pre-calculated inflexion points
+            df_low: Low TF OHLCV DataFrame with datetime index
+            bos_low: Pre-calculated BOS data
+            fvg_low: Pre-calculated FVG data
+            inflexions_low: Pre-calculated inflexion points
         """
-        self.df_1m = df_1m
-        self.bos_1m = bos_1m
-        self.fvg_1m = fvg_1m
-        self.inflexions_1m = inflexions_1m
+        self.df_low = df_low
+        self.bos_low = bos_low
+        self.fvg_low = fvg_low
+        self.inflexions_low = inflexions_low
 
     def detect_confirmation_at_candle(
         self,
@@ -56,14 +56,14 @@ class ConfirmationDetector:
         Returns:
             (timestamp, confirmation_type, price) where type is 'BOS' or 'IFVG'
         """
-        idx_1m = self.df_1m.index.get_loc(time_1m)
+        idx_1m = self.df_low.index.get_loc(time_1m)
 
         # Check BOS at this candle
         target_bos = 1 if entry_direction == 'long' else -1
-        bos_value = self.bos_1m['BOS'].iloc[idx_1m]
+        bos_value = self.bos_low['BOS'].iloc[idx_1m]
 
         if not np.isnan(bos_value) and bos_value == target_bos:
-            level = self.bos_1m['Level'].iloc[idx_1m]
+            level = self.bos_low['Level'].iloc[idx_1m]
             return (time_1m, 'BOS', level)
 
         # Check IFVG at this candle
@@ -72,7 +72,7 @@ class ConfirmationDetector:
         target_fvg = -1 if entry_direction == 'long' else 1
 
         # Only check FVGs disrespected at this specific index
-        local_fvg = self.fvg_1m.loc[self.fvg_1m['StatusIndex'] == idx_1m]
+        local_fvg = self.fvg_low.loc[self.fvg_low['StatusIndex'] == idx_1m]
 
         for i in range(len(local_fvg)):
             fvg_value = local_fvg['FVG'].iloc[i]

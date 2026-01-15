@@ -32,7 +32,7 @@ class EquilibriumValidator:
 
     def __init__(
         self,
-        df_5m: pd.DataFrame,
+        df_mid: pd.DataFrame,
         swept_level: float,
         entry_direction: str
     ) -> None:
@@ -40,11 +40,11 @@ class EquilibriumValidator:
         Initialize equilibrium validator.
 
         Args:
-            df_5m: 5M OHLCV DataFrame with datetime index
-            swept_level: Price of the swept liquidity (1H)
+            df_mid: Mid TF OHLCV DataFrame with datetime index
+            swept_level: Price of the swept liquidity (high TF)
             entry_direction: 'long' or 'short'
         """
-        self.df_5m = df_5m
+        self.df_mid = df_mid
         self.swept_level = swept_level
         self.entry_direction = entry_direction
 
@@ -83,18 +83,18 @@ class EquilibriumValidator:
             (trigger_time, 'Equilibrium', trigger_price, state) or None
         """
         # Get 5M candles in window
-        mask = (self.df_5m.index >= start_time) & (self.df_5m.index <= end_time)
-        window_candles = self.df_5m[mask]
+        mask = (self.df_mid.index >= start_time) & (self.df_mid.index <= end_time)
+        window_candles = self.df_mid[mask]
 
         if len(window_candles) == 0:
             return None
 
         # Progressive scan
         for time_5m in window_candles.index:
-            candle = self.df_5m.loc[time_5m]
+            candle = self.df_mid.loc[time_5m]
 
             # Calculate inflection points progressively (up to current candle)
-            df_slice = self.df_5m.loc[:time_5m]
+            df_slice = self.df_mid.loc[:time_5m]
             inflexions = smc_custom.inflexion_points(df_slice)
 
             # Update running extreme from inflection points AFTER Event B
@@ -145,7 +145,7 @@ class EquilibriumValidator:
         # Scan ALL inflection points after Event B to find the extreme
         for i in range(len(inflexions)):
             inflexion_type = inflexions['InflexionType'].iloc[i]
-            inflexion_time = self.df_5m.index[i]
+            inflexion_time = self.df_mid.index[i]
 
             # Must be AFTER Event B and correct type
             if inflexion_time <= event_b_time:

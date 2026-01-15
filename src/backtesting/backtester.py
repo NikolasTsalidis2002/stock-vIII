@@ -21,10 +21,10 @@ class Backtester:
 
     Usage:
         # Option 1: Integrate with existing strategy
-        strategy = MultiTimeframeStrategy(df_1h, df_5m, df_1m)
+        strategy = MultiTimeframeStrategy(df_high, df_mid, df_low)
         signals = strategy.scan_for_signals(max_signals=10)
 
-        backtester = Backtester(df_1m=strategy.df_1m)
+        backtester = Backtester(df_low=strategy.df_low)
         results = backtester.run(signals)
         backtester.print_summary()
         backtester.export_journal("results/backtest_journal.csv")
@@ -36,29 +36,33 @@ class Backtester:
 
     def __init__(
         self,
-        df_1m: pd.DataFrame,
+        df_low: pd.DataFrame,
         initial_capital: float = 10000.0,
         max_trade_duration_hours: int = 24,
-        symbol: str = 'TSLA'
+        symbol: str = 'TSLA',
+        intraday_only: bool = True
     ) -> None:
         """
         Initialize backtester.
 
         Args:
-            df_1m: 1M OHLCV DataFrame for exit simulation
+            df_low: Low timeframe OHLCV DataFrame for exit simulation
             initial_capital: Starting capital (default $10,000)
             max_trade_duration_hours: Max hours before timeout
             symbol: Stock symbol being backtested
+            intraday_only: If True, exit at market close. If False, allow overnight holding.
         """
-        self.df_1m = df_1m
+        self.df_low = df_low
         self.initial_capital = initial_capital
         self.symbol = symbol.upper()
+        self.intraday_only = intraday_only
 
         # Initialize components
         self._simulator = TradeSimulator(
-            df_1m=df_1m,
+            df_low=df_low,
             initial_capital=initial_capital,
-            max_trade_duration_hours=max_trade_duration_hours
+            max_trade_duration_hours=max_trade_duration_hours,
+            intraday_only=intraday_only
         )
         self._tracker = PerformanceTracker(initial_capital=initial_capital)
         self._journal = TradeJournal(symbol=self.symbol)
@@ -74,7 +78,8 @@ class Backtester:
         strategy,  # MultiTimeframeStrategy
         initial_capital: float = 10000.0,
         max_trade_duration_hours: int = 24,
-        symbol: str = 'TSLA'
+        symbol: str = 'TSLA',
+        intraday_only: bool = True
     ) -> "Backtester":
         """
         Create backtester directly from strategy instance.
@@ -84,15 +89,17 @@ class Backtester:
             initial_capital: Starting capital
             max_trade_duration_hours: Max hours before timeout
             symbol: Stock symbol being backtested
+            intraday_only: If True, exit at market close. If False, allow overnight holding.
 
         Returns:
             Configured Backtester instance
         """
         return cls(
-            df_1m=strategy.df_1m,
+            df_low=strategy.df_low_original,
             initial_capital=initial_capital,
             max_trade_duration_hours=max_trade_duration_hours,
-            symbol=symbol
+            symbol=symbol,
+            intraday_only=intraday_only
         )
 
     def run(self, signals: List[TradeSignal]) -> List[TradeResult]:
