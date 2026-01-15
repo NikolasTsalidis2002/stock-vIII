@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 
 # Add parent directory to path to import smc
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from smartmoneyconcepts.smc import smc
-from smartmoneyconcepts.smc_custom import smc_custom
+from src.indicators.smc import smc
+from src.indicators.smc_custom import smc_custom
 
 
 class TSLAVisualizer:

@@ -24,8 +24,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data_loader import TSLADataLoader
-from smartmoneyconcepts.smc_custom import smc_custom
-from smartmoneyconcepts.smc import smc
+from src.indicators.smc_custom import smc_custom
+from src.indicators.smc import smc
 
 
 class OneHourAnalyzer:

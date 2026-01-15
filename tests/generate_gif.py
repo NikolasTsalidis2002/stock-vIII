@@ -11,7 +11,7 @@ from io import BytesIO
 from PIL import Image
 
 sys.path.append(os.path.abspath("../"))
-from smartmoneyconcepts.smc import smc
+from src.indicators.smc import smc
 
 def add_FVG(fig, df, fvg_data):
     for i in range(len(fvg_data["FVG"])):

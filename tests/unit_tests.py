@@ -8,7 +8,7 @@ import unittest
 
 BASE_DIR = os.path.dirname(__file__)
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "..")))
-from smartmoneyconcepts.smc import smc
+from src.indicators.smc import smc
 
 # define and import test data
 test_instrument = "EURUSD"
