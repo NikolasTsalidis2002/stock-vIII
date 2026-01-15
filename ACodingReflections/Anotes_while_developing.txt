@@ -13,4 +13,8 @@ Strategy imporvement: look at image "Anotes_while_developing.png" in the root of
 
 Indicators to add to smc script
 - Demand / supply zone for knowing where to sell
-- Equilibrium to know form where we can buy
+- Equilibrium to know form where we can buy - from where to where?
+    - When the 1 BOS liquifity occurs, find the lowst point there.
+    - After 5min BOS, we want the 5min to go back down, which event will consequently create a max
+    - The equlibrium must be set between this min and max.
+    - Our 5min part II is to go down to the premium area.
