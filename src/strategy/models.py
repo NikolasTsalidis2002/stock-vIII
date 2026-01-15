@@ -23,10 +23,16 @@ class StrategyState(Enum):
 class SweepInfo:
     """Information about a detected liquidity sweep."""
     candle_idx: int
-    sweep_type: str  # 'high' or 'low'
+    sweep_type: str  # 'high', 'low', 'dual_short', or 'dual_long'
     swept_level: float
     inflexion_idx: int
     timestamp: datetime
+    # Dual sweep fields (when candle sweeps both high AND low liquidity)
+    is_dual_sweep: bool = False
+    dual_high_level: Optional[float] = None
+    dual_low_level: Optional[float] = None
+    dual_high_inflexion_idx: Optional[int] = None
+    dual_low_inflexion_idx: Optional[int] = None
 
 
 @dataclass

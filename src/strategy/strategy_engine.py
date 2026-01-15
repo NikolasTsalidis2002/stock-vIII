@@ -166,8 +166,7 @@ class StrategyEngine:
                     break
 
             # Look for confirmation progressively
-            confirmation_candidate = self._confirmation_detector.detect_final_confirmation(
-                start_1m,
+            confirmation_candidate = self._confirmation_detector.detect_confirmation_at_candle(
                 time_1m_current,
                 entry_direction
             )
@@ -245,12 +244,20 @@ class StrategyEngine:
             print(f"\n  Analyzing sweep at {time_1h_sweep} (1H trend: {trend_1h})")
 
             # Determine entry direction based on how liquidity was swept
-            sweep_candle_close = self._tm.df_1h['close'].iloc[sweep_idx]
-
-            if sweep_candle_close > swept_level:
-                entry_direction = 'long'
+            if sweep.is_dual_sweep:
+                # Dual sweep: direction already determined by candle color in detector
+                entry_direction = sweep.sweep_type.replace('dual_', '')  # 'dual_short' → 'short'
+                print(f"    🔄 Dual liquidity sweep detected")
+                print(f"       High level: ${sweep.dual_high_level:.2f}, Low level: ${sweep.dual_low_level:.2f}")
+                print(f"       Direction from candle color: {entry_direction.upper()}")
             else:
-                entry_direction = 'short'
+                # Normal single sweep logic
+                sweep_candle_close = self._tm.df_1h['close'].iloc[sweep_idx]
+
+                if sweep_candle_close > swept_level:
+                    entry_direction = 'long'
+                else:
+                    entry_direction = 'short'
 
             # Get market close time for this trading day
             market_close = self._tm.get_market_close_for_day(time_1h_sweep)
@@ -316,7 +323,7 @@ class StrategyEngine:
 
                 # State 1: Looking for Event B
                 if event_b is None:
-                    event_b_candidate = self._event_b_detector.search_for_event_b(start_5m, time_5m_current, entry_direction)
+                    event_b_candidate = self._event_b_detector.search_for_event_b_at_candle(time_5m_current, entry_direction)
 
                     if event_b_candidate is not None:
                         event_b = event_b_candidate
@@ -360,9 +367,9 @@ class StrategyEngine:
                 last_analysis_end_time = time_5m_current if 'time_5m_current' in dir() else end_5m
                 continue
 
-            # Handle new sweep occurred during 5M scan - abandon and process new sweep
+            # Handle new sweep occurred during 5M scan - abandon but DON'T update last_analysis_end_time
+            # The new sweep that triggered abandonment should be processed, not blocked
             if new_sweep_occurred:
-                last_analysis_end_time = time_5m_current if 'time_5m_current' in dir() else end_5m
                 continue
 
             if event_b is None:
@@ -493,9 +500,9 @@ class StrategyEngine:
                 last_analysis_end_time = last_time_scanned
                 continue
 
-            # Handle new sweep occurred during 1M scan - abandon and process new sweep
+            # Handle new sweep occurred during 1M scan - abandon but DON'T update last_analysis_end_time
+            # The new sweep that triggered abandonment should be processed, not blocked
             if new_sweep_occurred:
-                last_analysis_end_time = last_time_scanned
                 continue
 
             # Handle no confirmation found - create partial setup

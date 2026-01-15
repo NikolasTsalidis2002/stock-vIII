@@ -5,9 +5,11 @@ Replaces FVG/Demand Zone validation with dynamic Fibonacci-based equilibrium zon
 """
 
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from typing import Optional, Tuple
 
+from indicators.smc_custom import smc_custom
 from .models import EquilibriumState
 
 
@@ -48,11 +50,14 @@ class EquilibriumValidator:
 
         # Initialize state
         if entry_direction == 'short':
-            self._max_level = swept_level  # Fixed
-            self._min_level = float('inf')  # Will track running min
+            self._max_level = swept_level  # Fixed (swept high)
+            self._min_level = float('inf')  # Will track running min from inflection points
         else:  # long
-            self._min_level = swept_level  # Fixed
-            self._max_level = float('-inf')  # Will track running max
+            self._min_level = swept_level  # Fixed (swept low)
+            self._max_level = float('-inf')  # Will track running max from inflection points
+
+        # Track confirmed inflection points for running extreme
+        self._confirmed_extreme_level = None
 
         self._equilibrium = None
         self._in_target_zone = False
@@ -67,8 +72,8 @@ class EquilibriumValidator:
         """
         Progressive scan for price entering equilibrium zone.
 
-        Scans candle-by-candle updating running min/max and checking
-        if price enters the target zone.
+        Scans candle-by-candle, using INFLECTION POINTS for running extreme.
+        Only calculates equilibrium after a confirmed inflection point forms.
 
         Args:
             start_time: Start of 5M window (after Event B)
@@ -88,10 +93,18 @@ class EquilibriumValidator:
         for time_5m in window_candles.index:
             candle = self.df_5m.loc[time_5m]
 
-            # Update running extreme
-            self._update_running_extreme(candle['low'], candle['high'])
+            # Calculate inflection points progressively (up to current candle)
+            df_slice = self.df_5m.loc[:time_5m]
+            inflexions = smc_custom.inflexion_points(df_slice)
 
-            # Calculate equilibrium
+            # Update running extreme from inflection points AFTER Event B
+            self._update_running_extreme_from_inflexions(inflexions, start_time)
+
+            # Only calculate equilibrium if we have a confirmed inflection point
+            if self._confirmed_extreme_level is None:
+                continue
+
+            # Calculate equilibrium using confirmed inflection point
             self._equilibrium = self._calculate_equilibrium()
 
             # Check if price enters target zone
@@ -112,18 +125,46 @@ class EquilibriumValidator:
 
         return None
 
-    def _update_running_extreme(
+    def _update_running_extreme_from_inflexions(
         self,
-        candle_low: float,
-        candle_high: float
+        inflexions: pd.DataFrame,
+        event_b_time: datetime
     ) -> None:
-        """Update running min/max based on new candle data."""
-        if self.entry_direction == 'short':
-            # For SHORT: track running minimum
-            self._min_level = min(self._min_level, candle_low)
-        else:  # long
-            # For LONG: track running maximum
-            self._max_level = max(self._max_level, candle_high)
+        """
+        Find the lowest/highest inflection point AFTER Event B.
+
+        For SHORT: look for convex (valley) inflection points (type = -1)
+        For LONG: look for concave (peak) inflection points (type = 1)
+
+        Args:
+            inflexions: DataFrame of inflection points
+            event_b_time: Timestamp of Event B (start of search window)
+        """
+        target_type = -1 if self.entry_direction == 'short' else 1
+
+        # Scan ALL inflection points after Event B to find the extreme
+        for i in range(len(inflexions)):
+            inflexion_type = inflexions['InflexionType'].iloc[i]
+            inflexion_time = self.df_5m.index[i]
+
+            # Must be AFTER Event B and correct type
+            if inflexion_time <= event_b_time:
+                continue
+
+            if np.isnan(inflexion_type) or inflexion_type != target_type:
+                continue
+
+            level = inflexions['Level'].iloc[i]
+
+            # Update if this is a better extreme (lowest for SHORT, highest for LONG)
+            if self.entry_direction == 'short':
+                if self._confirmed_extreme_level is None or level < self._confirmed_extreme_level:
+                    self._confirmed_extreme_level = level
+                    self._min_level = level
+            else:  # long
+                if self._confirmed_extreme_level is None or level > self._confirmed_extreme_level:
+                    self._confirmed_extreme_level = level
+                    self._max_level = level
 
     def _calculate_equilibrium(self) -> float:
         """Calculate current equilibrium level."""

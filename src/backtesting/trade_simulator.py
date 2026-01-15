@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 
 from src.strategy.models import TradeSignal
-from .models import TradeResult, TradeOutcome
+from .models import TradeResult, TradeOutcome, ExitType
 
 
 class TradeSimulator:
@@ -81,7 +81,7 @@ class TradeSimulator:
         # Initialize tracking variables
         exit_price = None
         exit_time = None
-        outcome = TradeOutcome.TIMEOUT
+        exit_type = ExitType.TIMEOUT  # How the trade exited
         exit_candle_idx = None
         gap_exit = False
 
@@ -112,7 +112,7 @@ class TradeSimulator:
                 exit_price = candle['close']
                 exit_time = candle_time
                 exit_candle_idx = idx
-                outcome = TradeOutcome.TIMEOUT
+                exit_type = ExitType.TIMEOUT
                 break
 
             candle_open = candle['open']
@@ -127,7 +127,7 @@ class TradeSimulator:
                 exit_price = candle_open
                 exit_time = candle_time
                 exit_candle_idx = idx
-                outcome = gap_result
+                exit_type = gap_result
                 gap_exit = True
                 break
 
@@ -141,19 +141,19 @@ class TradeSimulator:
                 exit_price = sl_price
                 exit_time = candle_time
                 exit_candle_idx = idx
-                outcome = TradeOutcome.LOSS
+                exit_type = ExitType.SL_HIT
                 break
             elif tp_hit:
                 exit_price = tp_price
                 exit_time = candle_time
                 exit_candle_idx = idx
-                outcome = TradeOutcome.WIN
+                exit_type = ExitType.TP_HIT
                 break
             elif sl_hit:
                 exit_price = sl_price
                 exit_time = candle_time
                 exit_candle_idx = idx
-                outcome = TradeOutcome.LOSS
+                exit_type = ExitType.SL_HIT
                 break
 
             # Update excursions (no exit yet)
@@ -173,7 +173,7 @@ class TradeSimulator:
             exit_price = last_candle['close']
             exit_time = self.df_1m.index[-1]
             exit_candle_idx = len(self.df_1m) - 1
-            outcome = TradeOutcome.TIMEOUT
+            exit_type = ExitType.TIMEOUT
 
         # Calculate P&L
         if direction == 'long':
@@ -182,6 +182,9 @@ class TradeSimulator:
         else:  # short
             pnl_dollars = (entry_price - exit_price) * shares
             pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+
+        # Determine outcome based on P&L (not exit type)
+        outcome = TradeOutcome.WIN if pnl_dollars > 0 else TradeOutcome.LOSS
 
         # Calculate R-multiple
         risk_per_share = abs(entry_price - sl_price)
@@ -208,6 +211,7 @@ class TradeSimulator:
             exit_price=exit_price,
             exit_time=exit_time,
             outcome=outcome,
+            exit_type=exit_type,
             capital_before=current_capital,
             position_size_usd=position_size,
             shares_traded=shares,
@@ -244,18 +248,18 @@ class TradeSimulator:
         tp_price: float,
         sl_price: float,
         direction: str
-    ) -> Optional[TradeOutcome]:
+    ) -> Optional[ExitType]:
         """Check if candle opened beyond TP or SL (gap)."""
         if direction == 'long':
             if candle_open >= tp_price:
-                return TradeOutcome.WIN
+                return ExitType.TP_HIT
             elif candle_open <= sl_price:
-                return TradeOutcome.LOSS
+                return ExitType.SL_HIT
         else:  # short
             if candle_open <= tp_price:
-                return TradeOutcome.WIN
+                return ExitType.TP_HIT
             elif candle_open >= sl_price:
-                return TradeOutcome.LOSS
+                return ExitType.SL_HIT
         return None
 
     def _check_candle_crosses(
@@ -296,7 +300,8 @@ class TradeSimulator:
             stop_loss_price=signal.stop_loss_price,
             exit_price=None,
             exit_time=None,
-            outcome=TradeOutcome.TIMEOUT,
+            outcome=TradeOutcome.LOSS,  # No P&L = LOSS
+            exit_type=ExitType.TIMEOUT,
             capital_before=current_capital,
             position_size_usd=current_capital,
             shares_traded=shares,
@@ -346,6 +351,13 @@ class TradeSimulator:
                 print(f"  Trade {i+1}: SKIPPED - Missing TP or SL")
                 continue
 
+            # Skip signals that overlap with previous trade (can only be in one position at a time)
+            if results:
+                previous_result = results[-1]
+                if previous_result.exit_time and signal.timestamp_entry < previous_result.exit_time:
+                    print(f"  Trade {i+1}: SKIPPED - Overlaps with previous trade")
+                    continue
+
             # Simulate this trade with current capital
             result = self.simulate_trade(signal, i, current_capital)
             results.append(result)
@@ -354,16 +366,17 @@ class TradeSimulator:
             current_capital = result.capital_after
 
             # Progress logging
-            outcome_symbol = {
-                TradeOutcome.WIN: "WIN ",
-                TradeOutcome.LOSS: "LOSS",
-                TradeOutcome.TIMEOUT: "TIME"
+            exit_symbol = {
+                ExitType.TP_HIT: "TP",
+                ExitType.SL_HIT: "SL",
+                ExitType.TIMEOUT: "TO"
             }
+            outcome_symbol = "WIN " if result.outcome == TradeOutcome.WIN else "LOSS"
 
             print(
                 f"  Trade {i+1}: {result.entry_direction.upper():5} "
                 f"${result.entry_price:>7.2f} -> ${result.exit_price:>7.2f} "
-                f"[{outcome_symbol[result.outcome]}] "
+                f"[{outcome_symbol}|{exit_symbol[result.exit_type]}] "
                 f"P&L: ${result.pnl_dollars:>+8.2f} "
                 f"Capital: ${result.capital_after:>10,.2f}"
             )

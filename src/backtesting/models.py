@@ -11,10 +11,16 @@ from typing import Optional
 
 
 class TradeOutcome(Enum):
-    """Possible trade outcomes."""
-    WIN = "win"           # Take profit hit first
-    LOSS = "loss"         # Stop loss hit first
-    TIMEOUT = "timeout"   # Neither TP nor SL hit by end of data
+    """Possible trade outcomes based on P&L."""
+    WIN = "win"           # Trade closed with positive P&L
+    LOSS = "loss"         # Trade closed with negative or zero P&L
+
+
+class ExitType(Enum):
+    """How the trade was exited."""
+    TP_HIT = "tp_hit"         # Take profit price was hit
+    SL_HIT = "sl_hit"         # Stop loss price was hit
+    TIMEOUT = "timeout"       # Neither TP nor SL hit (timeout or end of data)
 
 
 @dataclass
@@ -34,7 +40,8 @@ class TradeResult:
     # Exit details (calculated by simulator)
     exit_price: Optional[float]
     exit_time: Optional[datetime]
-    outcome: TradeOutcome
+    outcome: TradeOutcome            # WIN or LOSS based on P&L
+    exit_type: ExitType              # How the trade exited (TP_HIT, SL_HIT, TIMEOUT)
 
     # Position sizing (compounding)
     capital_before: float                # Capital before this trade
@@ -78,10 +85,14 @@ class PerformanceMetrics:
     total_trades: int
     winning_trades: int
     losing_trades: int
-    timeout_trades: int
+
+    # Exit type counts
+    tp_exits: int                        # Trades that hit take profit
+    sl_exits: int                        # Trades that hit stop loss
+    timeout_exits: int                   # Trades that timed out
 
     # Win/Loss metrics
-    win_rate: float                      # winning_trades / (winning + losing)
+    win_rate: float                      # winning_trades / total_trades
 
     # P&L metrics (compounding)
     initial_capital: float

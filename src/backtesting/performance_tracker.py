@@ -5,7 +5,7 @@ Calculates aggregate statistics from trade results.
 """
 
 from typing import List
-from .models import TradeResult, TradeOutcome, PerformanceMetrics
+from .models import TradeResult, TradeOutcome, ExitType, PerformanceMetrics
 
 
 class PerformanceTracker:
@@ -35,15 +35,18 @@ class PerformanceTracker:
         if not results:
             return self._empty_metrics()
 
-        # Basic counts
+        # Basic counts (based on P&L)
         total_trades = len(results)
         winning_trades = sum(1 for r in results if r.outcome == TradeOutcome.WIN)
         losing_trades = sum(1 for r in results if r.outcome == TradeOutcome.LOSS)
-        timeout_trades = sum(1 for r in results if r.outcome == TradeOutcome.TIMEOUT)
 
-        # Win rate (exclude timeouts from calculation)
-        closed_trades = winning_trades + losing_trades
-        win_rate = winning_trades / closed_trades if closed_trades > 0 else 0.0
+        # Exit type counts
+        tp_exits = sum(1 for r in results if r.exit_type == ExitType.TP_HIT)
+        sl_exits = sum(1 for r in results if r.exit_type == ExitType.SL_HIT)
+        timeout_exits = sum(1 for r in results if r.exit_type == ExitType.TIMEOUT)
+
+        # Win rate (simple: wins / total)
+        win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
 
         # P&L metrics
         final_capital = results[-1].capital_after if results else self.initial_capital
@@ -91,7 +94,9 @@ class PerformanceTracker:
             total_trades=total_trades,
             winning_trades=winning_trades,
             losing_trades=losing_trades,
-            timeout_trades=timeout_trades,
+            tp_exits=tp_exits,
+            sl_exits=sl_exits,
+            timeout_exits=timeout_exits,
             win_rate=win_rate,
             initial_capital=self.initial_capital,
             final_capital=final_capital,
@@ -158,13 +163,10 @@ class PerformanceTracker:
                 current_wins += 1
                 current_losses = 0
                 max_wins = max(max_wins, current_wins)
-            elif r.outcome == TradeOutcome.LOSS:
+            else:  # LOSS
                 current_losses += 1
                 current_wins = 0
                 max_losses = max(max_losses, current_losses)
-            else:  # TIMEOUT
-                current_wins = 0
-                current_losses = 0
 
         return max_wins, max_losses
 
@@ -174,7 +176,9 @@ class PerformanceTracker:
             total_trades=0,
             winning_trades=0,
             losing_trades=0,
-            timeout_trades=0,
+            tp_exits=0,
+            sl_exits=0,
+            timeout_exits=0,
             win_rate=0.0,
             initial_capital=self.initial_capital,
             final_capital=self.initial_capital,
@@ -208,8 +212,12 @@ class PerformanceTracker:
         print(f"  Total Trades:       {metrics.total_trades}")
         print(f"  Winning Trades:     {metrics.winning_trades}")
         print(f"  Losing Trades:      {metrics.losing_trades}")
-        print(f"  Timeout Trades:     {metrics.timeout_trades}")
         print(f"  Win Rate:           {metrics.win_rate:.1%}")
+
+        print("\n--- EXIT TYPE BREAKDOWN ---")
+        print(f"  TP Exits:           {metrics.tp_exits}")
+        print(f"  SL Exits:           {metrics.sl_exits}")
+        print(f"  Timeout Exits:      {metrics.timeout_exits}")
 
         print("\n--- PROFIT & LOSS (Compounding) ---")
         print(f"  Initial Capital:    ${metrics.initial_capital:,.2f}")

@@ -49,6 +49,7 @@ class LiquidityDetector:
         - Calculate indicators progressively (candle by candle)
         - Count ALL sweeps where Respected == True at each candle
         - Track when sweeps first appear
+        - DUAL SWEEP: If same candle sweeps both high AND low, use candle color for direction
 
         Returns:
             List of SweepInfo objects for ALL sweeps found
@@ -66,6 +67,10 @@ class LiquidityDetector:
             # Calculate indicators on this slice (same as walkthrough line 55)
             inflexions_slice = smc_custom.inflexion_points(df_slice)
 
+            # Track NEW sweeps at this candle (for dual sweep detection)
+            new_high_sweeps = []  # List of (inflexion_idx, level)
+            new_low_sweeps = []   # List of (inflexion_idx, level)
+
             # Find ALL sweeps at this moment (same as walkthrough line 61)
             for j in range(len(inflexions_slice)):
                 inflexion_type = inflexions_slice['InflexionType'].iloc[j]
@@ -79,15 +84,78 @@ class LiquidityDetector:
                     sweep_key = (j, sweep_type)
                     if sweep_key not in seen_sweeps:
                         seen_sweeps.add(sweep_key)
-                        timestamp = self.df_1h.index[i]
-                        print(f"  Found liquidity sweep at candle {i+1}: {timestamp} ({sweep_type}, level: ${level:.2f})")
-                        all_sweeps.append(SweepInfo(
-                            candle_idx=i,
-                            sweep_type=sweep_type,
-                            swept_level=level,
-                            inflexion_idx=j,
-                            timestamp=timestamp
-                        ))
+                        if sweep_type == 'high':
+                            new_high_sweeps.append((j, level))
+                        else:
+                            new_low_sweeps.append((j, level))
+
+            timestamp = self.df_1h.index[i]
+
+            # Check for DUAL SWEEP: same candle sweeps both high AND low
+            if new_high_sweeps and new_low_sweeps:
+                candle = self.df_1h.iloc[i]
+                is_green = candle['close'] > candle['open']
+
+                # Use closest levels if multiple
+                high_inflexion_idx, high_level = new_high_sweeps[0]
+                low_inflexion_idx, low_level = new_low_sweeps[0]
+
+                # Direction based on candle color
+                if is_green:
+                    entry_direction = 'short'  # Green + dual → Short
+                else:
+                    entry_direction = 'long'   # Red + dual → Long
+
+                sweep_type = f'dual_{entry_direction}'
+
+                print(f"  🔄 DUAL LIQUIDITY SWEEP at candle {i+1}: {timestamp}")
+                print(f"     High swept: ${high_level:.2f} (inflexion idx: {high_inflexion_idx})")
+                print(f"     Low swept: ${low_level:.2f} (inflexion idx: {low_inflexion_idx})")
+                print(f"     Candle color: {'GREEN' if is_green else 'RED'} (close={'>' if is_green else '<'}open)")
+                print(f"     → Entry direction: {entry_direction.upper()}")
+
+                # Use the level that matches our direction for swept_level
+                # For short: use the high level, For long: use the low level
+                if entry_direction == 'short':
+                    swept_level = high_level
+                    primary_inflexion_idx = high_inflexion_idx
+                else:
+                    swept_level = low_level
+                    primary_inflexion_idx = low_inflexion_idx
+
+                all_sweeps.append(SweepInfo(
+                    candle_idx=i,
+                    sweep_type=sweep_type,
+                    swept_level=swept_level,
+                    inflexion_idx=primary_inflexion_idx,
+                    timestamp=timestamp,
+                    is_dual_sweep=True,
+                    dual_high_level=high_level,
+                    dual_low_level=low_level,
+                    dual_high_inflexion_idx=high_inflexion_idx,
+                    dual_low_inflexion_idx=low_inflexion_idx
+                ))
+            else:
+                # Single sweeps (original logic)
+                for inflexion_idx, level in new_high_sweeps:
+                    print(f"  Found liquidity sweep at candle {i+1}: {timestamp} (high, level: ${level:.2f})")
+                    all_sweeps.append(SweepInfo(
+                        candle_idx=i,
+                        sweep_type='high',
+                        swept_level=level,
+                        inflexion_idx=inflexion_idx,
+                        timestamp=timestamp
+                    ))
+
+                for inflexion_idx, level in new_low_sweeps:
+                    print(f"  Found liquidity sweep at candle {i+1}: {timestamp} (low, level: ${level:.2f})")
+                    all_sweeps.append(SweepInfo(
+                        candle_idx=i,
+                        sweep_type='low',
+                        swept_level=level,
+                        inflexion_idx=inflexion_idx,
+                        timestamp=timestamp
+                    ))
 
         print(f"  Total sweeps found: {len(all_sweeps)}\n")
         return all_sweeps

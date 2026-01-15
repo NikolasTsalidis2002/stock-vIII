@@ -41,71 +41,48 @@ class ConfirmationDetector:
         self.fvg_1m = fvg_1m
         self.inflexions_1m = inflexions_1m
 
-    def detect_final_confirmation(
+    def detect_confirmation_at_candle(
         self,
-        start_time: datetime,
-        end_time: datetime,
+        time_1m: datetime,
         entry_direction: str
     ) -> Optional[Tuple[datetime, str, float]]:
         """
-        Detect final confirmation on 1M (BOS or IFVG in entry direction).
+        Check single 1M candle for confirmation (BOS or IFVG in entry direction).
 
         Args:
-            start_time: Start of 1M analysis window
-            end_time: End of 1M analysis window
+            time_1m: The specific candle timestamp to check
             entry_direction: 'long' or 'short'
 
         Returns:
             (timestamp, confirmation_type, price) where type is 'BOS' or 'IFVG'
         """
-        # Get 1M data in window
-        mask = (self.df_1m.index >= start_time) & (self.df_1m.index <= end_time)
-        window_indices = self.df_1m.index[mask]
+        idx_1m = self.df_1m.index.get_loc(time_1m)
 
-        if len(window_indices) == 0:
-            return None
-
-        # Target BOS direction
+        # Check BOS at this candle
         target_bos = 1 if entry_direction == 'long' else -1
+        bos_value = self.bos_1m['BOS'].iloc[idx_1m]
 
-        # Check for BOS
-        for time_1m in window_indices:
-            idx_1m = self.df_1m.index.get_loc(time_1m)
-            bos_value = self.bos_1m['BOS'].iloc[idx_1m]
+        if not np.isnan(bos_value) and bos_value == target_bos:
+            level = self.bos_1m['Level'].iloc[idx_1m]
+            return (time_1m, 'BOS', level)
 
-            if not np.isnan(bos_value) and bos_value == target_bos:
-                # Found BOS in entry direction
-                level = self.bos_1m['Level'].iloc[idx_1m]
-                return (time_1m, 'BOS', level)
-
-        # Check for IFVG (same logic as detect_ifvg_5m)
-        # Determine target FVG type (opposite to entry direction)
+        # Check IFVG at this candle
         # For long entry, we want bearish FVG (-1) that gets disrespected
         # For short entry, we want bullish FVG (1) that gets disrespected
         target_fvg = -1 if entry_direction == 'long' else 1
 
-        # Scan window indices for FVG disrespect
-        for time_1m in window_indices:
-            idx_1m = self.df_1m.index.get_loc(time_1m)
+        # Only check FVGs disrespected at this specific index
+        local_fvg = self.fvg_1m.loc[self.fvg_1m['StatusIndex'] == idx_1m]
 
-            # Check all FVGs to find ones disrespected at this index
-            for i in range(len(self.fvg_1m)):
-                fvg_value = self.fvg_1m['FVG'].iloc[i]
-                respected = self.fvg_1m['Respected'].iloc[i]
-                status_index = self.fvg_1m['StatusIndex'].iloc[i]
+        for i in range(len(local_fvg)):
+            fvg_value = local_fvg['FVG'].iloc[i]
+            respected = local_fvg['Respected'].iloc[i]
 
-                # Check if:
-                # 1. FVG exists at this row
-                # 2. It was disrespected (Respected == False)
-                # 3. Disrespect happened at current index (StatusIndex == idx_1m)
-                # 4. FVG type matches what we need
-                if (not np.isnan(fvg_value) and
-                    respected == False and
-                    status_index == idx_1m and
-                    fvg_value == target_fvg):
-
-                    # Found IFVG - FVG disrespected at this candle
-                    level = (self.fvg_1m['Top'].iloc[i] + self.fvg_1m['Bottom'].iloc[i]) / 2
-                    return (time_1m, 'IFVG', level)
+            if (not np.isnan(fvg_value) and
+                respected == False and
+                fvg_value == target_fvg):
+                # Found IFVG - FVG disrespected at this candle
+                level = (local_fvg['Top'].iloc[i] + local_fvg['Bottom'].iloc[i]) / 2
+                return (time_1m, 'IFVG', level)
 
         return None
