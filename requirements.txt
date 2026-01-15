@@ -1,0 +1,6 @@
+# Core dependencies for Smart Money Concepts Trading System
+pandas==2.3.3
+numpy==2.3.3
+numba>=0.58.1
+plotly==6.3.1
+requests==2.32.5

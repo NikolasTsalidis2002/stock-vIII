@@ -1,0 +1,13 @@
+- I ahve now added .vscode/launch.json to be able to debug the code. Configuration preference: Analyze Strategy
+
+Strategy imporvement: look at image "Anotes_while_developing.png" in the root of the project
+- 1h liquidity
+- 5min bos/ivfg
+- 5min equlibrium premiuim area reach
+- 1min bos/ifvg
+- Sell price demand zone on where the the start of the trend which caused the liquidity started. 
+    - Demand zone considered as:
+        - Last group of red candles and first green candle on "mountain" that caused the BOS if shorting
+        - Last group of green candles and first red candle on "mountain" that caused the BOS if longing
+
+
