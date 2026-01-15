@@ -424,3 +424,120 @@ class smc_custom:
         trend_start_series = pd.Series(trend_start_index, name="TrendStartIndex")
 
         return pd.concat([bos_series, level_series, broken_series, trend_series, trend_start_series], axis=1)
+
+    @classmethod
+    def ob(cls, ohlc: DataFrame, bos: DataFrame, inflexions: DataFrame) -> DataFrame:
+        """
+        Order Block - Detection based on broken inflection levels.
+
+        For each BOS, finds the inflection point that was broken and creates
+        an OB zone spanning from that inflection to the BOS.
+
+        Definition:
+        - Bearish OB (at bearish BOS, trend bullish→bearish):
+          - Zone from broken HIGH inflection to BOS
+          - Top = Level (the broken level)
+          - Bottom = min price in range
+
+        - Bullish OB (at bullish BOS, trend bearish→bullish):
+          - Zone from broken LOW inflection to BOS
+          - Bottom = Level (the broken level)
+          - Top = max price in range
+
+        Parameters:
+        ohlc: DataFrame - OHLCV data
+        bos: DataFrame - output from bos() (contains BOS, Level columns)
+        inflexions: DataFrame - output from inflexion_points()
+
+        Returns:
+        OB = 1 if bullish OB, -1 if bearish OB, NaN if none
+        Top = top of the order block zone
+        Bottom = bottom of the order block zone
+        StartIndex = index of the broken inflection point
+        EndIndex = index of the BOS
+
+        Example:
+        ```python
+        inflexions = smc_custom.inflexion_points(df)
+        bos = smc_custom.bos(df, inflexions)
+        ob_data = smc_custom.ob(df, bos, inflexions)
+
+        # Get all bullish OBs
+        bullish_obs = ob_data[ob_data['OB'] == 1]
+        # Get all bearish OBs
+        bearish_obs = ob_data[ob_data['OB'] == -1]
+        ```
+        """
+        n = len(ohlc)
+
+        # Extract price arrays
+        high_prices = ohlc["high"].values
+        low_prices = ohlc["low"].values
+
+        # Extract BOS data
+        bos_values = bos["BOS"].values
+
+        # Extract inflexion data
+        inflexion_types = inflexions["InflexionType"].values
+        inflexion_levels = inflexions["Level"].values
+
+        # Initialize output arrays
+        ob = np.full(n, np.nan, dtype=np.float32)
+        top_arr = np.full(n, np.nan, dtype=np.float32)
+        bottom_arr = np.full(n, np.nan, dtype=np.float32)
+        start_idx_arr = np.full(n, np.nan, dtype=np.float32)
+        end_idx_arr = np.full(n, np.nan, dtype=np.float32)
+
+        # Process each BOS event
+        for i in range(n):
+            if np.isnan(bos_values[i]):
+                continue
+
+            bos_type = bos_values[i]
+            bos_idx = i
+
+            # Simple approach: find the most recent relevant inflection
+            # - Bullish BOS broke a peak (type 1) → find most recent peak
+            # - Bearish BOS broke a valley (type -1) → find most recent valley
+            inflexion_idx = None
+            target_type = 1 if bos_type == 1 else -1  # Bullish BOS broke peak, Bearish broke valley
+
+            for j in range(i - 1, -1, -1):
+                if np.isnan(inflexion_types[j]):
+                    continue
+                if inflexion_types[j] == target_type:
+                    inflexion_idx = j
+                    break
+
+            if inflexion_idx is None:
+                continue
+
+            # Calculate OB zone from inflection to BOS
+            start_idx = inflexion_idx
+            end_idx = bos_idx
+            broken_level = inflexion_levels[inflexion_idx]
+
+            if bos_type == 1:  # Bullish BOS → Bullish OB
+                # Broke above a peak - OB from peak level down to lowest low in range
+                ob[start_idx] = 1
+                top_arr[start_idx] = broken_level
+                bottom_arr[start_idx] = min(low_prices[start_idx:end_idx + 1])
+                start_idx_arr[start_idx] = start_idx
+                end_idx_arr[start_idx] = end_idx
+
+            elif bos_type == -1:  # Bearish BOS → Bearish OB
+                # Broke below a valley - OB from highest high down to valley level
+                ob[start_idx] = -1
+                top_arr[start_idx] = max(high_prices[start_idx:end_idx + 1])
+                bottom_arr[start_idx] = broken_level
+                start_idx_arr[start_idx] = start_idx
+                end_idx_arr[start_idx] = end_idx
+
+        # Convert to Series
+        ob_series = pd.Series(ob, name="OB")
+        top_series = pd.Series(top_arr, name="Top")
+        bottom_series = pd.Series(bottom_arr, name="Bottom")
+        start_idx_series = pd.Series(start_idx_arr, name="StartIndex")
+        end_idx_series = pd.Series(end_idx_arr, name="EndIndex")
+
+        return pd.concat([ob_series, top_series, bottom_series, start_idx_series, end_idx_series], axis=1)

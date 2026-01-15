@@ -69,12 +69,14 @@ class TradingViewVisualizer:
         inflexions = smc_custom.inflexion_points(df_slice)
         bos = smc_custom.bos(df_slice, inflexions, close_break=True)
         fvg = smc.fvg(df_slice, join_consecutive=True)
+        ob = smc_custom.ob(df_slice, bos, inflexions)  # OBs based on broken inflections
 
         # Count statistics
         total_inflexions = inflexions['InflexionType'].notna().sum()
         liquidity_sweeps = ((inflexions['Respected'] == True) & inflexions['InflexionType'].notna()).sum()
         total_bos = bos['BOS'].notna().sum()
         total_fvg = fvg['FVG'].notna().sum()
+        total_ob = ob['OB'].notna().sum()
 
         # Convert OHLC data to format for TradingView
         candlestick_data = []
@@ -97,6 +99,21 @@ class TradingViewVisualizer:
                     'endTime': int(df_slice.index[x1].timestamp()),
                     'topPrice': float(fvg["Top"][i]),
                     'bottomPrice': float(fvg["Bottom"][i])
+                })
+
+        # Prepare Order Block data
+        ob_zones = []
+        for i in range(len(ob["OB"])):
+            if not np.isnan(ob["OB"].iloc[i]):
+                ob_type = ob["OB"].iloc[i]
+                end_idx = int(ob["EndIndex"].iloc[i]) if not np.isnan(ob["EndIndex"].iloc[i]) else len(df_slice) - 1
+                # OB zone extends from the broken inflection to the BOS
+                ob_zones.append({
+                    'startTime': int(df_slice.index[i].timestamp()),
+                    'endTime': int(df_slice.index[min(end_idx, len(df_slice) - 1)].timestamp()),
+                    'topPrice': float(ob["Top"].iloc[i]),
+                    'bottomPrice': float(ob["Bottom"].iloc[i]),
+                    'obType': int(ob_type)  # 1 = bullish, -1 = bearish
                 })
 
         # Prepare inflexion points data
@@ -211,6 +228,7 @@ class TradingViewVisualizer:
             'totalCandles': total_candles,
             'candleData': candlestick_data,
             'fvgZones': fvg_zones,
+            'obZones': ob_zones,
             'inflexionMarkers': inflexion_markers,
             'inflexionLines': inflexion_lines,
             'bosLines': bos_lines,
@@ -218,7 +236,8 @@ class TradingViewVisualizer:
                 'totalInflexions': int(total_inflexions),
                 'liquiditySweeps': int(liquidity_sweeps),
                 'totalBos': int(total_bos),
-                'totalFvg': int(total_fvg)
+                'totalFvg': int(total_fvg),
+                'totalOb': int(total_ob)
             },
             'currentTime': df_slice.index[-1].strftime('%Y-%m-%d %H:%M')
         }
@@ -428,6 +447,10 @@ class TradingViewVisualizer:
                     <span class="stat-label">FVG Zones</span>
                     <span class="stat-value" id="total-fvg">0</span>
                 </div>
+                <div class="stat-item">
+                    <span class="stat-label">Order Blocks</span>
+                    <span class="stat-value" id="total-ob">0</span>
+                </div>
             </div>
 
             <div class="legend">
@@ -447,6 +470,14 @@ class TradingViewVisualizer:
                 <div class="legend-item">
                     <div class="legend-marker" style="background-color: #ff0000; color: #fff;">✕</div>
                     <span>Inflexion (Broken)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-marker" style="background-color: rgba(0, 200, 255, 0.4); border: 1px solid #00c8ff;">▭</div>
+                    <span>Bullish OB (at Valley)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-marker" style="background-color: rgba(255, 140, 0, 0.4); border: 1px solid #ff8c00;">▭</div>
+                    <span>Bearish OB (at Peak)</span>
                 </div>
             </div>
         </div>
@@ -511,7 +542,7 @@ class TradingViewVisualizer:
 
         function drawFVGRectangles(fvgZones) {{
             updateSVGSize();
-            svg.selectAll('rect').remove();
+            svg.selectAll('rect.fvg').remove();
 
             const timeScale = chart.timeScale();
 
@@ -528,6 +559,7 @@ class TradingViewVisualizer:
                     const height = Math.abs(y2 - y1);
 
                     svg.append('rect')
+                        .attr('class', 'fvg')
                         .attr('x', x)
                         .attr('y', y)
                         .attr('width', width)
@@ -536,6 +568,41 @@ class TradingViewVisualizer:
                         .attr('stroke', '#ffeb3b')
                         .attr('stroke-width', 1)
                         .attr('stroke-dasharray', '4,4');
+                }}
+            }});
+        }}
+
+        function drawOBRectangles(obZones) {{
+            updateSVGSize();
+            svg.selectAll('rect.ob').remove();
+
+            const timeScale = chart.timeScale();
+
+            obZones.forEach(zone => {{
+                const x1 = timeScale.timeToCoordinate(zone.startTime);
+                const x2 = timeScale.timeToCoordinate(zone.endTime);
+                const y1 = candlestickSeries.priceToCoordinate(zone.topPrice);
+                const y2 = candlestickSeries.priceToCoordinate(zone.bottomPrice);
+
+                if (x1 !== null && x2 !== null && y1 !== null && y2 !== null) {{
+                    const x = Math.min(x1, x2);
+                    const y = Math.min(y1, y2);
+                    const width = Math.abs(x2 - x1);
+                    const height = Math.abs(y2 - y1);
+
+                    // Bullish OB (at valleys) = cyan/blue, Bearish OB (at peaks) = orange/red
+                    const fillColor = zone.obType === 1 ? 'rgba(0, 188, 212, 0.2)' : 'rgba(255, 87, 34, 0.2)';
+                    const strokeColor = zone.obType === 1 ? '#00bcd4' : '#ff5722';
+
+                    svg.append('rect')
+                        .attr('class', 'ob')
+                        .attr('x', x)
+                        .attr('y', y)
+                        .attr('width', width)
+                        .attr('height', height)
+                        .attr('fill', fillColor)
+                        .attr('stroke', strokeColor)
+                        .attr('stroke-width', 1);
                 }}
             }});
         }}
@@ -587,6 +654,7 @@ class TradingViewVisualizer:
             document.getElementById('liquidity-sweeps').textContent = stats.liquiditySweeps;
             document.getElementById('total-bos').textContent = stats.totalBos;
             document.getElementById('total-fvg').textContent = stats.totalFvg;
+            document.getElementById('total-ob').textContent = stats.totalOb;
         }}
 
         function showFrame(n) {{
@@ -602,8 +670,9 @@ class TradingViewVisualizer:
             drawInflexionLines(frame.inflexionLines);
             drawBosLines(frame.bosLines);
 
-            // Redraw FVG rectangles
+            // Redraw FVG and OB rectangles
             drawFVGRectangles(frame.fvgZones);
+            drawOBRectangles(frame.obZones);
 
             // Update stats
             updateStats(frame.stats, frame.currentTime);
@@ -653,6 +722,7 @@ class TradingViewVisualizer:
         chart.timeScale().subscribeVisibleLogicalRangeChange(() => {{
             const frame = allFrames[currentFrameIdx];
             drawFVGRectangles(frame.fvgZones);
+            drawOBRectangles(frame.obZones);
         }});
 
         // Add throttled redraw for mouse interactions (y-axis scaling)
@@ -664,6 +734,7 @@ class TradingViewVisualizer:
             redrawTimer = requestAnimationFrame(() => {{
                 const frame = allFrames[currentFrameIdx];
                 drawFVGRectangles(frame.fvgZones);
+                drawOBRectangles(frame.obZones);
                 redrawTimer = null;
             }});
         }}
@@ -680,6 +751,7 @@ class TradingViewVisualizer:
             chart.applyOptions({{ width: chartContainer.clientWidth, height: chartContainer.clientHeight }});
             const frame = allFrames[currentFrameIdx];
             drawFVGRectangles(frame.fvgZones);
+            drawOBRectangles(frame.obZones);
         }});
         resizeObserver.observe(chartDiv);
 
