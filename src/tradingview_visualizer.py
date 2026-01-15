@@ -54,7 +54,7 @@ class TradingViewVisualizer:
         if output_dir is None:
             current_file = Path(__file__)
             project_root = current_file.parent.parent
-            self.output_dir = project_root / 'results' / output_subdir
+            self.output_dir = project_root / 'results' / 'walkthroughs' / output_subdir
         else:
             self.output_dir = Path(output_dir)
 

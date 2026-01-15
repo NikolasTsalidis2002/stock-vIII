@@ -74,6 +74,13 @@ class TradeSimulator:
         sl_price = signal.stop_loss_price
         direction = signal.entry_direction
 
+        # Reject entries after market close (22:00 Madrid = 16:00 ET) - intraday only
+        MARKET_CLOSE_HOUR = 22
+        if entry_time.hour >= MARKET_CLOSE_HOUR:
+            return self._create_timeout_result(
+                signal, signal_index, current_capital, 0, 0.0, 0.0, 0
+            )
+
         # Calculate position size (full capital)
         position_size = current_capital
         shares = position_size / entry_price
@@ -102,12 +109,15 @@ class TradeSimulator:
         # Walk forward through 1M candles
         candles_scanned = 0
 
+        # Market close time (22:00 Madrid = 16:00 ET)
+        MARKET_CLOSE_HOUR = 22
+
         for idx in range(start_idx, len(self.df_1m)):
             candle = self.df_1m.iloc[idx]
             candle_time = self.df_1m.index[idx]
             candles_scanned += 1
 
-            # Check timeout
+            # Check timeout (24h max)
             if candle_time > timeout_time:
                 exit_price = candle['close']
                 exit_time = candle_time
@@ -154,6 +164,19 @@ class TradeSimulator:
                 exit_time = candle_time
                 exit_candle_idx = idx
                 exit_type = ExitType.SL_HIT
+                break
+
+            # Check for market close - exit at end of trading day (21:59 Madrid = ~4PM ET)
+            # Only check after TP/SL so we can still hit targets on the close candle
+            # Use == to enforce same-day exit (intraday only)
+            # Last candle of each day is at 21:59, so check for that
+            if (candle_time.hour == 21 and
+                candle_time.minute == 59 and
+                candle_time.date() == entry_time.date()):
+                exit_price = candle['close']
+                exit_time = candle_time
+                exit_candle_idx = idx
+                exit_type = ExitType.TIMEOUT
                 break
 
             # Update excursions (no exit yet)
@@ -360,6 +383,12 @@ class TradeSimulator:
 
             # Simulate this trade with current capital
             result = self.simulate_trade(signal, i, current_capital)
+
+            # Skip rejected trades (entry after market close)
+            if result.exit_price is None:
+                print(f"  Trade {i+1}: REJECTED - Entry after market close ({signal.timestamp_entry})")
+                continue
+
             results.append(result)
 
             # Update capital for next trade (compounding)

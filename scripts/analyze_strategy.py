@@ -271,7 +271,7 @@ def main():
         nargs='?',
         const='auto',
         default='auto',
-        help='Export trade journal to CSV (default: results/{symbol}_trades.csv)'
+        help='Export trade journal to CSV (default: results/trades/{symbol}_trades.csv)'
     )
     parser.add_argument(
         '--symbol',
@@ -336,7 +336,9 @@ def main():
         if args.export_journal:
             # Generate default path if 'auto'
             if args.export_journal == 'auto':
-                journal_path = f"results/{symbol.lower()}_trades.csv"
+                import os
+                os.makedirs("results/trades", exist_ok=True)
+                journal_path = f"results/trades/{symbol.lower()}_trades.csv"
             else:
                 journal_path = args.export_journal
             backtester.export_journal(journal_path)
