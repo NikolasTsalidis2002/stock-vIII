@@ -2,13 +2,13 @@
   "symbol": "AMZN",
   "timeframes": {
     "high": "1h",
-    "mid": "5min",
-    "low": "1min"
+    "mid": "15min",
+    "low": "5min"
   },
   "backtest": {
     "enabled": true,
     "initial_capital": 10000.0,
-    "hold_overnight": true
+    "hold_overnight": false
   },
   "output": {
     "visualize": false,

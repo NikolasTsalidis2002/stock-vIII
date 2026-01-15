@@ -366,8 +366,18 @@ def main():
 
     print("\n" + "="*80)
     print(f"{symbol} MULTI-TIMEFRAME STRATEGY ANALYSIS")
-    print(f"Timeframes: {high_tf} / {mid_tf} / {low_tf}")
-    print("="*80 + "\n")
+    print("="*80)
+
+    # Display configuration summary
+    print("\n📋 Configuration:")
+    print(f"  Symbol:           {symbol}")
+    print(f"  Timeframes:       {high_tf.upper()} (high) / {mid_tf.upper()} (mid) / {low_tf.upper()} (low)")
+    print(f"  Initial Capital:  ${args.initial_capital:,.2f}")
+    print(f"  Backtest:         {'Disabled' if args.no_backtest else 'Enabled'}")
+    print(f"  Hold Overnight:   {'Yes' if args.hold_overnight else 'No (intraday only)'}")
+    print(f"  Visualization:    {'Enabled' if args.visualize else 'Disabled'}")
+    print(f"  Export Journal:   {args.export_journal if args.export_journal else 'Disabled'}")
+    print("")
 
     # Step 1: Load data (force refresh to get latest)
     print(f"📂 Downloading fresh {symbol} data for all timeframes...")

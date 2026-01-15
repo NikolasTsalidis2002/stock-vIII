@@ -45,6 +45,9 @@ class TradeSimulator:
         self.max_trade_duration = timedelta(hours=max_trade_duration_hours)
         self.intraday_only = intraday_only
 
+        # Build lookup: date -> last candle timestamp for that day
+        self.last_candle_by_date = df_low.groupby(df_low.index.date).apply(lambda x: x.index.max()).to_dict()
+
     def simulate_trade(
         self,
         signal: TradeSignal,
@@ -169,13 +172,13 @@ class TradeSimulator:
                 exit_type = ExitType.SL_HIT
                 break
 
-            # Check for market close - exit at end of trading day (21:59 Madrid = ~4PM ET)
+            # Check for market close - exit at end of trading day
             # Only applies if intraday_only is True
             # Only check after TP/SL so we can still hit targets on the close candle
             if self.intraday_only:
-                if (candle_time.hour == 21 and
-                    candle_time.minute == 59 and
-                    candle_time.date() == entry_time.date()):
+                entry_date = entry_time.date()
+                last_candle_of_day = self.last_candle_by_date.get(entry_date)
+                if last_candle_of_day and candle_time >= last_candle_of_day:
                     exit_price = candle['close']
                     exit_time = candle_time
                     exit_candle_idx = idx
