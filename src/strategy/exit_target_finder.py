@@ -56,14 +56,14 @@ class ExitTargetFinder:
         2. Find BOS that started the upward trend (ended previous downtrend)
         3. Find lowest point of that previous downtrend
         4. OB = last RED candles + first GREEN at that minimum
-        5. TP = Top of OB
+        5. TP = Bottom of OB (price goes DOWN to reach it)
 
         For LONG (swept low):
         1. Low was created by downward trend
         2. Find BOS that started the downward trend (ended previous uptrend)
         3. Find highest point of that previous uptrend
         4. OB = last GREEN candles + first RED at that maximum
-        5. TP = Top of OB (price targets upward to reach it)
+        5. TP = Top of OB (price goes UP to reach it)
 
         Args:
             sweep_time: Time of liquidity sweep
@@ -120,7 +120,7 @@ class ExitTargetFinder:
                     ob_bottom=ob_bottom,
                     ob_start_idx=trend_start,
                     ob_end_idx=i,
-                    take_profit=ob_top,  # For SHORT: TP at top of OB
+                    take_profit=ob_bottom,  # For SHORT: TP at bottom of OB (price goes DOWN)
                     bos_idx=i,
                     ob_start_time=self.df_mid.index[trend_start],
                     ob_end_time=self.df_mid.index[i]
@@ -159,7 +159,7 @@ class ExitTargetFinder:
                     ob_bottom=ob_bottom,
                     ob_start_idx=trend_start,
                     ob_end_idx=i,
-                    take_profit=ob_bottom,  # For LONG: TP at bottom of OB (price goes UP)
+                    take_profit=ob_top,  # For LONG: TP at top of OB (price goes UP)
                     bos_idx=i,
                     ob_start_time=self.df_mid.index[trend_start],
                     ob_end_time=self.df_mid.index[i]

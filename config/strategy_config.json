@@ -1,20 +1,20 @@
 {
-  "symbol": "META",
+  "symbol": "TSLA",
   "timeframes": {
-    "high": "1h",
-    "mid": "5min",
-    "low": "1min"
+    "high": "4h",
+    "mid": "1h",
+    "low": "15min"
   },
   "backtest": {
     "enabled": true,
     "initial_capital": 10000.0,
     "hold_overnight": false,
-    "bos_exit_enabled": true,
+    "bos_exit_enabled": false,
     "bos_exit_threshold_percent": 50.0
   },
   "output": {
     "visualize": true,
     "export_journal": "auto"
   },
-  "asset_options": ["MSFT", "TSLA", "AAPL", "AMZN", "GOOGL", "NVDA", "META", "NFLX", "INTC", "AMD"]
+  "asset_options": ["XAU/USD", "MSFT", "TSLA", "AAPL", "AMZN", "GOOGL", "NVDA", "META", "NFLX", "INTC", "AMD"]
 }

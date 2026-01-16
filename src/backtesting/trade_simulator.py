@@ -58,6 +58,10 @@ class TradeSimulator:
         self.intraday_only = intraday_only
         self.symbol = symbol.upper()
 
+        # Store data date range for validation
+        self.data_start = df_low.index.min()
+        self.data_end = df_low.index.max()
+
         # BOS exit configuration
         self.bos_exit_enabled = bos_exit_enabled
         self.bos_exit_threshold_percent = bos_exit_threshold_percent
@@ -85,6 +89,22 @@ class TradeSimulator:
         # Delete existing plots for this symbol (clean slate for rerun)
         for png_file in self.plots_dir.glob('*.png'):
             png_file.unlink()
+
+    def validate_data_coverage(self, trade_time: datetime) -> bool:
+        """
+        Check if a trade timestamp falls within the data range.
+
+        Args:
+            trade_time: The entry timestamp of the trade
+
+        Returns:
+            True if data covers the trade time, False otherwise
+        """
+        return self.data_start <= trade_time <= self.data_end
+
+    def get_data_range_str(self) -> str:
+        """Return a human-readable string of the data date range."""
+        return f"{self.data_start.strftime('%Y-%m-%d')} to {self.data_end.strftime('%Y-%m-%d')}"
 
     def simulate_trade(
         self,
@@ -117,6 +137,15 @@ class TradeSimulator:
         tp_price = signal.take_profit_price
         sl_price = signal.stop_loss_price
         direction = signal.entry_direction
+
+        # Validate data coverage - critical check to prevent data mismatch bugs
+        if not self.validate_data_coverage(entry_time):
+            raise ValueError(
+                f"DATA MISMATCH ERROR: Trade entry time {entry_time} is outside the low timeframe "
+                f"data range ({self.get_data_range_str()}). "
+                f"This would cause incorrect backtesting results. "
+                f"Ensure all timeframe data files cover the same date range."
+            )
 
         # Reject entries at or after market close (dynamically detected from data)
         entry_date = entry_time.date()
@@ -571,6 +600,7 @@ class TradeSimulator:
 
         print(f"\n  Simulating {len(sorted_signals)} trades with compounding...")
         print(f"  Initial capital: ${self.initial_capital:,.2f}")
+        print(f"  Low TF data range: {self.get_data_range_str()}")
         print("-" * 60)
 
         for i, signal in enumerate(sorted_signals):

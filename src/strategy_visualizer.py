@@ -187,8 +187,21 @@ class StrategySweepVisualizer:
 
         return sweep_list
 
-    def _get_trade_end_time(self, sweep_entry: SweepEntry) -> datetime:
-        """Get the end time for the trade (for static snapshot range)."""
+    def _get_trade_end_time(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> datetime:
+        """Get the end time for the trade (for static snapshot range).
+
+        Args:
+            sweep_entry: The sweep entry being visualized
+            trade_result: Optional TradeResult from backtesting with actual exit time
+
+        Returns:
+            End time for the chart display range
+        """
+        # If we have actual backtest exit time, use that + buffer to show full trade
+        if trade_result and trade_result.exit_time:
+            return trade_result.exit_time + timedelta(minutes=30)
+
+        # Fallback to existing logic for trades without backtest results
         if sweep_entry.is_complete:
             signal = sweep_entry.signal
             # Use confirmation time + some buffer for complete trades
@@ -205,7 +218,7 @@ class StrategySweepVisualizer:
             else:
                 return partial.timestamp_1h_sweep + timedelta(hours=6)
 
-    def _generate_tab_1h(self, sweep_entry: SweepEntry) -> Dict:
+    def _generate_tab_1h(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Dict:
         """
         Generate 1H timeframe tab data (static snapshot).
 
@@ -213,7 +226,7 @@ class StrategySweepVisualizer:
         Purpose: Show liquidity sweep and overall market structure
         """
         sweep_time = sweep_entry.timestamp
-        end_time = self._get_trade_end_time(sweep_entry)
+        end_time = self._get_trade_end_time(sweep_entry, trade_result)
 
         # Find sweep index
         sweep_idx = self.df_high.index.get_indexer([sweep_time], method='nearest')[0]
@@ -272,7 +285,7 @@ class StrategySweepVisualizer:
             'slLine': None
         }
 
-    def _generate_tab_5m_event_b(self, sweep_entry: SweepEntry) -> Optional[Dict]:
+    def _generate_tab_5m_event_b(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
         """
         Generate 5M Event B tab data (static snapshot).
 
@@ -290,7 +303,7 @@ class StrategySweepVisualizer:
             return None  # No Event B found
 
         sweep_time = sweep_entry.timestamp
-        end_time = self._get_trade_end_time(sweep_entry)
+        end_time = self._get_trade_end_time(sweep_entry, trade_result)
 
         # Filter data from sweep to end
         mask = (self.df_mid.index >= sweep_time) & (self.df_mid.index <= end_time)
@@ -341,7 +354,7 @@ class StrategySweepVisualizer:
             'slLine': None
         }
 
-    def _generate_tab_5m_validation(self, sweep_entry: SweepEntry) -> Optional[Dict]:
+    def _generate_tab_5m_validation(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
         """
         Generate 5M Validation tab data (static snapshot).
 
@@ -363,7 +376,7 @@ class StrategySweepVisualizer:
             return None  # No validation found
 
         sweep_time = sweep_entry.timestamp
-        end_time = self._get_trade_end_time(sweep_entry)
+        end_time = self._get_trade_end_time(sweep_entry, trade_result)
 
         # Determine start time (exit OB start or sweep time)
         if exit_ob_start_idx is not None and exit_ob_start_idx < len(self.df_mid):
@@ -426,7 +439,7 @@ class StrategySweepVisualizer:
             'slLine': None
         }
 
-    def _generate_tab_1m(self, sweep_entry: SweepEntry) -> Optional[Dict]:
+    def _generate_tab_1m(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
         """
         Generate 1M tab data (static snapshot).
 
@@ -446,7 +459,7 @@ class StrategySweepVisualizer:
             return None  # No confirmation found
 
         sweep_time = sweep_entry.timestamp
-        end_time = self._get_trade_end_time(sweep_entry)
+        end_time = self._get_trade_end_time(sweep_entry, trade_result)
 
         # Filter data
         mask = (self.df_low.index >= sweep_time) & (self.df_low.index <= end_time)
@@ -604,11 +617,11 @@ class StrategySweepVisualizer:
         # Get trade result for this sweep (if available from backtesting)
         trade_result = self._get_trade_result_for_sweep(sweep_entry)
 
-        # Generate tabs
-        tab_1h = self._generate_tab_1h(sweep_entry)
-        tab_5m_event_b = self._generate_tab_5m_event_b(sweep_entry)
-        tab_5m_validation = self._generate_tab_5m_validation(sweep_entry)
-        tab_1m = self._generate_tab_1m(sweep_entry)
+        # Generate tabs (pass trade_result so charts extend to actual exit time)
+        tab_1h = self._generate_tab_1h(sweep_entry, trade_result)
+        tab_5m_event_b = self._generate_tab_5m_event_b(sweep_entry, trade_result)
+        tab_5m_validation = self._generate_tab_5m_validation(sweep_entry, trade_result)
+        tab_1m = self._generate_tab_1m(sweep_entry, trade_result)
         tab_pnl = self._generate_tab_pnl(sweep_entry, trade_result)
 
         # Determine active tab (first available tab with most progress)

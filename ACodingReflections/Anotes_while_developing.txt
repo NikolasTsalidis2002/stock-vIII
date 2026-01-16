@@ -9,3 +9,5 @@ This should be enabled thorugh a boolean in the configuration
 
 - make sure that the unrealised porfit ois correct because it seems according to the 
 visualizations that we are making money, but according to the p&l we are losing money
+
+- apply context window for visualizing start
