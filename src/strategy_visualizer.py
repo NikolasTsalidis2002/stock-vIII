@@ -1,17 +1,19 @@
 """
 Strategy Sweep Visualizer
 
-Unified three-tab visualization for liquidity sweep analysis.
-Generates a single HTML file with 1H, 5M, and 1M timeframe tabs
-that dynamically show/hide based on strategy progression.
+Unified four-tab visualization for liquidity sweep analysis.
+Generates a single HTML file with 4 static tabs showing fixed snapshots
+of the complete trade at different stages.
 
 Features:
     - Sweep dropdown to select any detected sweep
-    - Three timeframe tabs (1H, 5M, 1M)
-    - Frame-by-frame navigation with arrow keys
+    - Four timeframe tabs (1H, 5M Event B, 5M Validation, 1M)
+    - Static snapshots instead of frame-by-frame animation
     - SMC indicators: FVG zones, OB zones, BOS lines, liquidity levels
+    - Event B highlighting (BOS or IFVG)
+    - Equilibrium line for validation
     - TP/SL lines on 1M tab only
-    - NO inflexion point markers (per spec)
+    - Disabled tabs for partial setups
 
 Usage:
     from src.strategy_visualizer import StrategySweepVisualizer
@@ -74,10 +76,10 @@ class SweepEntry:
 
 class StrategySweepVisualizer:
     """
-    Unified three-tab strategy visualizer for liquidity sweep analysis.
+    Unified four-tab strategy visualizer for liquidity sweep analysis.
 
-    Generates a single HTML file with 1H, 5M, and 1M timeframe tabs
-    that dynamically show/hide based on strategy progression.
+    Generates a single HTML file with 4 static tabs showing fixed snapshots
+    of the complete trade at different stages.
     """
 
     def __init__(
@@ -174,26 +176,6 @@ class StrategySweepVisualizer:
 
         return sweep_list
 
-    def _get_strategy_state(self, sweep_entry: SweepEntry) -> str:
-        """
-        Determine strategy state for tab activation.
-
-        Returns:
-            One of: 'no_sweep', 'sweep_found', 'event_b_found', 'validation_found'
-        """
-        if sweep_entry.is_complete:
-            return 'validation_found'
-
-        conditions = sweep_entry.conditions_met
-        if conditions == 1:
-            return 'sweep_found'  # Only 1H sweep found
-        elif conditions == 2:
-            return 'event_b_found'  # Event B found, no validation
-        elif conditions >= 3:
-            return 'validation_found'  # Validation found (may lack confirmation)
-
-        return 'sweep_found'
-
     def _generate_candle_data(self, df: pd.DataFrame) -> List[Dict]:
         """Convert DataFrame to candlestick data format."""
         candle_data = []
@@ -207,7 +189,7 @@ class StrategySweepVisualizer:
             })
         return candle_data
 
-    def _generate_fvg_zones(self, df: pd.DataFrame, fvg: pd.DataFrame) -> List[Dict]:
+    def _generate_fvg_zones(self, df: pd.DataFrame, fvg: pd.DataFrame, highlight_time: Optional[datetime] = None) -> List[Dict]:
         """Generate FVG zone data for visualization."""
         fvg_zones = []
 
@@ -220,12 +202,18 @@ class StrategySweepVisualizer:
                 end_idx = int(mitigated_idx) if pd.notna(mitigated_idx) and mitigated_idx != 0 else len(df) - 1
                 end_idx = min(end_idx, len(df) - 1)
 
+                # Check if this FVG should be highlighted (Event B IFVG)
+                is_highlighted = False
+                if highlight_time is not None and df.index[i] == highlight_time:
+                    is_highlighted = True
+
                 fvg_zones.append({
                     'startTime': int(df.index[i].timestamp()),
                     'endTime': int(df.index[end_idx].timestamp()),
                     'topPrice': float(fvg["Top"].iloc[i]),
                     'bottomPrice': float(fvg["Bottom"].iloc[i]),
-                    'fvgType': int(fvg["FVG"].iloc[i])  # 1 = bullish, -1 = bearish
+                    'fvgType': int(fvg["FVG"].iloc[i]),  # 1 = bullish, -1 = bearish
+                    'highlighted': is_highlighted
                 })
 
         return fvg_zones
@@ -251,7 +239,7 @@ class StrategySweepVisualizer:
 
         return ob_zones
 
-    def _generate_bos_lines(self, df: pd.DataFrame, bos: pd.DataFrame, inflexions: pd.DataFrame) -> List[Dict]:
+    def _generate_bos_lines(self, df: pd.DataFrame, bos: pd.DataFrame, inflexions: pd.DataFrame, highlight_time: Optional[datetime] = None) -> List[Dict]:
         """Generate BOS line data for visualization."""
         bos_lines = []
 
@@ -271,14 +259,21 @@ class StrategySweepVisualizer:
                         inflexions["Level"].iloc[j] == level):
                         matching_inflexions.append(j)
 
+                # Check if this BOS should be highlighted (Event B BOS)
+                is_highlighted = False
+                if highlight_time is not None and df.index[i] == highlight_time:
+                    is_highlighted = True
+
                 if len(matching_inflexions) > 0:
                     inflexion_pos = matching_inflexions[-1]
                     bos_lines.append({
                         'startTime': int(df.index[inflexion_pos].timestamp()),
                         'endTime': int(df.index[i].timestamp()),
                         'price': float(level),
-                        'color': '#089981' if bos_type == 1 else '#f23645',
-                        'label': 'BOS' if bos_type == 1 else 'BOS'
+                        'color': '#ffff00' if is_highlighted else ('#089981' if bos_type == 1 else '#f23645'),
+                        'lineWidth': 4 if is_highlighted else 2,
+                        'label': 'BOS',
+                        'highlighted': is_highlighted
                     })
                 else:
                     # Fallback
@@ -286,8 +281,10 @@ class StrategySweepVisualizer:
                         'startTime': int(df.index[i].timestamp()),
                         'endTime': int(df.index[i].timestamp()),
                         'price': float(level),
-                        'color': '#089981' if bos_type == 1 else '#f23645',
-                        'label': 'BOS'
+                        'color': '#ffff00' if is_highlighted else ('#089981' if bos_type == 1 else '#f23645'),
+                        'lineWidth': 4 if is_highlighted else 2,
+                        'label': 'BOS',
+                        'highlighted': is_highlighted
                     })
 
         return bos_lines
@@ -336,27 +333,53 @@ class StrategySweepVisualizer:
 
         return liquidity_lines
 
-    def _generate_frame_1h(
-        self,
-        sweep_entry: SweepEntry,
-        frame_idx: int
-    ) -> Dict:
-        """
-        Generate 1H timeframe frame data.
+    def _get_trade_end_time(self, sweep_entry: SweepEntry) -> datetime:
+        """Get the end time for the trade (for static snapshot range)."""
+        if sweep_entry.is_complete:
+            signal = sweep_entry.signal
+            # Use confirmation time + some buffer for complete trades
+            return signal.timestamp_1m_confirmation + timedelta(hours=2)
+        else:
+            partial = sweep_entry.partial
+            # Use the furthest timestamp available
+            if partial.timestamp_1m_confirmation:
+                return partial.timestamp_1m_confirmation + timedelta(hours=2)
+            elif partial.timestamp_5m_validation:
+                return partial.timestamp_5m_validation + timedelta(hours=2)
+            elif partial.timestamp_5m_event_b:
+                return partial.timestamp_5m_event_b + timedelta(hours=2)
+            else:
+                return partial.timestamp_1h_sweep + timedelta(hours=6)
 
-        Shows all available historical data with sweep highlighted.
+    def _generate_tab_1h(self, sweep_entry: SweepEntry) -> Dict:
         """
-        # Use all available data up to sweep + some context after
+        Generate 1H timeframe tab data (static snapshot).
+
+        Range: Start of data to end of trade
+        Purpose: Show liquidity sweep and overall market structure
+        """
         sweep_time = sweep_entry.timestamp
+        end_time = self._get_trade_end_time(sweep_entry)
 
         # Find sweep index
-        sweep_idx = self.df_high.index.get_loc(sweep_time) if sweep_time in self.df_high.index else 0
+        sweep_idx = self.df_high.index.get_indexer([sweep_time], method='nearest')[0]
 
-        # Show context: 50 candles before and 20 after (or available)
+        # Show context: 50 candles before sweep and up to end of trade
         start_idx = max(0, sweep_idx - 50)
-        end_idx = min(len(self.df_high), sweep_idx + 20)
+
+        # Find end index closest to end_time
+        end_mask = self.df_high.index <= end_time
+        if end_mask.any():
+            end_idx = self.df_high.index.get_indexer([end_time], method='nearest')[0]
+        else:
+            end_idx = len(self.df_high) - 1
+
+        end_idx = min(len(self.df_high) - 1, end_idx + 10)  # Add some buffer
 
         df_slice = self.df_high.iloc[start_idx:end_idx + 1]
+
+        if len(df_slice) == 0:
+            return None
 
         # Calculate indicators on slice
         inflexions_slice = smc_custom.inflexion_points(df_slice)
@@ -382,58 +405,117 @@ class StrategySweepVisualizer:
 
         return {
             'timeframe': self.tf_labels.get('high', '1H'),
-            'frameIdx': frame_idx,
+            'tabName': self.tf_labels.get('high', '1H'),
             'candleData': candle_data,
             'fvgZones': fvg_zones,
             'obZones': ob_zones,
             'bosLines': bos_lines,
             'liquidityLines': liquidity_lines,
             'sweepMarker': sweep_marker,
-            'currentTime': sweep_time.strftime('%Y-%m-%d %H:%M')
+            'markers': [sweep_marker],
+            'equilibriumLine': None,
+            'tpLine': None,
+            'slLine': None
         }
 
-    def _generate_frame_5m(
-        self,
-        sweep_entry: SweepEntry,
-        frame_idx: int
-    ) -> Optional[Dict]:
+    def _generate_tab_5m_event_b(self, sweep_entry: SweepEntry) -> Optional[Dict]:
         """
-        Generate 5M timeframe frame data.
+        Generate 5M Event B tab data (static snapshot).
 
-        Data range depends on strategy state:
-        - Before Event B: From 1H sweep start to current
-        - After Event B: From exit OB start to current
+        Range: 1H liquidity sweep timestamp to end of trade
+        Purpose: Show what BOS or IFVG triggered Event B
         """
-        state = self._get_strategy_state(sweep_entry)
-
-        if state == 'no_sweep':
-            return None
+        # Check if Event B was found
+        if sweep_entry.is_complete:
+            event_b_time = sweep_entry.signal.timestamp_5m_event_b
+            event_b_type = sweep_entry.signal.condition_event_b
+        elif sweep_entry.partial and sweep_entry.partial.timestamp_5m_event_b:
+            event_b_time = sweep_entry.partial.timestamp_5m_event_b
+            event_b_type = sweep_entry.partial.condition_event_b
+        else:
+            return None  # No Event B found
 
         sweep_time = sweep_entry.timestamp
+        end_time = self._get_trade_end_time(sweep_entry)
 
-        # Determine data range
+        # Filter data from sweep to end
+        mask = (self.df_mid.index >= sweep_time) & (self.df_mid.index <= end_time)
+        df_slice = self.df_mid.loc[mask]
+
+        if len(df_slice) == 0:
+            return None
+
+        # Calculate indicators on slice
+        inflexions_slice = smc_custom.inflexion_points(df_slice)
+        bos_slice = smc_custom.bos(df_slice, inflexions_slice, close_break=True)
+        fvg_slice = smc.fvg(df_slice, join_consecutive=False)
+        ob_slice = smc_custom.ob(df_slice, bos_slice, inflexions_slice)
+
+        # Generate data with highlighting for Event B
+        highlight_time = event_b_time if event_b_type == 'BOS' else None
+        fvg_highlight_time = event_b_time if event_b_type == 'IFVG' else None
+
+        candle_data = self._generate_candle_data(df_slice)
+        fvg_zones = self._generate_fvg_zones(df_slice, fvg_slice, highlight_time=fvg_highlight_time)
+        ob_zones = self._generate_ob_zones(df_slice, ob_slice)
+        bos_lines = self._generate_bos_lines(df_slice, bos_slice, inflexions_slice, highlight_time=highlight_time)
+        liquidity_lines = self._generate_liquidity_lines(df_slice, inflexions_slice)
+
+        # Event B marker
+        event_b_marker = {
+            'time': int(event_b_time.timestamp()),
+            'position': 'aboveBar',
+            'color': '#ffff00',  # Yellow highlight
+            'shape': 'circle',
+            'text': f'EB:{event_b_type}'
+        }
+
+        return {
+            'timeframe': self.tf_labels.get('mid', '5M'),
+            'tabName': f"{self.tf_labels.get('mid', '5M')} Event B",
+            'candleData': candle_data,
+            'fvgZones': fvg_zones,
+            'obZones': ob_zones,
+            'bosLines': bos_lines,
+            'liquidityLines': liquidity_lines,
+            'sweepMarker': None,
+            'markers': [event_b_marker],
+            'eventBType': event_b_type,
+            'eventBTime': int(event_b_time.timestamp()),
+            'equilibriumLine': None,
+            'tpLine': None,
+            'slLine': None
+        }
+
+    def _generate_tab_5m_validation(self, sweep_entry: SweepEntry) -> Optional[Dict]:
+        """
+        Generate 5M Validation tab data (static snapshot).
+
+        Range: Exit Order Block start to end of trade
+        Purpose: Show FVG respect or equilibrium zone entry
+        """
+        # Check if validation was found
         if sweep_entry.is_complete:
-            signal = sweep_entry.signal
-            # After Event B: use exit OB start if available
-            if signal.exit_ob_start_idx is not None:
-                start_time = self.df_mid.index[signal.exit_ob_start_idx]
-            else:
-                start_time = sweep_time
-            end_time = signal.timestamp_5m_validation
+            validation_time = sweep_entry.signal.timestamp_5m_validation
+            validation_type = sweep_entry.signal.condition_validation
+            equilibrium_level = sweep_entry.signal.equilibrium_level
+            exit_ob_start_idx = sweep_entry.signal.exit_ob_start_idx
+        elif sweep_entry.partial and sweep_entry.partial.timestamp_5m_validation:
+            validation_time = sweep_entry.partial.timestamp_5m_validation
+            validation_type = sweep_entry.partial.condition_validation
+            equilibrium_level = None  # Partial setups may not have this
+            exit_ob_start_idx = None
         else:
-            partial = sweep_entry.partial
-            if partial.timestamp_5m_event_b is not None:
-                # Event B found, use exit OB start if available
-                if partial.exit_ob_start_time is not None:
-                    start_time = partial.exit_ob_start_time
-                else:
-                    start_time = partial.timestamp_5m_event_b
-                end_time = partial.timestamp_5m_validation or partial.timestamp_5m_event_b
-            else:
-                # No Event B, show from sweep time
-                start_time = sweep_time
-                # Find end of day or reasonable window
-                end_time = sweep_time + timedelta(hours=6)
+            return None  # No validation found
+
+        sweep_time = sweep_entry.timestamp
+        end_time = self._get_trade_end_time(sweep_entry)
+
+        # Determine start time (exit OB start or sweep time)
+        if exit_ob_start_idx is not None and exit_ob_start_idx < len(self.df_mid):
+            start_time = self.df_mid.index[exit_ob_start_idx]
+        else:
+            start_time = sweep_time
 
         # Filter data
         mask = (self.df_mid.index >= start_time) & (self.df_mid.index <= end_time)
@@ -455,75 +537,65 @@ class StrategySweepVisualizer:
         bos_lines = self._generate_bos_lines(df_slice, bos_slice, inflexions_slice)
         liquidity_lines = self._generate_liquidity_lines(df_slice, inflexions_slice)
 
-        # Event B marker
-        event_b_marker = None
-        if sweep_entry.is_complete:
-            event_b_time = sweep_entry.signal.timestamp_5m_event_b
-            if event_b_time in df_slice.index:
-                event_b_marker = {
-                    'time': int(event_b_time.timestamp()),
-                    'position': 'aboveBar',
-                    'color': '#00ff00',
-                    'shape': 'circle',
-                    'text': 'EB'
-                }
-        elif sweep_entry.partial and sweep_entry.partial.timestamp_5m_event_b:
-            event_b_time = sweep_entry.partial.timestamp_5m_event_b
-            if event_b_time in df_slice.index:
-                event_b_marker = {
-                    'time': int(event_b_time.timestamp()),
-                    'position': 'aboveBar',
-                    'color': '#00ff00',
-                    'shape': 'circle',
-                    'text': 'EB'
-                }
+        # Validation marker
+        validation_marker = {
+            'time': int(validation_time.timestamp()),
+            'position': 'aboveBar',
+            'color': '#9c27b0',  # Purple
+            'shape': 'circle',
+            'text': f'VAL:{validation_type}'
+        }
+
+        # Equilibrium line (if applicable)
+        equilibrium_line = None
+        if validation_type == 'Equilibrium' and equilibrium_level is not None:
+            equilibrium_line = {
+                'price': float(equilibrium_level),
+                'color': '#9c27b0',  # Purple
+                'lineWidth': 2,
+                'label': f'EQ: ${equilibrium_level:.2f}'
+            }
 
         return {
             'timeframe': self.tf_labels.get('mid', '5M'),
-            'frameIdx': frame_idx,
+            'tabName': f"{self.tf_labels.get('mid', '5M')} Validation",
             'candleData': candle_data,
             'fvgZones': fvg_zones,
             'obZones': ob_zones,
             'bosLines': bos_lines,
             'liquidityLines': liquidity_lines,
-            'eventBMarker': event_b_marker,
-            'currentTime': end_time.strftime('%Y-%m-%d %H:%M')
+            'sweepMarker': None,
+            'markers': [validation_marker],
+            'validationType': validation_type,
+            'equilibriumLine': equilibrium_line,
+            'tpLine': None,
+            'slLine': None
         }
 
-    def _generate_frame_1m(
-        self,
-        sweep_entry: SweepEntry,
-        frame_idx: int
-    ) -> Optional[Dict]:
+    def _generate_tab_1m(self, sweep_entry: SweepEntry) -> Optional[Dict]:
         """
-        Generate 1M timeframe frame data.
+        Generate 1M tab data (static snapshot).
 
-        Only available when validation is found.
-        Shows TP/SL lines for complete signals.
+        Range: 1H liquidity sweep timestamp to end of trade
+        Purpose: Show trade execution with TP/SL levels
         """
-        state = self._get_strategy_state(sweep_entry)
-
-        if state != 'validation_found':
-            return None
+        # Check if confirmation was found
+        if sweep_entry.is_complete:
+            confirmation_time = sweep_entry.signal.timestamp_1m_confirmation
+            tp_price = sweep_entry.signal.take_profit_price
+            sl_price = sweep_entry.signal.stop_loss_price
+        elif sweep_entry.partial and sweep_entry.partial.timestamp_1m_confirmation:
+            confirmation_time = sweep_entry.partial.timestamp_1m_confirmation
+            tp_price = None
+            sl_price = None
+        else:
+            return None  # No confirmation found
 
         sweep_time = sweep_entry.timestamp
-
-        # Determine data range
-        if sweep_entry.is_complete:
-            signal = sweep_entry.signal
-            start_time = sweep_time
-            end_time = signal.timestamp_1m_confirmation
-        else:
-            partial = sweep_entry.partial
-            if partial.indices_1m is not None:
-                start_idx, end_idx = partial.indices_1m
-                start_time = self.df_low.index[start_idx]
-                end_time = self.df_low.index[end_idx]
-            else:
-                return None
+        end_time = self._get_trade_end_time(sweep_entry)
 
         # Filter data
-        mask = (self.df_low.index >= start_time) & (self.df_low.index <= end_time)
+        mask = (self.df_low.index >= sweep_time) & (self.df_low.index <= end_time)
         df_slice = self.df_low.loc[mask]
 
         if len(df_slice) == 0:
@@ -541,73 +613,67 @@ class StrategySweepVisualizer:
         bos_lines = self._generate_bos_lines(df_slice, bos_slice, inflexions_slice)
         liquidity_lines = self._generate_liquidity_lines(df_slice, inflexions_slice)
 
-        # TP/SL lines (only for complete signals)
+        # Confirmation marker
+        confirmation_marker = {
+            'time': int(confirmation_time.timestamp()),
+            'position': 'belowBar' if sweep_entry.entry_direction == 'long' else 'aboveBar',
+            'color': '#00ff00',
+            'shape': 'arrowUp' if sweep_entry.entry_direction == 'long' else 'arrowDown',
+            'text': 'ENTRY'
+        }
+
+        # TP/SL lines
         tp_line = None
         sl_line = None
-        if sweep_entry.is_complete:
-            signal = sweep_entry.signal
-            if signal.take_profit_price is not None:
-                tp_line = {
-                    'price': float(signal.take_profit_price),
-                    'color': '#089981',  # Green
-                    'label': f'TP: ${signal.take_profit_price:.2f}'
-                }
-            if signal.stop_loss_price is not None:
-                sl_line = {
-                    'price': float(signal.stop_loss_price),
-                    'color': '#f23645',  # Red
-                    'label': f'SL: ${signal.stop_loss_price:.2f}'
-                }
-
-        # Confirmation marker
-        confirmation_marker = None
-        if sweep_entry.is_complete:
-            conf_time = sweep_entry.signal.timestamp_1m_confirmation
-            if conf_time in df_slice.index:
-                confirmation_marker = {
-                    'time': int(conf_time.timestamp()),
-                    'position': 'belowBar' if sweep_entry.entry_direction == 'long' else 'aboveBar',
-                    'color': '#00ff00',
-                    'shape': 'arrowUp' if sweep_entry.entry_direction == 'long' else 'arrowDown',
-                    'text': 'ENTRY'
-                }
+        if tp_price is not None:
+            tp_line = {
+                'price': float(tp_price),
+                'color': '#089981',  # Green
+                'label': f'TP: ${tp_price:.2f}'
+            }
+        if sl_price is not None:
+            sl_line = {
+                'price': float(sl_price),
+                'color': '#f23645',  # Red
+                'label': f'SL: ${sl_price:.2f}'
+            }
 
         return {
             'timeframe': self.tf_labels.get('low', '1M'),
-            'frameIdx': frame_idx,
+            'tabName': self.tf_labels.get('low', '1M'),
             'candleData': candle_data,
             'fvgZones': fvg_zones,
             'obZones': ob_zones,
             'bosLines': bos_lines,
             'liquidityLines': liquidity_lines,
+            'sweepMarker': None,
+            'markers': [confirmation_marker],
+            'equilibriumLine': None,
             'tpLine': tp_line,
-            'slLine': sl_line,
-            'confirmationMarker': confirmation_marker,
-            'currentTime': end_time.strftime('%Y-%m-%d %H:%M')
+            'slLine': sl_line
         }
 
-    def _generate_sweep_frames(self, sweep_entry: SweepEntry, sweep_idx: int) -> Dict:
+    def _generate_sweep_data(self, sweep_entry: SweepEntry, sweep_idx: int) -> Dict:
         """
-        Generate all frames for a single sweep.
+        Generate all tab data for a single sweep (static snapshots).
 
-        Returns dict with frames for each timeframe.
+        Returns dict with data for each of the 4 tabs.
         """
-        state = self._get_strategy_state(sweep_entry)
+        # Generate tabs
+        tab_1h = self._generate_tab_1h(sweep_entry)
+        tab_5m_event_b = self._generate_tab_5m_event_b(sweep_entry)
+        tab_5m_validation = self._generate_tab_5m_validation(sweep_entry)
+        tab_1m = self._generate_tab_1m(sweep_entry)
 
-        # Determine active tab based on state
-        if state == 'no_sweep':
-            active_tab = '1H'
-        elif state == 'sweep_found':
-            active_tab = '5M'
-        elif state == 'event_b_found':
-            active_tab = '5M'
-        else:  # validation_found
+        # Determine active tab (first available tab with most progress)
+        if tab_1m:
             active_tab = '1M'
-
-        # Generate frames for each timeframe
-        frame_1h = self._generate_frame_1h(sweep_entry, sweep_idx)
-        frame_5m = self._generate_frame_5m(sweep_entry, sweep_idx)
-        frame_1m = self._generate_frame_1m(sweep_entry, sweep_idx)
+        elif tab_5m_validation:
+            active_tab = '5M_VALIDATION'
+        elif tab_5m_event_b:
+            active_tab = '5M_EVENT_B'
+        else:
+            active_tab = '1H'
 
         # Build conditions list
         conditions = [
@@ -683,12 +749,12 @@ class StrategySweepVisualizer:
             'timestamp': sweep_entry.timestamp.strftime('%Y-%m-%d %H:%M'),
             'outcome': sweep_entry.outcome,
             'direction': sweep_entry.entry_direction.upper(),
-            'state': state,
-            'activeTab': active_tab,
             'conditions': conditions,
-            'frame1H': frame_1h,
-            'frame5M': frame_5m,
-            'frame1M': frame_1m,
+            'activeTab': active_tab,
+            'tab1H': tab_1h,
+            'tab5MEventB': tab_5m_event_b,
+            'tab5MValidation': tab_5m_validation,
+            'tab1M': tab_1m,
             'entryPrice': sweep_entry.signal.price_entry if sweep_entry.is_complete else None,
             'tpPrice': sweep_entry.signal.take_profit_price if sweep_entry.is_complete else None,
             'slPrice': sweep_entry.signal.stop_loss_price if sweep_entry.is_complete else None
@@ -770,29 +836,7 @@ class StrategySweepVisualizer:
             outline: none;
             border-color: #2962ff;
         }}
-        .nav-controls {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-        .nav-btn {{
-            padding: 8px 12px;
-            background-color: #2962ff;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            font-weight: 600;
-        }}
-        .nav-btn:hover {{
-            background-color: #1e53e5;
-        }}
-        .nav-btn:disabled {{
-            background-color: #2b2b43;
-            cursor: not-allowed;
-        }}
-        .frame-counter {{
+        .sweep-counter {{
             color: #d1d4dc;
             font-size: 13px;
             min-width: 100px;
@@ -825,6 +869,9 @@ class StrategySweepVisualizer:
         .tab.disabled {{
             color: #363a45;
             cursor: not-allowed;
+        }}
+        .tab.disabled:hover {{
+            color: #363a45;
         }}
 
         /* Main content */
@@ -975,17 +1022,14 @@ class StrategySweepVisualizer:
                     <label>Sweep:</label>
                     <select id="sweep-dropdown"></select>
                 </div>
-                <div class="nav-controls">
-                    <button class="nav-btn" id="prev-btn" onclick="prevSweep()">&#9664; Prev</button>
-                    <span class="frame-counter" id="frame-counter">1 / 1</span>
-                    <button class="nav-btn" id="next-btn" onclick="nextSweep()">Next &#9654;</button>
-                </div>
+                <span class="sweep-counter" id="sweep-counter">1 / 1</span>
             </div>
         </div>
 
         <div id="tabs">
             <div class="tab" data-tab="1H" onclick="switchTab('1H')">{tf_high}</div>
-            <div class="tab" data-tab="5M" onclick="switchTab('5M')">{tf_mid}</div>
+            <div class="tab" data-tab="5M_EVENT_B" onclick="switchTab('5M_EVENT_B')">{tf_mid} Event B</div>
+            <div class="tab" data-tab="5M_VALIDATION" onclick="switchTab('5M_VALIDATION')">{tf_mid} Validation</div>
             <div class="tab" data-tab="1M" onclick="switchTab('1M')">{tf_low}</div>
         </div>
 
@@ -1033,18 +1077,6 @@ class StrategySweepVisualizer:
                 </div>
 
                 <div class="sidebar-section">
-                    <h3>Active</h3>
-                    <div class="info-row">
-                        <span class="info-label">Timeframe</span>
-                        <span class="info-value" id="active-tf">-</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Stage</span>
-                        <span class="info-value" id="active-stage">-</span>
-                    </div>
-                </div>
-
-                <div class="sidebar-section">
                     <h3>Legend</h3>
                     <div class="legend-item">
                         <div class="legend-color" style="background-color: rgba(255, 235, 59, 0.3); border: 1px solid #ffeb3b;"></div>
@@ -1070,6 +1102,14 @@ class StrategySweepVisualizer:
                         <div class="legend-color" style="background-color: #ff8c00;"></div>
                         <span>Liquidity Level</span>
                     </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #9c27b0;"></div>
+                        <span>Equilibrium</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ffff00;"></div>
+                        <span>Event B Highlight</span>
+                    </div>
                 </div>
 
                 <div class="shortcuts">
@@ -1083,7 +1123,7 @@ class StrategySweepVisualizer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1 2 3</span>
+                        <span class="shortcut-key">1 2 3 4</span>
                     </div>
                 </div>
             </div>
@@ -1163,8 +1203,9 @@ class StrategySweepVisualizer:
                 if (e.key === 'ArrowLeft') prevSweep();
                 if (e.key === 'ArrowRight') nextSweep();
                 if (e.key === '1') switchTab('1H');
-                if (e.key === '2') switchTab('5M');
-                if (e.key === '3') switchTab('1M');
+                if (e.key === '2') switchTab('5M_EVENT_B');
+                if (e.key === '3') switchTab('5M_VALIDATION');
+                if (e.key === '4') switchTab('1M');
             }});
 
             // Resize handler
@@ -1195,13 +1236,9 @@ class StrategySweepVisualizer:
             // Update dropdown
             document.getElementById('sweep-dropdown').value = idx;
 
-            // Update frame counter
-            document.getElementById('frame-counter').textContent =
+            // Update sweep counter
+            document.getElementById('sweep-counter').textContent =
                 `${{idx + 1}} / ${{allSweepsData.length}}`;
-
-            // Update navigation buttons
-            document.getElementById('prev-btn').disabled = (idx === 0);
-            document.getElementById('next-btn').disabled = (idx === allSweepsData.length - 1);
 
             // Update sidebar
             document.getElementById('sweep-time').textContent = sweep.timestamp;
@@ -1241,16 +1278,6 @@ class StrategySweepVisualizer:
                 conditionsList.appendChild(item);
             }});
 
-            // Update active info
-            document.getElementById('active-tf').textContent = sweep.activeTab;
-            const stageMap = {{
-                'no_sweep': 'Searching',
-                'sweep_found': 'Event B',
-                'event_b_found': 'Validation',
-                'validation_found': 'Execution'
-            }};
-            document.getElementById('active-stage').textContent = stageMap[sweep.state] || sweep.state;
-
             // Update tabs
             updateTabs(sweep);
 
@@ -1267,9 +1294,10 @@ class StrategySweepVisualizer:
 
                 // Check if tab has data
                 let hasData = false;
-                if (tabId === '1H' && sweep.frame1H) hasData = true;
-                if (tabId === '5M' && sweep.frame5M) hasData = true;
-                if (tabId === '1M' && sweep.frame1M) hasData = true;
+                if (tabId === '1H' && sweep.tab1H) hasData = true;
+                if (tabId === '5M_EVENT_B' && sweep.tab5MEventB) hasData = true;
+                if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
+                if (tabId === '1M' && sweep.tab1M) hasData = true;
 
                 if (!hasData) {{
                     tab.classList.add('disabled');
@@ -1286,9 +1314,10 @@ class StrategySweepVisualizer:
 
             // Check if tab is disabled
             let hasData = false;
-            if (tabId === '1H' && sweep.frame1H) hasData = true;
-            if (tabId === '5M' && sweep.frame5M) hasData = true;
-            if (tabId === '1M' && sweep.frame1M) hasData = true;
+            if (tabId === '1H' && sweep.tab1H) hasData = true;
+            if (tabId === '5M_EVENT_B' && sweep.tab5MEventB) hasData = true;
+            if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
+            if (tabId === '1M' && sweep.tab1M) hasData = true;
 
             if (!hasData) return;
 
@@ -1303,33 +1332,32 @@ class StrategySweepVisualizer:
         }}
 
         function showChart(sweep) {{
-            // Get frame data for current tab
-            let frameData = null;
-            if (currentTab === '1H') frameData = sweep.frame1H;
-            else if (currentTab === '5M') frameData = sweep.frame5M;
-            else if (currentTab === '1M') frameData = sweep.frame1M;
+            // Get tab data for current tab
+            let tabData = null;
+            if (currentTab === '1H') tabData = sweep.tab1H;
+            else if (currentTab === '5M_EVENT_B') tabData = sweep.tab5MEventB;
+            else if (currentTab === '5M_VALIDATION') tabData = sweep.tab5MValidation;
+            else if (currentTab === '1M') tabData = sweep.tab1M;
 
-            if (!frameData) return;
+            if (!tabData) return;
 
             // Clear existing lines
             clearLineSeries();
 
             // Update candlesticks
-            candlestickSeries.setData(frameData.candleData);
+            candlestickSeries.setData(tabData.candleData);
 
             // Set markers
-            const markers = [];
-            if (frameData.sweepMarker) markers.push(frameData.sweepMarker);
-            if (frameData.eventBMarker) markers.push(frameData.eventBMarker);
-            if (frameData.confirmationMarker) markers.push(frameData.confirmationMarker);
+            const markers = tabData.markers || [];
+            if (tabData.sweepMarker) markers.push(tabData.sweepMarker);
             candlestickSeries.setMarkers(markers);
 
             // Draw BOS lines
-            if (frameData.bosLines) {{
-                frameData.bosLines.forEach(bos => {{
+            if (tabData.bosLines) {{
+                tabData.bosLines.forEach(bos => {{
                     const lineSeries = chart.addLineSeries({{
                         color: bos.color,
-                        lineWidth: 2,
+                        lineWidth: bos.lineWidth || 2,
                         lineStyle: LightweightCharts.LineStyle.Solid,
                         priceLineVisible: false,
                         lastValueVisible: false,
@@ -1343,8 +1371,8 @@ class StrategySweepVisualizer:
             }}
 
             // Draw liquidity lines
-            if (frameData.liquidityLines) {{
-                frameData.liquidityLines.forEach(liq => {{
+            if (tabData.liquidityLines) {{
+                tabData.liquidityLines.forEach(liq => {{
                     const lineSeries = chart.addLineSeries({{
                         color: liq.color,
                         lineWidth: liq.lineWidth,
@@ -1360,40 +1388,58 @@ class StrategySweepVisualizer:
                 }});
             }}
 
-            // Draw TP/SL lines (1M only)
-            if (frameData.tpLine) {{
+            // Draw equilibrium line (5M Validation tab)
+            if (tabData.equilibriumLine) {{
+                const eqSeries = chart.addLineSeries({{
+                    color: tabData.equilibriumLine.color,
+                    lineWidth: tabData.equilibriumLine.lineWidth || 2,
+                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: true,
+                    title: 'EQ',
+                }});
+                const firstTime = tabData.candleData[0].time;
+                const lastTime = tabData.candleData[tabData.candleData.length - 1].time;
+                eqSeries.setData([
+                    {{ time: firstTime, value: tabData.equilibriumLine.price }},
+                    {{ time: lastTime, value: tabData.equilibriumLine.price }}
+                ]);
+                activeLineSeries.push(eqSeries);
+            }}
+
+            // Draw TP/SL lines (1M tab only)
+            if (tabData.tpLine) {{
                 const tpSeries = chart.addLineSeries({{
-                    color: frameData.tpLine.color,
+                    color: tabData.tpLine.color,
                     lineWidth: 2,
                     lineStyle: LightweightCharts.LineStyle.Dashed,
                     priceLineVisible: false,
                     lastValueVisible: true,
                     title: 'TP',
                 }});
-                // Extend across visible range
-                const firstTime = frameData.candleData[0].time;
-                const lastTime = frameData.candleData[frameData.candleData.length - 1].time;
+                const firstTime = tabData.candleData[0].time;
+                const lastTime = tabData.candleData[tabData.candleData.length - 1].time;
                 tpSeries.setData([
-                    {{ time: firstTime, value: frameData.tpLine.price }},
-                    {{ time: lastTime, value: frameData.tpLine.price }}
+                    {{ time: firstTime, value: tabData.tpLine.price }},
+                    {{ time: lastTime, value: tabData.tpLine.price }}
                 ]);
                 activeLineSeries.push(tpSeries);
             }}
 
-            if (frameData.slLine) {{
+            if (tabData.slLine) {{
                 const slSeries = chart.addLineSeries({{
-                    color: frameData.slLine.color,
+                    color: tabData.slLine.color,
                     lineWidth: 2,
                     lineStyle: LightweightCharts.LineStyle.Dashed,
                     priceLineVisible: false,
                     lastValueVisible: true,
                     title: 'SL',
                 }});
-                const firstTime = frameData.candleData[0].time;
-                const lastTime = frameData.candleData[frameData.candleData.length - 1].time;
+                const firstTime = tabData.candleData[0].time;
+                const lastTime = tabData.candleData[tabData.candleData.length - 1].time;
                 slSeries.setData([
-                    {{ time: firstTime, value: frameData.slLine.price }},
-                    {{ time: lastTime, value: frameData.slLine.price }}
+                    {{ time: firstTime, value: tabData.slLine.price }},
+                    {{ time: lastTime, value: tabData.slLine.price }}
                 ]);
                 activeLineSeries.push(slSeries);
             }}
@@ -1414,12 +1460,13 @@ class StrategySweepVisualizer:
 
         function redrawOverlays() {{
             const sweep = allSweepsData[currentSweepIdx];
-            let frameData = null;
-            if (currentTab === '1H') frameData = sweep.frame1H;
-            else if (currentTab === '5M') frameData = sweep.frame5M;
-            else if (currentTab === '1M') frameData = sweep.frame1M;
+            let tabData = null;
+            if (currentTab === '1H') tabData = sweep.tab1H;
+            else if (currentTab === '5M_EVENT_B') tabData = sweep.tab5MEventB;
+            else if (currentTab === '5M_VALIDATION') tabData = sweep.tab5MValidation;
+            else if (currentTab === '1M') tabData = sweep.tab1M;
 
-            if (!frameData) return;
+            if (!tabData) return;
 
             const chartContainer = document.getElementById('chart-container');
             const rect = chartContainer.getBoundingClientRect();
@@ -1435,8 +1482,8 @@ class StrategySweepVisualizer:
             const timeScale = chart.timeScale();
 
             // Draw FVG zones
-            if (frameData.fvgZones) {{
-                frameData.fvgZones.forEach(zone => {{
+            if (tabData.fvgZones) {{
+                tabData.fvgZones.forEach(zone => {{
                     const x1 = timeScale.timeToCoordinate(zone.startTime);
                     const x2 = timeScale.timeToCoordinate(zone.endTime);
                     const y1 = candlestickSeries.priceToCoordinate(zone.topPrice);
@@ -1448,23 +1495,28 @@ class StrategySweepVisualizer:
                         const width = Math.abs(x2 - x1);
                         const height = Math.abs(y2 - y1);
 
+                        // Highlighted FVG (Event B IFVG) uses brighter color
+                        const fillColor = zone.highlighted ? 'rgba(255, 255, 0, 0.4)' : 'rgba(255, 235, 59, 0.2)';
+                        const strokeColor = zone.highlighted ? '#ffff00' : '#ffeb3b';
+                        const strokeWidth = zone.highlighted ? 3 : 1;
+
                         svg.append('rect')
                             .attr('class', 'fvg')
                             .attr('x', x)
                             .attr('y', y)
                             .attr('width', width)
                             .attr('height', height)
-                            .attr('fill', 'rgba(255, 235, 59, 0.2)')
-                            .attr('stroke', '#ffeb3b')
-                            .attr('stroke-width', 1)
-                            .attr('stroke-dasharray', '4,4');
+                            .attr('fill', fillColor)
+                            .attr('stroke', strokeColor)
+                            .attr('stroke-width', strokeWidth)
+                            .attr('stroke-dasharray', zone.highlighted ? '' : '4,4');
                     }}
                 }});
             }}
 
             // Draw OB zones
-            if (frameData.obZones) {{
-                frameData.obZones.forEach(zone => {{
+            if (tabData.obZones) {{
+                tabData.obZones.forEach(zone => {{
                     const x1 = timeScale.timeToCoordinate(zone.startTime);
                     const x2 = timeScale.timeToCoordinate(zone.endTime);
                     const y1 = candlestickSeries.priceToCoordinate(zone.topPrice);
@@ -1533,12 +1585,12 @@ class StrategySweepVisualizer:
             print("No sweeps to visualize.")
             return None
 
-        # Generate frames for each sweep
-        print("Generating frame data...")
+        # Generate data for each sweep (static snapshots)
+        print("Generating static tab data...")
         all_sweeps_data = []
         for idx, sweep_entry in enumerate(sweep_list):
             print(f"  Processing sweep {idx + 1}/{len(sweep_list)}: {sweep_entry.timestamp}")
-            sweep_data = self._generate_sweep_frames(sweep_entry, idx)
+            sweep_data = self._generate_sweep_data(sweep_entry, idx)
             all_sweeps_data.append(sweep_data)
 
         # Generate HTML
@@ -1558,7 +1610,3 @@ class StrategySweepVisualizer:
     def run(self) -> Path:
         """Alias for generate_html() - main entry point."""
         return self.generate_html()
-
-
-# Alias for backwards compatibility with existing import
-StrategySweepVisualizer = StrategySweepVisualizer
