@@ -26,7 +26,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 
 from data_loader import DataLoader
 from strategy import MultiTimeframeStrategy
-from tradingview_strategy_analyzer import StrategySweepVisualizer
+from strategy_visualizer import StrategySweepVisualizer
 from backtesting import Backtester
 
 

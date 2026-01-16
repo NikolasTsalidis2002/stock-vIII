@@ -1,5 +1,5 @@
 {
-  "symbol": "TSLA",
+  "symbol": "META",
   "timeframes": {
     "high": "1h",
     "mid": "5min",
@@ -13,7 +13,7 @@
     "bos_exit_threshold_percent": 50.0
   },
   "output": {
-    "visualize": false,
+    "visualize": true,
     "export_journal": "auto"
   },
   "asset_options": ["MSFT", "TSLA", "AAPL", "AMZN", "GOOGL", "NVDA", "META", "NFLX", "INTC", "AMD"]

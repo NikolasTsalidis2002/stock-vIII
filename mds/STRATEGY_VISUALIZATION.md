@@ -2,15 +2,91 @@
 
 ## Overview
 
-This document specifies the visualization system for the Smart Money Concepts trading strategy. The system generates a **single interactive HTML file** that allows you to explore every liquidity sweep detected, see whether it became a successful trade or failed, and step through the setup candle by candle.
+This document specifies the visualization system for the Smart Money Concepts trading strategy. The system generates a **single interactive HTML file** with three timeframe tabs that dynamically show/hide based on strategy progression.
 
 ---
 
-## Output
+## Tab System Behavior
 
-**Single file**: `results/{symbol}_sweeps.html`
+### Key Principle: One Tab Active at a Time
+- Only ONE tab is visible at any moment
+- Tabs automatically switch based on which timeframe has activity
+- **Cascading dependency**: Lower timeframes only become active when higher timeframe events are detected
 
-Example: `results/META_sweeps.html`
+### Tab Activation Rules
+
+| Strategy State | 1H Tab | 5M Tab | 1M Tab |
+|----------------|--------|--------|--------|
+| No liquidity sweep detected | Active (searching) | Empty | Empty |
+| Liquidity sweep found, no Event B | Shows sweep | Active (searching for Event B) | Empty |
+| Event B found, no validation | Shows sweep | Active (searching for validation) | Empty |
+| Validation found | Shows sweep | Shows Event B + validation | Active (monitoring TP/SL) |
+
+---
+
+## Timeframe Specifications
+
+### 1. Large Time Interval (1H)
+
+**Purpose**: Show overall market structure and liquidity sweep detection
+
+**Indicators Displayed** (SMC indicators - NO inflection points):
+- Candlesticks (green bullish, red bearish)
+- Order Blocks (rectangular zones)
+- Fair Value Gaps (rectangular zones)
+- BOS/CHoCH lines (horizontal price lines)
+- Liquidity levels (horizontal lines, X when swept)
+
+**Data Range**: ALL available historical data
+
+**Visual Style**: Match `walkthroughs/.../walkthrough.html` using TradingView lightweight-charts:
+- Rectangular zones for OBs (cyan bullish, orange bearish)
+- Rectangular zones for FVGs (yellow semi-transparent)
+- Horizontal lines for BOS/CHoCH/Liquidity
+- X markers for swept/invalidated levels
+- NO swing point markers (no stars, circles, triangles for inflection points)
+
+---
+
+### 2. Middle Time Interval (5M)
+
+**Purpose**: Show Event B detection and validation (FVG/equilibrium) search
+
+**Indicators Displayed** (same as 1H - NO inflection points):
+- Order Blocks (rectangular zones)
+- Fair Value Gaps (rectangular zones)
+- BOS/CHoCH lines
+- Liquidity levels
+
+**Data Range** (DYNAMIC based on strategy stage):
+
+| Stage | Range Start | Range End |
+|-------|-------------|-----------|
+| Before Event B found | Start of where liquidity sweep 1 started (in 1H) | Current candle |
+| After Event B found | Start of the Order Block that would be used to close/exit the operation | Current candle |
+
+**Transition Behavior**:
+- When Event B is detected, the chart range shifts to focus on validation search
+- The exit Order Block becomes the left boundary of the view
+
+---
+
+### 3. Small Time Interval (1M)
+
+**Purpose**: Monitor trade execution - show proximity to Take Profit and Stop Loss
+
+**Indicators Displayed** (same as 1H + TP/SL - NO inflection points):
+- Candlesticks
+- Order Blocks, FVGs, BOS/CHoCH, Liquidity levels
+- **TP Line**: Horizontal line showing Take Profit level
+- **SL Line**: Horizontal line showing Stop Loss level
+
+**Data Range**: From the start of the 1H liquidity sweep
+
+**Special Features**:
+- TP/SL lines extend across the entire visible range
+- User can visually track how close price is getting to each level
+- Real-time (or frame-by-frame in replay) proximity tracking
 
 ---
 
@@ -26,7 +102,9 @@ Example: `results/META_sweeps.html`
 │  │  • Oct 10 14:00 - SUCCESS (+$60) │                                       │
 │  └──────────────────────────────────┘                                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  TABS: [ 1H ] [ 5M ] [ 1M ]                                                  │
+│  TABS: [ 1H ] [ 5M ] [ 1M ]    ← Auto-switches based on active timeframe    │
+│         ^^^^                                                                 │
+│         Only one tab shown at a time, others greyed out if empty            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌───────────────────────────────────────────────┐  ┌─────────────────────┐ │
@@ -36,14 +114,17 @@ Example: `results/META_sweeps.html`
 │  │   [Candlesticks]                              │  │  Oct 6 15:30        │ │
 │  │   [Order Block Zones - Cyan/Orange]           │  │                     │ │
 │  │   [FVG Zones - Yellow]                        │  │  Outcome:           │ │
-│  │   [BOS Lines - Green/Red]                     │  │  SUCCESS            │ │
-│  │   [Exit OB Zone - Purple]                     │  │  P/L: +$8.37        │ │
-│  │                                               │  │                     │ │
-│  │   NO CIRCLE MARKERS                           │  │  Conditions:        │ │
-│  │   Only rectangular zones and lines            │  │  ✓ 1H Sweep         │ │
-│  │                                               │  │  ✓ 5M Event B       │ │
-│  └───────────────────────────────────────────────┘  │  ✓ 5M Validation    │ │
-│                                                      │  ✓ 1M Confirmation  │ │
+│  │   [BOS/CHoCH Lines]                           │  │  SUCCESS            │ │
+│  │   [Liquidity Levels - X when swept]           │  │  P/L: +$8.37        │ │
+│  │   (NO inflection point markers)               │  │                     │ │
+│  │                                               │  │  Conditions:        │ │
+│  │   For 1M tab only:                            │  │  ✓ 1H Sweep         │ │
+│  │   [TP Line - Green horizontal]                │  │  ✓ 5M Event B       │ │
+│  │   [SL Line - Red horizontal]                  │  │  ✓ 5M Validation    │ │
+│  │                                               │  │  ✓ 1M Confirmation  │ │
+│  └───────────────────────────────────────────────┘  │                     │ │
+│                                                      │  Active TF: 5M     │ │
+│                                                      │  Stage: Validation │ │
 │                                                      └─────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -60,13 +141,15 @@ Example: `results/META_sweeps.html`
   - `FAILED (No Event B)` - Partial setup, failed at stage 2
   - `FAILED (No Validation)` - Partial setup, failed at stage 3
   - `FAILED (No Confirmation)` - Partial setup, failed at stage 4
-  - `FAILED (No Exit OB)` - Partial setup, no TP target found
+  - `FAILED (Hit SL)` - Trade executed but stopped out
 
-### 2. Timeframe Tabs
-- **1H Tab**: Shows liquidity sweep detection
-- **5M Tab**: Shows Event B and Equilibrium validation
-- **1M Tab**: Shows final confirmation
-- Click to switch, one chart visible at a time
+### 2. Automatic Tab Switching
+- System monitors which timeframe has the current "action"
+- Automatically switches tabs when:
+  - 1H → 5M: When liquidity sweep is detected
+  - 5M → 1M: When Event B and validation are found
+  - 1M stays active: Until trade concludes (TP or SL hit)
+- User can manually click tabs, but only non-empty tabs are clickable
 
 ### 3. Frame Navigation
 - **Arrow keys**: Left/Right to step through candles
@@ -74,176 +157,54 @@ Example: `results/META_sweeps.html`
 - **Frame counter**: Shows current position (e.g., "Frame 15/120")
 - Animation shows how the setup developed over time
 
-### 4. Sidebar
+### 4. Sidebar Information
 - Current timestamp
 - Sweep outcome (SUCCESS/FAILED)
 - P/L amount (for successful trades)
-- Conditions checklist (✓ or ✗ for each of 4 stages)
-- Entry direction (LONG/SHORT)
-- TP and SL levels (if applicable)
+- Conditions checklist (✓ or ✗ for each stage)
+- **Active Timeframe indicator**: Shows which TF is currently displayed
+- **Current Stage**: Shows where we are in the strategy flow
 
 ---
 
-## Visual Elements
+## Indicator Visual Reference
 
-### What IS Rendered (Rectangular Zones)
+Based on `walkthroughs/.../walkthrough.html` (TradingView lightweight-charts style):
 
-| Element | Color | Style |
-|---------|-------|-------|
-| Bullish Order Block | Cyan `rgba(0, 188, 212, 0.2)` | Solid border |
-| Bearish Order Block | Orange `rgba(255, 87, 34, 0.2)` | Solid border |
-| Exit Order Block (TP) | Purple `rgba(156, 39, 176, 0.3)` | Dashed border |
-| FVG Zone | Yellow `rgba(255, 235, 59, 0.2)` | Dashed border |
-| BOS Line | Green (bullish) / Red (bearish) | Horizontal line |
-| Equilibrium Zone | Blue `rgba(33, 150, 243, 0.15)` | Filled rectangle |
+| Indicator | Visual Style | Color |
+|-----------|-------------|-------|
+| Bullish candles | Solid body | Teal/Green |
+| Bearish candles | Solid body | Red |
+| Order Blocks (bullish) | Filled rectangle | Cyan (`rgba(0, 188, 212, 0.2)`) |
+| Order Blocks (bearish) | Filled rectangle | Orange (`rgba(255, 87, 34, 0.2)`) |
+| Fair Value Gaps | Filled rectangle | Yellow (semi-transparent) |
+| BOS lines | Solid horizontal line | Green (bullish), Red (bearish) |
+| CHoCH lines | Solid horizontal line | Distinct color |
+| Liquidity levels | Horizontal line | Orange |
+| Liquidity swept | X marker on line | Red |
+| TP Level (1M only) | Horizontal dashed line | Green |
+| SL Level (1M only) | Horizontal dashed line | Red |
 
-### What is NOT Rendered
-
-- ~~Circle markers~~
-- ~~Arrow markers~~
-- ~~Star symbols~~
-- ~~X symbols~~
-- ~~Any point-based indicators~~
-
-Only zones (rectangles) and lines are shown. This keeps the chart clean and readable.
+**NOT included**: Swing high/low markers (stars, circles, triangles for inflection points)
 
 ---
 
-## Data Sources
+## Data Range Summary
 
-### For Successful Trades (TradeSignal)
-```python
-signal.timestamp_1h_sweep      # When sweep occurred
-signal.timestamp_5m_event_b    # When Event B triggered
-signal.timestamp_5m_validation # When validation happened
-signal.timestamp_1m_confirmation # When confirmation triggered
-signal.take_profit_price       # TP level
-signal.stop_loss_price         # SL level
-signal.exit_ob_top / bottom    # Exit OB zone
-signal.equilibrium_level       # Equilibrium zone center
-```
-
-### For Failed Setups (PartialSetup)
-```python
-partial.timestamp_1h_sweep     # When sweep occurred
-partial.timestamp_5m_event_b   # None if failed before this
-partial.conditions_met         # 1, 2, 3, or 4
-partial.failure_reason         # "No Event B found", etc.
-partial.exit_ob_top / bottom   # Exit OB if found
-```
+| Timeframe | Range |
+|-----------|-------|
+| 1H | All available data |
+| 5M (before Event B) | From 1H liquidity sweep start → Current |
+| 5M (after Event B) | From exit Order Block start → Current |
+| 1M | From 1H liquidity sweep start → Current |
 
 ---
 
-## Frame Generation Logic
+## Implementation Notes
 
-### For Each Sweep, Generate Frames:
-
-**Phase 1: Before Sweep (1H)**
-- Show 10 candles leading up to sweep
-- Status: "Scanning for liquidity sweep..."
-
-**Phase 2: Sweep Detected (1H)**
-- Highlight the sweep candle
-- Status: "✓ LIQUIDITY SWEEP DETECTED"
-- Show exit OB zone if found
-
-**Phase 3: Event B Search (5M)**
-- Step through 5M candles after sweep
-- Status: "Scanning 5M for Event B..."
-- If found: "✓ EVENT B DETECTED"
-- If not found (partial): "✗ No Event B - Setup Failed"
-
-**Phase 4: Validation Search (5M)**
-- Step through 5M candles after Event B
-- Show equilibrium zone
-- Status: "Scanning for equilibrium entry..."
-- If found: "✓ EQUILIBRIUM ZONE ENTERED"
-
-**Phase 5: Confirmation Search (1M)**
-- Step through 1M candles after validation
-- Status: "Scanning 1M for confirmation..."
-- If found: "✓ CONFIRMATION - TRADE ENTRY"
-
-**Phase 6: Trade Outcome (for successful trades)**
-- Show final frame with TP/SL levels
-- Status: "TRADE COMPLETE - P/L: +$X.XX"
-
----
-
-## Windowing Rules
-
-| Timeframe | Window Start | Window End |
-|-----------|--------------|------------|
-| 1H | 10 candles before sweep | Current frame time |
-| 5M | Sweep timestamp | Current frame time |
-| 1M | Validation timestamp | Current frame time |
-
-The 5M and 1M charts only become visible after their respective trigger events.
-
----
-
-## Command
-
-```bash
-python3 scripts/analyze_strategy.py --symbol META --visualize
-```
-
-Generates: `results/META_sweeps.html`
-
----
-
-## Technical Implementation
-
-### Files
-
-| File | Purpose |
-|------|---------|
-| `src/tradingview_strategy_analyzer.py` | Main visualization generator |
-| `scripts/analyze_strategy.py` | CLI with `--visualize` flag |
-| `src/strategy/models.py` | TradeSignal and PartialSetup dataclasses |
-
-### Libraries
-
-- **TradingView Lightweight Charts** - Candlestick rendering
-- **D3.js** - SVG overlay for rectangular zones
-
-### HTML Structure
-
-```html
-<!DOCTYPE html>
-<html>
-<head>
-    <script src="lightweight-charts.js"></script>
-    <script src="d3.v7.min.js"></script>
-</head>
-<body>
-    <div id="header">
-        <select id="sweep-dropdown">...</select>
-        <div id="navigation">...</div>
-    </div>
-    <div id="tabs">...</div>
-    <div id="chart-area">...</div>
-    <div id="sidebar">...</div>
-
-    <script>
-        const allSweeps = [...];  // Embedded JSON data
-        // Chart initialization and navigation logic
-    </script>
-</body>
-</html>
-```
-
----
-
-## Summary
-
-- **One HTML file** for all sweeps
-- **Dropdown** to select any sweep (timestamp + outcome)
-- **Tabs** for 1H/5M/1M timeframes
-- **Arrow key navigation** through candles
-- **Clean visualization** with zones only (no markers)
-- **All SMC indicators** rendered as rectangles and lines
-
----
-
-**Last Updated**: 2026-01-15
+1. **Tab State Management**: Track strategy state to determine which tab should be active
+2. **Dynamic Ranges**: 5M chart needs logic to detect Event B and switch range boundaries
+3. **TP/SL Lines**: Only render on 1M chart, calculate from entry price and risk parameters
+4. **Indicator Parity**: Ensure all three timeframes show the same indicator types (except TP/SL on 1M)
+5. **Visual Reference**: Use existing `walkthroughs/.../walkthrough.html` as the template for chart styling
+6. **No Inflection Points**: Do NOT render swing high/low markers - only zones (OB, FVG) and lines (BOS, liquidity, TP/SL)

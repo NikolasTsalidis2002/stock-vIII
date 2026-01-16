@@ -2,22 +2,4 @@
 - Visualise the transactions
 - Improve selling strategy. Sometimes we aere too ambtious, and we should be happy with the profit we culd be making when we are having a profit
 
-- timeout_time = entry_time + self.max_trade_duration: we should replcae that with the last hour of the day. If we are within the lcosing hour then we should close the transaction
-- what is max_favorable = max(max_favorable, favorable) used for??
--❯ i do not like this:\                                                              
-          MARKET_CLOSE_HOUR = 22                                                    
-          if entry_time.hour >= MARKET_CLOSE_HOUR:                                  
-              return self._create_timeout_result(                                   
-                  signal, signal_index, current_capital, 0, 0.0, 0.0, 0             
-              )\                                                                    
-  \                                                                                 
-  \                                                                                 
-  we canont have hard coded number as to when the market closes. Sometimes the      
-  market clsoes early due to holidays. That hard coded is just wrong! Look to see   
-  what the last row of data for a day is, and then use that time as the closing     
-  hour.
-  It seems like we already have something like it here: last_candle_of_day = self.last_candle_by_date.get(entry_date)
-
-- unrealized_pnl = (entry_price - candle['close']) * shares: in the first iteration this should be 0. Because the signal entry is when the candle closes... what is going on there?
-
-- before we buy a signal, are not checking if the current candle which marking the signal is already touching the tp??? this could happen
+- right now for every liquidity we just find one entry. But for every liquidity we should find as many entries as event b validations there are. We should see all the fvgs that could give as an entry, as well as one equlibrium if there is. This way if we end up selling early, but we find another entry we shold take it. This should be enabled thorugh a boolean in the configuration
