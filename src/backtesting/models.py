@@ -16,6 +16,35 @@ class TradeOutcome(Enum):
     LOSS = "loss"         # Trade closed with negative or zero P&L
 
 
+class SkipReason(Enum):
+    """Reasons why a trade signal was not executed."""
+    NONE = "none"                          # Trade was executed (no skip)
+    OVERLAP = "overlap"                    # Another position was open
+    MISSING_TP_SL = "missing_tp_sl"        # No TP or SL defined
+    AFTER_MARKET_CLOSE = "after_close"     # Entry time after market hours
+    PARTIAL_SETUP = "partial_setup"        # Setup conditions not met
+    NO_BACKTEST = "no_backtest"            # Backtest not run
+
+
+# Human-readable messages for skip reasons
+SKIP_REASON_MESSAGES = {
+    SkipReason.NONE: None,
+    SkipReason.OVERLAP: "Skipped - another position was open",
+    SkipReason.MISSING_TP_SL: "Skipped - missing TP or SL levels",
+    SkipReason.AFTER_MARKET_CLOSE: "Skipped - entry after market close",
+    SkipReason.PARTIAL_SETUP: "Setup incomplete",
+    SkipReason.NO_BACKTEST: "No backtest data available",
+}
+
+
+@dataclass
+class SkippedTrade:
+    """Tracks a signal that was not executed and why."""
+    signal_entry_time: datetime
+    skip_reason: SkipReason
+    details: Optional[str] = None  # Additional context (e.g., failure reason for partials)
+
+
 class ExitType(Enum):
     """How the trade was exited."""
     TP_HIT = "tp_hit"         # Take profit price was hit

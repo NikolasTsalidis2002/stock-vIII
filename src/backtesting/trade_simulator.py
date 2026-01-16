@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Optional, Dict
 
 from src.strategy.models import TradeSignal
-from .models import TradeResult, TradeOutcome, ExitType
+from .models import TradeResult, TradeOutcome, ExitType, SkipReason, SkippedTrade
 
 
 class TradeSimulator:
@@ -549,7 +549,7 @@ class TradeSimulator:
     def simulate_all(
         self,
         signals: List[TradeSignal]
-    ) -> List[TradeResult]:
+    ) -> Tuple[List[TradeResult], List[SkippedTrade]]:
         """
         Simulate all trades from a list of signals with compounding.
 
@@ -560,9 +560,10 @@ class TradeSimulator:
             signals: List of TradeSignal objects (should be sorted by time)
 
         Returns:
-            List of TradeResult objects
+            Tuple of (List of TradeResult objects, List of SkippedTrade objects)
         """
         results = []
+        skipped_trades = []
         current_capital = self.initial_capital
 
         # Sort signals by entry time
@@ -576,6 +577,11 @@ class TradeSimulator:
             # Skip signals without TP/SL
             if signal.take_profit_price is None or signal.stop_loss_price is None:
                 print(f"  Trade {i+1}: SKIPPED - Missing TP or SL")
+                skipped_trades.append(SkippedTrade(
+                    signal_entry_time=signal.timestamp_entry,
+                    skip_reason=SkipReason.MISSING_TP_SL,
+                    details="Take profit or stop loss not defined"
+                ))
                 continue
 
             # Skip signals that overlap with previous trade (can only be in one position at a time)
@@ -583,6 +589,11 @@ class TradeSimulator:
                 previous_result = results[-1]
                 if previous_result.exit_time and signal.timestamp_entry < previous_result.exit_time:
                     print(f"  Trade {i+1}: SKIPPED - Overlaps with previous trade")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.OVERLAP,
+                        details=f"Previous trade exits at {previous_result.exit_time}"
+                    ))
                     continue
 
             # Simulate this trade with current capital
@@ -591,6 +602,11 @@ class TradeSimulator:
             # Skip rejected trades (entry after market close)
             if result.exit_price is None:
                 print(f"  Trade {i+1}: REJECTED - Entry after market close ({signal.timestamp_entry})")
+                skipped_trades.append(SkippedTrade(
+                    signal_entry_time=signal.timestamp_entry,
+                    skip_reason=SkipReason.AFTER_MARKET_CLOSE,
+                    details=f"Entry time {signal.timestamp_entry.strftime('%H:%M')} after market close"
+                ))
                 continue
 
             results.append(result)
@@ -621,8 +637,10 @@ class TradeSimulator:
 
         print("-" * 60)
         print(f"  Final capital: ${current_capital:,.2f}")
+        if skipped_trades:
+            print(f"  Skipped trades: {len(skipped_trades)}")
 
-        return results
+        return results, skipped_trades
 
     def plot_unrealized_pnl(self, result: TradeResult, trade_num: int) -> None:
         """Plot unrealized P&L for a single trade."""

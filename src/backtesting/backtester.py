@@ -9,7 +9,7 @@ from typing import List, Optional
 import pandas as pd
 
 from src.strategy.models import TradeSignal
-from .models import TradeResult, PerformanceMetrics
+from .models import TradeResult, PerformanceMetrics, SkippedTrade
 from .trade_simulator import TradeSimulator
 from .performance_tracker import PerformanceTracker
 from .trade_journal import TradeJournal
@@ -86,6 +86,7 @@ class Backtester:
         self._results: List[TradeResult] = []
         self._metrics: Optional[PerformanceMetrics] = None
         self._signals: List[TradeSignal] = []
+        self._skipped_trades: List[SkippedTrade] = []
 
     @classmethod
     def from_strategy(
@@ -144,7 +145,7 @@ class Backtester:
         print("=" * 70)
 
         self._signals = signals
-        self._results = self._simulator.simulate_all(signals)
+        self._results, self._skipped_trades = self._simulator.simulate_all(signals)
         self._metrics = self._tracker.calculate_metrics(self._results)
 
         return self._results
@@ -199,3 +200,8 @@ class Backtester:
         if self._metrics and self._metrics.equity_curve:
             return self._metrics.equity_curve
         return [self.initial_capital]
+
+    @property
+    def skipped_trades(self) -> List[SkippedTrade]:
+        """List of trades that were skipped during simulation."""
+        return self._skipped_trades

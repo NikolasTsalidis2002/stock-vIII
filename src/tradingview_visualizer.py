@@ -22,11 +22,19 @@ import sys
 import os
 from pathlib import Path
 import pandas as pd
-import numpy as np
 import json
 
 # Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.visualization.core import (
+    generate_candle_data,
+    generate_fvg_zones,
+    generate_ob_zones,
+    generate_bos_lines,
+    generate_inflexion_markers,
+    generate_inflexion_lines,
+)
 
 from src.indicators.smc_custom import smc_custom
 from src.indicators.smc import smc
@@ -78,149 +86,13 @@ class TradingViewVisualizer:
         total_fvg = fvg['FVG'].notna().sum()
         total_ob = ob['OB'].notna().sum()
 
-        # Convert OHLC data to format for TradingView
-        candlestick_data = []
-        for idx, row in df_slice.iterrows():
-            candlestick_data.append({
-                'time': int(idx.timestamp()),
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close'])
-            })
-
-        # Prepare FVG data
-        fvg_zones = []
-        for i in range(len(fvg["FVG"])):
-            if not np.isnan(fvg["FVG"][i]):
-                x1 = int(fvg["MitigatedIndex"][i] if fvg["MitigatedIndex"][i] != 0 else len(df_slice) - 1)
-                fvg_zones.append({
-                    'startTime': int(df_slice.index[i].timestamp()),
-                    'endTime': int(df_slice.index[x1].timestamp()),
-                    'topPrice': float(fvg["Top"][i]),
-                    'bottomPrice': float(fvg["Bottom"][i])
-                })
-
-        # Prepare Order Block data
-        ob_zones = []
-        for i in range(len(ob["OB"])):
-            if not np.isnan(ob["OB"].iloc[i]):
-                ob_type = ob["OB"].iloc[i]
-                end_idx = int(ob["EndIndex"].iloc[i]) if not np.isnan(ob["EndIndex"].iloc[i]) else len(df_slice) - 1
-                # OB zone extends from the broken inflection to the BOS
-                ob_zones.append({
-                    'startTime': int(df_slice.index[i].timestamp()),
-                    'endTime': int(df_slice.index[min(end_idx, len(df_slice) - 1)].timestamp()),
-                    'topPrice': float(ob["Top"].iloc[i]),
-                    'bottomPrice': float(ob["Bottom"].iloc[i]),
-                    'obType': int(ob_type)  # 1 = bullish, -1 = bearish
-                })
-
-        # Prepare inflexion points data
-        inflexion_markers = []
-        for i in range(len(inflexions)):
-            if not np.isnan(inflexions["InflexionType"].iloc[i]):
-                inflx_type = inflexions["InflexionType"].iloc[i]
-                level = inflexions["Level"].iloc[i]
-                respected = inflexions["Respected"].iloc[i]
-
-                # Determine marker properties
-                if inflx_type == 1:  # Concave
-                    if respected is True:
-                        color = '#00ff00'  # Green - LIQUIDITY SWEEP
-                        text = '★'
-                        position = 'aboveBar'
-                    elif respected is False:
-                        color = '#ff0000'
-                        text = '✕'
-                        position = 'aboveBar'
-                    else:
-                        color = '#ffff00'
-                        text = '▼'
-                        position = 'aboveBar'
-                else:  # Convex
-                    if respected is True:
-                        color = '#0080ff'  # Blue - LIQUIDITY SWEEP
-                        text = '★'
-                        position = 'belowBar'
-                    elif respected is False:
-                        color = '#ff8800'
-                        text = '✕'
-                        position = 'belowBar'
-                    else:
-                        color = '#ffff00'
-                        text = '▲'
-                        position = 'belowBar'
-
-                inflexion_markers.append({
-                    'time': int(df_slice.index[i].timestamp()),
-                    'position': position,
-                    'color': color,
-                    'shape': 'circle',
-                    'text': text
-                })
-
-        # Prepare inflexion level lines (horizontal lines from inflexion to status determination)
-        inflexion_lines = []
-        for i in range(len(inflexions)):
-            if not np.isnan(inflexions["InflexionType"].iloc[i]):
-                inflx_type = inflexions["InflexionType"].iloc[i]
-                level = inflexions["Level"].iloc[i]
-                respected = inflexions["Respected"].iloc[i]
-                status_idx = int(inflexions["StatusIndex"].iloc[i]) if inflexions["StatusIndex"].iloc[i] != 0 else len(df_slice) - 1
-
-                # Color based on respect status
-                if respected is True:
-                    line_color = '#00ff00' if inflx_type == 1 else '#0080ff'  # Green for concave, blue for convex
-                elif respected is False:
-                    line_color = '#ff0000' if inflx_type == 1 else '#ff8800'  # Red/orange for broken
-                else:
-                    line_color = '#ffff00'  # Yellow for pending
-
-                inflexion_lines.append({
-                    'startTime': int(df_slice.index[i].timestamp()),
-                    'endTime': int(df_slice.index[status_idx].timestamp()),
-                    'price': float(level),
-                    'color': line_color,
-                    'lineWidth': 2 if respected is True else 1,
-                    'lineStyle': 'Solid' if respected is True else 'Dotted'
-                })
-
-        # Prepare BOS data
-        bos_lines = []
-        for i in range(len(bos)):
-            if not np.isnan(bos["BOS"].iloc[i]):
-                bos_type = bos["BOS"].iloc[i]
-                level = bos["Level"].iloc[i]
-
-                # Find the inflexion point that matches this BOS level
-                matching_inflexions = []
-                for j in range(len(inflexions)):
-                    if (not np.isnan(inflexions["Level"].iloc[j]) and
-                        inflexions["Level"].iloc[j] == level and
-                        j < i):  # Inflexion must be before BOS candle
-                        matching_inflexions.append(j)
-
-                if len(matching_inflexions) > 0:
-                    # Get the most recent matching inflexion
-                    inflexion_pos = matching_inflexions[-1]
-
-                    bos_lines.append({
-                        'startTime': int(df_slice.index[inflexion_pos].timestamp()),
-                        'endTime': int(df_slice.index[i].timestamp()),
-                        'price': float(level),
-                        'color': '#00ff00' if bos_type == 1 else '#ff0000',
-                        'label': 'BOS ↑' if bos_type == 1 else 'BOS ↓'
-                    })
-                else:
-                    # Fallback: draw a point if we can't find matching inflexion
-                    bos_lines.append({
-                        'startTime': int(df_slice.index[i].timestamp()),
-                        'endTime': int(df_slice.index[i].timestamp()),
-                        'price': float(level),
-                        'color': '#00ff00' if bos_type == 1 else '#ff0000',
-                        'label': 'BOS ↑' if bos_type == 1 else 'BOS ↓'
-                    })
+        # Generate visualization data using shared functions
+        candlestick_data = generate_candle_data(df_slice)
+        fvg_zones = generate_fvg_zones(df_slice, fvg)
+        ob_zones = generate_ob_zones(df_slice, ob)
+        inflexion_markers = generate_inflexion_markers(df_slice, inflexions)
+        inflexion_lines = generate_inflexion_lines(df_slice, inflexions)
+        bos_lines = generate_bos_lines(df_slice, bos, inflexions)
 
         # Return frame data as dictionary
         return {

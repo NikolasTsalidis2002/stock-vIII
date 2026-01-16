@@ -26,34 +26,27 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 import pandas as pd
-import numpy as np
 import json
-
-
-class NumpyEncoder(json.JSONEncoder):
-    """Custom JSON encoder to handle numpy types."""
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        if pd.isna(obj):
-            return None
-        return super().default(obj)
 
 # Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.visualization.core import (
+    NumpyEncoder,
+    generate_candle_data,
+    generate_fvg_zones,
+    generate_ob_zones,
+    generate_bos_lines,
+    generate_liquidity_lines,
+)
+
 from src.strategy.models import TradeSignal, PartialSetup
 from src.indicators.smc_custom import smc_custom
 from src.indicators.smc import smc
+from src.backtesting.models import TradeResult, TradeOutcome, ExitType, SkippedTrade, SkipReason, SKIP_REASON_MESSAGES
 
 
 @dataclass
@@ -86,7 +79,9 @@ class StrategySweepVisualizer:
         self,
         strategy,  # MultiTimeframeStrategy - has timeframe_manager, signals, partial_setups
         symbol: str = 'TSLA',
-        output_dir: Optional[Path] = None
+        output_dir: Optional[Path] = None,
+        trade_results: Optional[List['TradeResult']] = None,
+        skipped_trades: Optional[List['SkippedTrade']] = None
     ):
         """
         Initialize visualizer.
@@ -95,9 +90,25 @@ class StrategySweepVisualizer:
             strategy: MultiTimeframeStrategy instance with signals and partial_setups
             symbol: Stock symbol for titles
             output_dir: Custom output directory (defaults to results/)
+            trade_results: Optional list of TradeResult objects from backtesting
+            skipped_trades: Optional list of SkippedTrade objects for trades that weren't executed
         """
         self.strategy = strategy
         self.symbol = symbol.upper()
+        self.trade_results = trade_results or []
+        self.skipped_trades = skipped_trades or []
+
+        # Build lookup from signal timestamp to trade result for efficient access
+        self._trade_result_lookup: Dict[datetime, TradeResult] = {}
+        for result in self.trade_results:
+            if result.entry_time:
+                self._trade_result_lookup[result.entry_time] = result
+
+        # Build lookup from signal entry time to skipped trade for efficient access
+        self._skip_reason_lookup: Dict[datetime, SkippedTrade] = {}
+        for skipped in self.skipped_trades:
+            if skipped.signal_entry_time:
+                self._skip_reason_lookup[skipped.signal_entry_time] = skipped
 
         if output_dir is None:
             current_file = Path(__file__)
@@ -176,163 +187,6 @@ class StrategySweepVisualizer:
 
         return sweep_list
 
-    def _generate_candle_data(self, df: pd.DataFrame) -> List[Dict]:
-        """Convert DataFrame to candlestick data format."""
-        candle_data = []
-        for idx, row in df.iterrows():
-            candle_data.append({
-                'time': int(idx.timestamp()),
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close'])
-            })
-        return candle_data
-
-    def _generate_fvg_zones(self, df: pd.DataFrame, fvg: pd.DataFrame, highlight_time: Optional[datetime] = None) -> List[Dict]:
-        """Generate FVG zone data for visualization."""
-        fvg_zones = []
-
-        for i in range(len(fvg)):
-            if i >= len(df):
-                break
-            if pd.notna(fvg["FVG"].iloc[i]):
-                # Get end index (mitigated or end of data)
-                mitigated_idx = fvg["MitigatedIndex"].iloc[i]
-                end_idx = int(mitigated_idx) if pd.notna(mitigated_idx) and mitigated_idx != 0 else len(df) - 1
-                end_idx = min(end_idx, len(df) - 1)
-
-                # Check if this FVG should be highlighted (Event B IFVG)
-                is_highlighted = False
-                if highlight_time is not None and df.index[i] == highlight_time:
-                    is_highlighted = True
-
-                fvg_zones.append({
-                    'startTime': int(df.index[i].timestamp()),
-                    'endTime': int(df.index[end_idx].timestamp()),
-                    'topPrice': float(fvg["Top"].iloc[i]),
-                    'bottomPrice': float(fvg["Bottom"].iloc[i]),
-                    'fvgType': int(fvg["FVG"].iloc[i]),  # 1 = bullish, -1 = bearish
-                    'highlighted': is_highlighted
-                })
-
-        return fvg_zones
-
-    def _generate_ob_zones(self, df: pd.DataFrame, ob: pd.DataFrame) -> List[Dict]:
-        """Generate Order Block zone data for visualization."""
-        ob_zones = []
-
-        for i in range(len(ob)):
-            if i >= len(df):
-                break
-            if pd.notna(ob["OB"].iloc[i]):
-                end_idx = int(ob["EndIndex"].iloc[i]) if pd.notna(ob["EndIndex"].iloc[i]) else len(df) - 1
-                end_idx = min(end_idx, len(df) - 1)
-
-                ob_zones.append({
-                    'startTime': int(df.index[i].timestamp()),
-                    'endTime': int(df.index[end_idx].timestamp()),
-                    'topPrice': float(ob["Top"].iloc[i]),
-                    'bottomPrice': float(ob["Bottom"].iloc[i]),
-                    'obType': int(ob["OB"].iloc[i])  # 1 = bullish, -1 = bearish
-                })
-
-        return ob_zones
-
-    def _generate_bos_lines(self, df: pd.DataFrame, bos: pd.DataFrame, inflexions: pd.DataFrame, highlight_time: Optional[datetime] = None) -> List[Dict]:
-        """Generate BOS line data for visualization."""
-        bos_lines = []
-
-        for i in range(len(bos)):
-            if i >= len(df):
-                break
-            if pd.notna(bos["BOS"].iloc[i]):
-                bos_type = bos["BOS"].iloc[i]
-                level = bos["Level"].iloc[i]
-
-                # Find matching inflexion point
-                matching_inflexions = []
-                for j in range(len(inflexions)):
-                    if j >= len(df) or j >= i:
-                        continue
-                    if (pd.notna(inflexions["Level"].iloc[j]) and
-                        inflexions["Level"].iloc[j] == level):
-                        matching_inflexions.append(j)
-
-                # Check if this BOS should be highlighted (Event B BOS)
-                is_highlighted = False
-                if highlight_time is not None and df.index[i] == highlight_time:
-                    is_highlighted = True
-
-                if len(matching_inflexions) > 0:
-                    inflexion_pos = matching_inflexions[-1]
-                    bos_lines.append({
-                        'startTime': int(df.index[inflexion_pos].timestamp()),
-                        'endTime': int(df.index[i].timestamp()),
-                        'price': float(level),
-                        'color': '#ffff00' if is_highlighted else ('#089981' if bos_type == 1 else '#f23645'),
-                        'lineWidth': 4 if is_highlighted else 2,
-                        'label': 'BOS',
-                        'highlighted': is_highlighted
-                    })
-                else:
-                    # Fallback
-                    bos_lines.append({
-                        'startTime': int(df.index[i].timestamp()),
-                        'endTime': int(df.index[i].timestamp()),
-                        'price': float(level),
-                        'color': '#ffff00' if is_highlighted else ('#089981' if bos_type == 1 else '#f23645'),
-                        'lineWidth': 4 if is_highlighted else 2,
-                        'label': 'BOS',
-                        'highlighted': is_highlighted
-                    })
-
-        return bos_lines
-
-    def _generate_liquidity_lines(self, df: pd.DataFrame, inflexions: pd.DataFrame) -> List[Dict]:
-        """
-        Generate liquidity lines for visualization.
-
-        Shows respected inflexions (liquidity sweeps) as orange lines with X when swept.
-        """
-        liquidity_lines = []
-
-        for i in range(len(inflexions)):
-            if i >= len(df):
-                break
-            if pd.notna(inflexions["InflexionType"].iloc[i]):
-                inflx_type = inflexions["InflexionType"].iloc[i]
-                level = inflexions["Level"].iloc[i]
-                respected = inflexions["Respected"].iloc[i]
-                status_idx = inflexions["StatusIndex"].iloc[i]
-
-                # Only show liquidity lines for pending or respected inflexions
-                if respected is True:  # Liquidity was swept
-                    end_idx = int(status_idx) if pd.notna(status_idx) and status_idx != 0 else len(df) - 1
-                    end_idx = min(end_idx, len(df) - 1)
-
-                    liquidity_lines.append({
-                        'startTime': int(df.index[i].timestamp()),
-                        'endTime': int(df.index[end_idx].timestamp()),
-                        'price': float(level),
-                        'color': '#ff8c00',  # Orange
-                        'swept': True,
-                        'lineWidth': 2
-                    })
-                elif respected is None:  # Pending (not yet determined)
-                    end_idx = len(df) - 1
-
-                    liquidity_lines.append({
-                        'startTime': int(df.index[i].timestamp()),
-                        'endTime': int(df.index[end_idx].timestamp()),
-                        'price': float(level),
-                        'color': '#ff8c00',  # Orange
-                        'swept': False,
-                        'lineWidth': 1
-                    })
-
-        return liquidity_lines
-
     def _get_trade_end_time(self, sweep_entry: SweepEntry) -> datetime:
         """Get the end time for the trade (for static snapshot range)."""
         if sweep_entry.is_complete:
@@ -387,12 +241,12 @@ class StrategySweepVisualizer:
         fvg_slice = smc.fvg(df_slice, join_consecutive=True)
         ob_slice = smc_custom.ob(df_slice, bos_slice, inflexions_slice)
 
-        # Generate data
-        candle_data = self._generate_candle_data(df_slice)
-        fvg_zones = self._generate_fvg_zones(df_slice, fvg_slice)
-        ob_zones = self._generate_ob_zones(df_slice, ob_slice)
-        bos_lines = self._generate_bos_lines(df_slice, bos_slice, inflexions_slice)
-        liquidity_lines = self._generate_liquidity_lines(df_slice, inflexions_slice)
+        # Generate data using shared visualization functions
+        candle_data = generate_candle_data(df_slice)
+        fvg_zones = generate_fvg_zones(df_slice, fvg_slice)
+        ob_zones = generate_ob_zones(df_slice, ob_slice)
+        bos_lines = generate_bos_lines(df_slice, bos_slice, inflexions_slice)
+        liquidity_lines = generate_liquidity_lines(df_slice, inflexions_slice)
 
         # Highlight sweep candle
         sweep_marker = {
@@ -455,11 +309,11 @@ class StrategySweepVisualizer:
         highlight_time = event_b_time if event_b_type == 'BOS' else None
         fvg_highlight_time = event_b_time if event_b_type == 'IFVG' else None
 
-        candle_data = self._generate_candle_data(df_slice)
-        fvg_zones = self._generate_fvg_zones(df_slice, fvg_slice, highlight_time=fvg_highlight_time)
-        ob_zones = self._generate_ob_zones(df_slice, ob_slice)
-        bos_lines = self._generate_bos_lines(df_slice, bos_slice, inflexions_slice, highlight_time=highlight_time)
-        liquidity_lines = self._generate_liquidity_lines(df_slice, inflexions_slice)
+        candle_data = generate_candle_data(df_slice)
+        fvg_zones = generate_fvg_zones(df_slice, fvg_slice, highlight_time=fvg_highlight_time)
+        ob_zones = generate_ob_zones(df_slice, ob_slice)
+        bos_lines = generate_bos_lines(df_slice, bos_slice, inflexions_slice, highlight_time=highlight_time)
+        liquidity_lines = generate_liquidity_lines(df_slice, inflexions_slice)
 
         # Event B marker
         event_b_marker = {
@@ -530,12 +384,12 @@ class StrategySweepVisualizer:
         fvg_slice = smc.fvg(df_slice, join_consecutive=False)
         ob_slice = smc_custom.ob(df_slice, bos_slice, inflexions_slice)
 
-        # Generate data
-        candle_data = self._generate_candle_data(df_slice)
-        fvg_zones = self._generate_fvg_zones(df_slice, fvg_slice)
-        ob_zones = self._generate_ob_zones(df_slice, ob_slice)
-        bos_lines = self._generate_bos_lines(df_slice, bos_slice, inflexions_slice)
-        liquidity_lines = self._generate_liquidity_lines(df_slice, inflexions_slice)
+        # Generate data using shared visualization functions
+        candle_data = generate_candle_data(df_slice)
+        fvg_zones = generate_fvg_zones(df_slice, fvg_slice)
+        ob_zones = generate_ob_zones(df_slice, ob_slice)
+        bos_lines = generate_bos_lines(df_slice, bos_slice, inflexions_slice)
+        liquidity_lines = generate_liquidity_lines(df_slice, inflexions_slice)
 
         # Validation marker
         validation_marker = {
@@ -606,12 +460,12 @@ class StrategySweepVisualizer:
         bos_slice = smc_custom.bos(df_slice, inflexions_slice, close_break=True)
         fvg_slice = smc.fvg(df_slice, join_consecutive=False)
 
-        # Generate data
-        candle_data = self._generate_candle_data(df_slice)
-        fvg_zones = self._generate_fvg_zones(df_slice, fvg_slice)
+        # Generate data using shared visualization functions
+        candle_data = generate_candle_data(df_slice)
+        fvg_zones = generate_fvg_zones(df_slice, fvg_slice)
         ob_zones = []  # Usually not calculated for 1M
-        bos_lines = self._generate_bos_lines(df_slice, bos_slice, inflexions_slice)
-        liquidity_lines = self._generate_liquidity_lines(df_slice, inflexions_slice)
+        bos_lines = generate_bos_lines(df_slice, bos_slice, inflexions_slice)
+        liquidity_lines = generate_liquidity_lines(df_slice, inflexions_slice)
 
         # Confirmation marker
         confirmation_marker = {
@@ -653,17 +507,109 @@ class StrategySweepVisualizer:
             'slLine': sl_line
         }
 
+    def _get_trade_result_for_sweep(self, sweep_entry: SweepEntry) -> Optional[TradeResult]:
+        """Get the TradeResult for a sweep entry if available."""
+        if not sweep_entry.is_complete or not sweep_entry.signal:
+            return None
+
+        # Look up by entry time
+        entry_time = sweep_entry.signal.timestamp_entry
+        if entry_time in self._trade_result_lookup:
+            return self._trade_result_lookup[entry_time]
+
+        # Fallback: look up by confirmation time
+        confirmation_time = sweep_entry.signal.timestamp_1m_confirmation
+        if confirmation_time in self._trade_result_lookup:
+            return self._trade_result_lookup[confirmation_time]
+
+        return None
+
+    def _get_pnl_unavailable_reason(self, sweep_entry: SweepEntry) -> Optional[str]:
+        """
+        Get human-readable reason why P&L is not available for this sweep.
+
+        Args:
+            sweep_entry: The sweep entry to check
+
+        Returns:
+            Human-readable reason string, or None if P&L is available
+        """
+        # Check if this is a partial setup (incomplete)
+        if sweep_entry.partial and not sweep_entry.is_complete:
+            failure_reason = sweep_entry.partial.failure_reason or "conditions not met"
+            return f"Setup incomplete: {failure_reason}"
+
+        # Check if signal was skipped during backtesting
+        if sweep_entry.signal:
+            entry_time = sweep_entry.signal.timestamp_entry
+            if entry_time in self._skip_reason_lookup:
+                skip = self._skip_reason_lookup[entry_time]
+                return SKIP_REASON_MESSAGES.get(skip.skip_reason, "Trade skipped")
+
+        # No trade results available (backtest not run)
+        if not self.trade_results:
+            return "Backtest not run"
+
+        return None
+
+    def _generate_tab_pnl(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult]) -> Optional[Dict]:
+        """
+        Generate P&L tab data showing unrealized P&L progression.
+
+        Args:
+            sweep_entry: The sweep entry being visualized
+            trade_result: The TradeResult from backtesting (if available)
+
+        Returns:
+            Dict with P&L chart data, or None if no trade result
+        """
+        if not trade_result:
+            return None
+
+        # Check if we have unrealized P&L series data
+        if not trade_result.unrealized_pnl_series or len(trade_result.unrealized_pnl_series) == 0:
+            return None
+
+        # Convert unrealized P&L series to chart format
+        pnl_series = []
+        for ts, pnl in trade_result.unrealized_pnl_series:
+            pnl_series.append({
+                'time': int(ts.timestamp()),
+                'value': float(pnl)
+            })
+
+        # Calculate TP and SL levels in dollar terms
+        tp_dollars = trade_result.reward_amount()
+        sl_dollars = -trade_result.risk_amount()
+
+        return {
+            'tabName': 'P&L',
+            'pnlSeries': pnl_series,
+            'tpDollars': tp_dollars,
+            'slDollars': sl_dollars,
+            'exitPnl': trade_result.pnl_dollars,
+            'exitTime': int(trade_result.exit_time.timestamp()) if trade_result.exit_time else None,
+            'entryPrice': trade_result.entry_price,
+            'direction': trade_result.entry_direction,
+            'outcome': trade_result.outcome.value if trade_result.outcome else None,
+            'exitType': trade_result.exit_type.value if trade_result.exit_type else None
+        }
+
     def _generate_sweep_data(self, sweep_entry: SweepEntry, sweep_idx: int) -> Dict:
         """
         Generate all tab data for a single sweep (static snapshots).
 
-        Returns dict with data for each of the 4 tabs.
+        Returns dict with data for each of the 5 tabs (including P&L).
         """
+        # Get trade result for this sweep (if available from backtesting)
+        trade_result = self._get_trade_result_for_sweep(sweep_entry)
+
         # Generate tabs
         tab_1h = self._generate_tab_1h(sweep_entry)
         tab_5m_event_b = self._generate_tab_5m_event_b(sweep_entry)
         tab_5m_validation = self._generate_tab_5m_validation(sweep_entry)
         tab_1m = self._generate_tab_1m(sweep_entry)
+        tab_pnl = self._generate_tab_pnl(sweep_entry, trade_result)
 
         # Determine active tab (first available tab with most progress)
         if tab_1m:
@@ -744,6 +690,18 @@ class StrategySweepVisualizer:
                 'value': None
             })
 
+        # Extract P&L data from trade result (if available)
+        pnl_dollars = trade_result.pnl_dollars if trade_result else None
+        pnl_percent = trade_result.pnl_percent if trade_result else None
+        pnl_r = trade_result.pnl_r_multiple if trade_result else None
+        exit_type = trade_result.exit_type.value if trade_result and trade_result.exit_type else None
+        trade_outcome = trade_result.outcome.value if trade_result and trade_result.outcome else None
+
+        # Get reason why P&L is unavailable (if applicable)
+        pnl_unavailable_reason = None
+        if pnl_dollars is None:
+            pnl_unavailable_reason = self._get_pnl_unavailable_reason(sweep_entry)
+
         return {
             'sweepIdx': sweep_idx,
             'timestamp': sweep_entry.timestamp.strftime('%Y-%m-%d %H:%M'),
@@ -755,9 +713,17 @@ class StrategySweepVisualizer:
             'tab5MEventB': tab_5m_event_b,
             'tab5MValidation': tab_5m_validation,
             'tab1M': tab_1m,
+            'tabPnL': tab_pnl,
             'entryPrice': sweep_entry.signal.price_entry if sweep_entry.is_complete else None,
             'tpPrice': sweep_entry.signal.take_profit_price if sweep_entry.is_complete else None,
-            'slPrice': sweep_entry.signal.stop_loss_price if sweep_entry.is_complete else None
+            'slPrice': sweep_entry.signal.stop_loss_price if sweep_entry.is_complete else None,
+            # P&L fields from backtesting
+            'pnlDollars': pnl_dollars,
+            'pnlPercent': pnl_percent,
+            'pnlR': pnl_r,
+            'exitType': exit_type,
+            'tradeOutcome': trade_outcome,
+            'pnlUnavailableReason': pnl_unavailable_reason
         }
 
     def _create_html_template(self, all_sweeps_data: List[Dict]) -> str:
@@ -1011,6 +977,15 @@ class StrategySweepVisualizer:
             border-radius: 3px;
             font-family: monospace;
         }}
+
+        /* P&L Unavailable message (subtle info style) */
+        .pnl-unavailable {{
+            color: #6b7280;
+            font-size: 12px;
+            font-style: italic;
+            padding: 8px 0;
+            text-align: center;
+        }}
     </style>
 </head>
 <body>
@@ -1031,6 +1006,7 @@ class StrategySweepVisualizer:
             <div class="tab" data-tab="5M_EVENT_B" onclick="switchTab('5M_EVENT_B')">{tf_mid} Event B</div>
             <div class="tab" data-tab="5M_VALIDATION" onclick="switchTab('5M_VALIDATION')">{tf_mid} Validation</div>
             <div class="tab" data-tab="1M" onclick="switchTab('1M')">{tf_low}</div>
+            <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
         </div>
 
         <div id="main">
@@ -1068,6 +1044,30 @@ class StrategySweepVisualizer:
                     <div class="info-row">
                         <span class="info-label">Stop Loss</span>
                         <span class="info-value failed" id="sl-price">-</span>
+                    </div>
+                </div>
+
+                <div class="sidebar-section" id="pnl-info" style="display: none;">
+                    <h3>P&L Summary</h3>
+                    <div class="info-row">
+                        <span class="info-label">Outcome</span>
+                        <span class="info-value" id="trade-outcome">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Exit Type</span>
+                        <span class="info-value" id="exit-type">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">P&L</span>
+                        <span class="info-value" id="pnl-dollars">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">P&L %</span>
+                        <span class="info-value" id="pnl-percent">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">R-Multiple</span>
+                        <span class="info-value" id="pnl-r">-</span>
                     </div>
                 </div>
 
@@ -1123,7 +1123,7 @@ class StrategySweepVisualizer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1 2 3 4</span>
+                        <span class="shortcut-key">1 2 3 4 5</span>
                     </div>
                 </div>
             </div>
@@ -1206,6 +1206,7 @@ class StrategySweepVisualizer:
                 if (e.key === '2') switchTab('5M_EVENT_B');
                 if (e.key === '3') switchTab('5M_VALIDATION');
                 if (e.key === '4') switchTab('1M');
+                if (e.key === '5') switchTab('PNL');
             }});
 
             // Resize handler
@@ -1262,6 +1263,78 @@ class StrategySweepVisualizer:
                 tradeInfo.style.display = 'none';
             }}
 
+            // P&L Summary (for completed trades with backtest results, or show unavailable reason)
+            const pnlInfo = document.getElementById('pnl-info');
+            if (sweep.pnlDollars !== null && sweep.pnlDollars !== undefined) {{
+                // P&L data available - show full details
+                pnlInfo.style.display = 'block';
+                pnlInfo.innerHTML = `
+                    <h3>P&L Summary</h3>
+                    <div class="info-row">
+                        <span class="info-label">Outcome</span>
+                        <span class="info-value" id="trade-outcome">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Exit Type</span>
+                        <span class="info-value" id="exit-type">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">P&L</span>
+                        <span class="info-value" id="pnl-dollars">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">P&L %</span>
+                        <span class="info-value" id="pnl-percent">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">R-Multiple</span>
+                        <span class="info-value" id="pnl-r">-</span>
+                    </div>
+                `;
+
+                // Outcome
+                const outcomeSpan = document.getElementById('trade-outcome');
+                outcomeSpan.textContent = sweep.tradeOutcome ? sweep.tradeOutcome.toUpperCase() : '-';
+                outcomeSpan.className = 'info-value ' + (sweep.tradeOutcome === 'win' ? 'success' : 'failed');
+
+                // Exit Type
+                const exitTypeSpan = document.getElementById('exit-type');
+                const exitTypeMap = {{
+                    'tp_hit': 'Take Profit',
+                    'sl_hit': 'Stop Loss',
+                    'timeout': 'Timeout',
+                    'bos_exit': 'BOS Exit'
+                }};
+                exitTypeSpan.textContent = exitTypeMap[sweep.exitType] || sweep.exitType || '-';
+
+                // P&L Dollars
+                const pnlDollarsSpan = document.getElementById('pnl-dollars');
+                const pnlDollars = sweep.pnlDollars;
+                pnlDollarsSpan.textContent = (pnlDollars >= 0 ? '+' : '') + '$' + pnlDollars.toFixed(2);
+                pnlDollarsSpan.className = 'info-value ' + (pnlDollars >= 0 ? 'success' : 'failed');
+
+                // P&L Percent
+                const pnlPercentSpan = document.getElementById('pnl-percent');
+                const pnlPercent = sweep.pnlPercent;
+                pnlPercentSpan.textContent = (pnlPercent >= 0 ? '+' : '') + pnlPercent.toFixed(2) + '%';
+                pnlPercentSpan.className = 'info-value ' + (pnlPercent >= 0 ? 'success' : 'failed');
+
+                // R-Multiple
+                const pnlRSpan = document.getElementById('pnl-r');
+                const pnlR = sweep.pnlR;
+                pnlRSpan.textContent = (pnlR >= 0 ? '+' : '') + pnlR.toFixed(2) + 'R';
+                pnlRSpan.className = 'info-value ' + (pnlR >= 0 ? 'success' : 'failed');
+            }} else if (sweep.pnlUnavailableReason) {{
+                // P&L not available - show reason
+                pnlInfo.style.display = 'block';
+                pnlInfo.innerHTML = `
+                    <h3>P&L Summary</h3>
+                    <div class="pnl-unavailable">${{sweep.pnlUnavailableReason}}</div>
+                `;
+            }} else {{
+                pnlInfo.style.display = 'none';
+            }}
+
             // Update conditions
             const conditionsList = document.getElementById('conditions-list');
             conditionsList.innerHTML = '';
@@ -1298,6 +1371,7 @@ class StrategySweepVisualizer:
                 if (tabId === '5M_EVENT_B' && sweep.tab5MEventB) hasData = true;
                 if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
                 if (tabId === '1M' && sweep.tab1M) hasData = true;
+                if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
 
                 if (!hasData) {{
                     tab.classList.add('disabled');
@@ -1318,6 +1392,7 @@ class StrategySweepVisualizer:
             if (tabId === '5M_EVENT_B' && sweep.tab5MEventB) hasData = true;
             if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
             if (tabId === '1M' && sweep.tab1M) hasData = true;
+            if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
 
             if (!hasData) return;
 
@@ -1338,8 +1413,15 @@ class StrategySweepVisualizer:
             else if (currentTab === '5M_EVENT_B') tabData = sweep.tab5MEventB;
             else if (currentTab === '5M_VALIDATION') tabData = sweep.tab5MValidation;
             else if (currentTab === '1M') tabData = sweep.tab1M;
+            else if (currentTab === 'PNL') tabData = sweep.tabPnL;
 
             if (!tabData) return;
+
+            // Handle P&L tab separately (line chart, not candlestick)
+            if (currentTab === 'PNL') {{
+                showPnLChart(sweep.tabPnL);
+                return;
+            }}
 
             // Clear existing lines
             clearLineSeries();
@@ -1459,6 +1541,9 @@ class StrategySweepVisualizer:
         }}
 
         function redrawOverlays() {{
+            // Skip overlays for P&L tab (no candlestick zones)
+            if (currentTab === 'PNL') return;
+
             const sweep = allSweepsData[currentSweepIdx];
             let tabData = null;
             if (currentTab === '1H') tabData = sweep.tab1H;
@@ -1543,6 +1628,111 @@ class StrategySweepVisualizer:
                     }}
                 }});
             }}
+        }}
+
+        function showPnLChart(pnlData) {{
+            // Clear existing series
+            clearLineSeries();
+
+            // Clear SVG overlays
+            d3.select('#svg-overlay').selectAll('*').remove();
+
+            // Hide candlestick series (we'll use line series for P&L)
+            candlestickSeries.setData([]);
+            candlestickSeries.setMarkers([]);
+
+            if (!pnlData || !pnlData.pnlSeries || pnlData.pnlSeries.length === 0) {{
+                return;
+            }}
+
+            // Get time range for horizontal lines
+            const firstTime = pnlData.pnlSeries[0].time;
+            const lastTime = pnlData.pnlSeries[pnlData.pnlSeries.length - 1].time;
+
+            // Draw P&L line (main series)
+            const pnlSeries = chart.addLineSeries({{
+                color: '#2962ff',
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                priceLineVisible: false,
+                lastValueVisible: true,
+                title: 'P&L',
+            }});
+            pnlSeries.setData(pnlData.pnlSeries);
+            activeLineSeries.push(pnlSeries);
+
+            // Draw zero line
+            const zeroSeries = chart.addLineSeries({{
+                color: '#787b86',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dotted,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            }});
+            zeroSeries.setData([
+                {{ time: firstTime, value: 0 }},
+                {{ time: lastTime, value: 0 }}
+            ]);
+            activeLineSeries.push(zeroSeries);
+
+            // Draw TP line (green dashed)
+            if (pnlData.tpDollars) {{
+                const tpSeries = chart.addLineSeries({{
+                    color: '#089981',
+                    lineWidth: 2,
+                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: true,
+                    title: 'TP',
+                }});
+                tpSeries.setData([
+                    {{ time: firstTime, value: pnlData.tpDollars }},
+                    {{ time: lastTime, value: pnlData.tpDollars }}
+                ]);
+                activeLineSeries.push(tpSeries);
+            }}
+
+            // Draw SL line (red dashed)
+            if (pnlData.slDollars) {{
+                const slSeries = chart.addLineSeries({{
+                    color: '#f23645',
+                    lineWidth: 2,
+                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: true,
+                    title: 'SL',
+                }});
+                slSeries.setData([
+                    {{ time: firstTime, value: pnlData.slDollars }},
+                    {{ time: lastTime, value: pnlData.slDollars }}
+                ]);
+                activeLineSeries.push(slSeries);
+            }}
+
+            // Add exit marker
+            if (pnlData.exitTime && pnlData.exitPnl !== null) {{
+                const exitMarkerSeries = chart.addLineSeries({{
+                    color: pnlData.exitPnl >= 0 ? '#089981' : '#f23645',
+                    lineWidth: 0,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                }});
+                // Use a point marker approach - add a small data point
+                exitMarkerSeries.setData([
+                    {{ time: pnlData.exitTime, value: pnlData.exitPnl }}
+                ]);
+                exitMarkerSeries.setMarkers([{{
+                    time: pnlData.exitTime,
+                    position: pnlData.exitPnl >= 0 ? 'aboveBar' : 'belowBar',
+                    color: pnlData.exitPnl >= 0 ? '#089981' : '#f23645',
+                    shape: 'circle',
+                    text: 'EXIT'
+                }}]);
+                activeLineSeries.push(exitMarkerSeries);
+            }}
+
+            // Fit content
+            chart.timeScale().fitContent();
         }}
 
         function prevSweep() {{

@@ -468,10 +468,22 @@ def main():
 
         total_sweeps = len(signals) + len(strategy.partial_setups)
         if total_sweeps > 0:
-            visualizer = StrategySweepVisualizer(strategy, symbol=symbol)
+            # Pass trade results and skipped trades from backtester (if available) for P&L display
+            trade_results = backtester.results if backtester else []
+            skipped_trades = backtester.skipped_trades if backtester else []
+            visualizer = StrategySweepVisualizer(
+                strategy,
+                symbol=symbol,
+                trade_results=trade_results,
+                skipped_trades=skipped_trades
+            )
             output_path = visualizer.generate_html()
             print(f"\n✅ Generated visualization: {output_path}")
             print(f"   Total sweeps: {total_sweeps} ({len(signals)} successful, {len(strategy.partial_setups)} failed)")
+            if trade_results:
+                print(f"   P&L data included for {len(trade_results)} trades")
+            if skipped_trades:
+                print(f"   Skipped trade info included for {len(skipped_trades)} signals")
             print("   Open the HTML file in your browser to explore all sweeps!")
         else:
             print("\n⚠️  No sweeps found to visualize.")
