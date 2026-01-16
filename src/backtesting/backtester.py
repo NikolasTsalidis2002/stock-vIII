@@ -76,7 +76,8 @@ class Backtester:
             bos_exit_enabled=bos_exit_enabled,
             bos_exit_threshold_percent=bos_exit_threshold_percent,
             bos_mid_df=bos_mid_df,
-            df_mid=df_mid
+            df_mid=df_mid,
+            symbol=self.symbol
         )
         self._tracker = PerformanceTracker(initial_capital=initial_capital)
         self._journal = TradeJournal(symbol=self.symbol)

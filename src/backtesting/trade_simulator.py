@@ -35,7 +35,8 @@ class TradeSimulator:
         bos_exit_enabled: bool = False,
         bos_exit_threshold_percent: float = 50.0,
         bos_mid_df: pd.DataFrame = None,
-        df_mid: pd.DataFrame = None
+        df_mid: pd.DataFrame = None,
+        symbol: str = 'TSLA'
     ) -> None:
         """
         Initialize trade simulator.
@@ -49,11 +50,13 @@ class TradeSimulator:
             bos_exit_threshold_percent: Min profit as % of TP target before BOS exit allowed (default 50%)
             bos_mid_df: Mid timeframe BOS DataFrame (columns: BOS, Level, etc.)
             df_mid: Mid timeframe OHLCV DataFrame with datetime index
+            symbol: Stock symbol being backtested (default 'TSLA')
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
         self.max_trade_duration = timedelta(hours=max_trade_duration_hours)
         self.intraday_only = intraday_only
+        self.symbol = symbol.upper()
 
         # BOS exit configuration
         self.bos_exit_enabled = bos_exit_enabled
@@ -62,12 +65,26 @@ class TradeSimulator:
         self.df_mid = df_mid
         self.low_to_mid_idx: Dict[datetime, int] = {}
 
+        # Setup symbol-specific plots directory
+        self._setup_plots_directory()
+
         # Build lookup: date -> last candle timestamp for that day
         self.last_candle_by_date = df_low.groupby(df_low.index.date).apply(lambda x: x.index.max()).to_dict()
 
         # Build 1min->5min timestamp mapping if BOS exit is enabled
         if bos_exit_enabled and bos_mid_df is not None and df_mid is not None:
             self._build_low_to_mid_mapping()
+
+    def _setup_plots_directory(self) -> None:
+        """Create symbol-specific plots folder and clean existing plots."""
+        from pathlib import Path
+
+        self.plots_dir = Path('results/trades') / self.symbol.lower()
+        self.plots_dir.mkdir(parents=True, exist_ok=True)
+
+        # Delete existing plots for this symbol (clean slate for rerun)
+        for png_file in self.plots_dir.glob('*.png'):
+            png_file.unlink()
 
     def simulate_trade(
         self,
@@ -101,9 +118,10 @@ class TradeSimulator:
         sl_price = signal.stop_loss_price
         direction = signal.entry_direction
 
-        # Reject entries after market close (22:00 Madrid = 16:00 ET) - intraday only
-        MARKET_CLOSE_HOUR = 22
-        if entry_time.hour >= MARKET_CLOSE_HOUR:
+        # Reject entries at or after market close (dynamically detected from data)
+        entry_date = entry_time.date()
+        last_candle_of_day = self.last_candle_by_date.get(entry_date)
+        if last_candle_of_day and entry_time >= last_candle_of_day:
             return self._create_timeout_result(
                 signal, signal_index, current_capital, 0, 0.0, 0.0, 0
             )
@@ -133,14 +151,34 @@ class TradeSimulator:
                 signal, signal_index, current_capital, shares, 0.0, 0.0, 0
             )
 
+        # Check if entry candle already hit TP/SL (reject trade if so)
+        entry_candle = self.df_low.iloc[start_idx]
+        tp_hit_on_entry, sl_hit_on_entry = self._check_candle_crosses(
+            entry_candle['high'],
+            entry_candle['low'],
+            tp_price,
+            sl_price,
+            direction
+        )
+        if tp_hit_on_entry or sl_hit_on_entry:
+            # Entry candle already touched target - reject trade
+            return self._create_timeout_result(
+                signal, signal_index, current_capital, 0, 0.0, 0.0, 0
+            )
+
+        # Skip entry candle, start walk-forward from next candle
+        # (entry is at candle close, so the first unrealized P&L should be from the next candle)
+        start_idx += 1
+        if start_idx >= len(self.df_low):
+            return self._create_timeout_result(
+                signal, signal_index, current_capital, shares, 0.0, 0.0, 0
+            )
+
         # Calculate timeout boundary
         timeout_time = entry_time + self.max_trade_duration
 
         # Walk forward through 1M candles
         candles_scanned = 0
-
-        # Market close time (22:00 Madrid = 16:00 ET)
-        MARKET_CLOSE_HOUR = 22
 
         for idx in range(start_idx, len(self.df_low)):
             candle = self.df_low.iloc[idx]
@@ -614,11 +652,12 @@ class TradeSimulator:
 
         plt.xlabel('Time')
         plt.ylabel('Unrealized P&L ($)')
-        plt.title(f'Trade {trade_num} - {result.entry_direction.upper()} @ ${result.entry_price:.2f}')
+        plt.title(f'Trade {trade_num} [{self.symbol}] - {result.entry_direction.upper()} @ ${result.entry_price:.2f}')
         plt.legend()
         plt.xticks(range(0, len(times), max(1, len(times)//10)),
                    [times[i] for i in range(0, len(times), max(1, len(times)//10))], rotation=45)
         plt.tight_layout()
-        plt.savefig(f'results/trades/trade_{trade_num}_pnl.png')
+        save_path = self.plots_dir / f'trade_{trade_num}_pnl.png'
+        plt.savefig(save_path)
         plt.close()
-        print(f"    📊 Plot saved: results/trades/trade_{trade_num}_pnl.png")
+        print(f"    Plot saved: {save_path}")
