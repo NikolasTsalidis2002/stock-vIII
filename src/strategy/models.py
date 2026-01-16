@@ -4,10 +4,10 @@ Data models for the multi-timeframe trading strategy.
 Contains all dataclasses and enums used across strategy modules.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 class StrategyState(Enum):
@@ -17,6 +17,17 @@ class StrategyState(Enum):
     WAITING_FOR_VALIDATION = 3       # 5M FVG/Demand respect
     WAITING_FOR_FINAL_CONFIRMATION = 4  # 1M BOS/IFVG
     ENTRY_SIGNAL_GENERATED = 5
+
+
+@dataclass
+class TrackedFVG:
+    """Tracks an FVG used for validation."""
+    fvg_index: int              # Row index in fvg_mid DataFrame
+    fvg_type: int               # 1 (bullish) or -1 (bearish)
+    top: float                  # Top of FVG zone
+    bottom: float               # Bottom of FVG zone
+    respected_at_index: int     # Index where FVG was respected (MitigatedIndex)
+    respected_at_time: datetime # Timestamp when respected
 
 
 @dataclass
@@ -88,6 +99,9 @@ class EquilibriumState:
     in_target_zone: bool      # True if price in premium/discount
     trigger_time: Optional[datetime] = None  # Time when zone was entered
     trigger_price: Optional[float] = None    # Price when zone was entered
+    # FVG respect validation fields
+    validation_type: str = 'Equilibrium'     # 'Equilibrium' or 'FVG_Respect'
+    tracked_fvgs: List['TrackedFVG'] = field(default_factory=list)  # FVGs used for validation (if FVG_Respect)
 
 
 @dataclass

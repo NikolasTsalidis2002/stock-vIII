@@ -159,7 +159,7 @@ class ExitTargetFinder:
                     ob_bottom=ob_bottom,
                     ob_start_idx=trend_start,
                     ob_end_idx=i,
-                    take_profit=ob_top,  # For LONG: TP at top of OB (price goes UP)
+                    take_profit=ob_bottom,  # For LONG: TP at bottom of OB (price goes UP)
                     bos_idx=i,
                     ob_start_time=self.df_mid.index[trend_start],
                     ob_end_time=self.df_mid.index[i]

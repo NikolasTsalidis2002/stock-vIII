@@ -1,9 +1,9 @@
 {
-  "symbol": "AMZN",
+  "symbol": "META",
   "timeframes": {
     "high": "1h",
-    "mid": "15min",
-    "low": "5min"
+    "mid": "5min",
+    "low": "1min"
   },
   "backtest": {
     "enabled": true,

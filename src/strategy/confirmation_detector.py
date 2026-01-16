@@ -72,8 +72,13 @@ class ConfirmationDetector:
         target_fvg = -1 if entry_direction == 'long' else 1
 
         # Only check FVGs disrespected at this specific index
+        # StatusIndex marks when an FVG's status changed (i.e., when it was disrespected)
         local_fvg = self.fvg_low.loc[self.fvg_low['StatusIndex'] == idx_1m]
 
+        # Multiple FVGs can be disrespected on the same candle if price moves strongly
+        # through multiple gaps at once (e.g., a big bearish candle breaking through
+        # two bullish FVGs created at different times). We iterate through all of them
+        # to find one that matches our entry direction criteria.
         for i in range(len(local_fvg)):
             fvg_value = local_fvg['FVG'].iloc[i]
             respected = local_fvg['Respected'].iloc[i]
@@ -82,7 +87,7 @@ class ConfirmationDetector:
                 respected == False and
                 fvg_value == target_fvg):
                 # Found IFVG - FVG disrespected at this candle
-                level = (local_fvg['Top'].iloc[i] + local_fvg['Bottom'].iloc[i]) / 2
+                level = self.df_low['close'].iloc[idx_1m]
                 return (time_1m, 'IFVG', level)
 
         return None

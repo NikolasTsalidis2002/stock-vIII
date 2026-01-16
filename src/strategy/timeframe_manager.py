@@ -212,14 +212,14 @@ class TimeframeManager:
         self.swings_mid = smc.swing_highs_lows(self._df_mid, swing_length=30)
         self.inflexions_mid = smc_custom.inflexion_points(self._df_mid)
         self.bos_mid = smc_custom.bos(self._df_mid, self.inflexions_mid, close_break=True)
-        self.fvg_mid = smc.fvg(self._df_mid, join_consecutive=True)
+        self.fvg_mid = smc.fvg(self._df_mid, join_consecutive=False)
         self.ob_mid = smc_custom.ob(self._df_mid, self.bos_mid, self.inflexions_mid)
 
         # Low TF Indicators
         print(f"  [{low_label}] Calculating indicators...")
         self.inflexions_low = smc_custom.inflexion_points(self._df_low)
         self.bos_low = smc_custom.bos(self._df_low, self.inflexions_low, close_break=True)
-        self.fvg_low = smc.fvg(self._df_low, join_consecutive=True)
+        self.fvg_low = smc.fvg(self._df_low, join_consecutive=False)
 
         print("  ✓ All indicators calculated\n")
 
