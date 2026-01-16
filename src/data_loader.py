@@ -41,10 +41,12 @@ class DataLoader:
         self.timezone = 'Europe/Madrid'
 
         # Set up data directory (use lowercase symbol for directory name)
+        # Replace slashes with underscores for forex pairs like XAU/USD
+        safe_symbol = self.symbol.lower().replace('/', '_')
         if data_dir is None:
             current_file = Path(__file__)
             project_root = current_file.parent.parent
-            self.data_dir = project_root / 'data' / self.symbol.lower()
+            self.data_dir = project_root / 'data' / safe_symbol
         else:
             self.data_dir = Path(data_dir)
 
@@ -106,7 +108,14 @@ class DataLoader:
             raise Exception(f'❌ Error parsing API response: {e}\nData:\n{data}')
 
         # Convert columns to proper types
-        cols_to_convert = ['open', 'high', 'low', 'close', 'volume']
+        # Note: Forex/commodities (e.g., XAU/USD) may not have volume data
+        cols_to_convert = ['open', 'high', 'low', 'close']
+        if 'volume' in df.columns:
+            cols_to_convert.append('volume')
+        else:
+            # Add synthetic volume (0) for forex/commodities
+            df['volume'] = 0
+            print(f"⚠️ No volume data available for {self.symbol} - using synthetic volume (0)")
         df[cols_to_convert] = df[cols_to_convert].astype(float)
 
         # Rename datetime column to time
@@ -132,7 +141,8 @@ class DataLoader:
             df (pd.DataFrame): Data to save
             timeframe (str): Timeframe identifier for filename
         """
-        cache_file = self.data_dir / f"{self.symbol.lower()}_{timeframe}.csv"
+        safe_symbol = self.symbol.lower().replace('/', '_')
+        cache_file = self.data_dir / f"{safe_symbol}_{timeframe}.csv"
         df.to_csv(cache_file, index=False)
         print(f"💾 Cached data to {cache_file}")
 
@@ -146,7 +156,8 @@ class DataLoader:
         Returns:
             pd.DataFrame or None: Cached data if exists, None otherwise
         """
-        cache_file = self.data_dir / f"{self.symbol.lower()}_{timeframe}.csv"
+        safe_symbol = self.symbol.lower().replace('/', '_')
+        cache_file = self.data_dir / f"{safe_symbol}_{timeframe}.csv"
 
         if not cache_file.exists():
             return None
@@ -170,7 +181,8 @@ class DataLoader:
         Returns:
             dict: Cache info with keys: exists, file_path, num_candles, start_time, end_time
         """
-        cache_file = self.data_dir / f"{self.symbol.lower()}_{timeframe}.csv"
+        safe_symbol = self.symbol.lower().replace('/', '_')
+        cache_file = self.data_dir / f"{safe_symbol}_{timeframe}.csv"
 
         info = {
             'exists': cache_file.exists(),
@@ -306,16 +318,26 @@ class DataLoader:
             dict: Validation results with keys: is_valid, issues
         """
         issues = []
+        warnings = []
 
-        # Check for required columns
-        required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
+        # Check for required columns (volume is optional for forex/commodities)
+        required_cols = ['time', 'open', 'high', 'low', 'close']
+        optional_cols = ['volume']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             issues.append(f"Missing columns: {', '.join(missing_cols)}")
 
+        # Check if volume is present and has real data
+        cols_to_check = required_cols.copy()
+        if 'volume' in df.columns:
+            cols_to_check.append('volume')
+            # Check if volume is synthetic (all zeros)
+            if (df['volume'] == 0).all():
+                warnings.append("Volume data is synthetic (all zeros) - likely forex/commodity data")
+
         # Check for null values
-        if df[required_cols].isnull().any().any():
-            null_counts = df[required_cols].isnull().sum()
+        if df[cols_to_check].isnull().any().any():
+            null_counts = df[cols_to_check].isnull().sum()
             issues.append(f"Null values found: {null_counts[null_counts > 0].to_dict()}")
 
         # Check OHLC logic (high >= low, etc.)
@@ -345,7 +367,8 @@ class DataLoader:
 
         return {
             'is_valid': len(issues) == 0,
-            'issues': issues
+            'issues': issues,
+            'warnings': warnings
         }
 
     def get_summary(self):

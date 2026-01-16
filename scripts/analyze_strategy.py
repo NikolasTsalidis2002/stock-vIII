@@ -408,9 +408,9 @@ def main():
     print(f"📂 Downloading fresh {symbol} data for all timeframes...")
     loader = DataLoader(symbol=symbol)
 
-    df_high = loader.get_data(high_tf, force_refresh=True)
-    df_mid = loader.get_data(mid_tf, force_refresh=True)
-    df_low = loader.get_data(low_tf, force_refresh=True)
+    df_high = loader.get_data(high_tf, force_refresh=False)
+    df_mid = loader.get_data(mid_tf, force_refresh=False)
+    df_low = loader.get_data(low_tf, force_refresh=False)
 
     print(f"  ✓ {high_tf.upper()}:  {len(df_high)} candles")
     print(f"  ✓ {mid_tf.upper()}:  {len(df_mid)} candles")
@@ -471,11 +471,13 @@ def main():
             # Pass trade results and skipped trades from backtester (if available) for P&L display
             trade_results = backtester.results if backtester else []
             skipped_trades = backtester.skipped_trades if backtester else []
+            performance_metrics = backtester.metrics if backtester else None
             visualizer = StrategySweepVisualizer(
                 strategy,
                 symbol=symbol,
                 trade_results=trade_results,
-                skipped_trades=skipped_trades
+                skipped_trades=skipped_trades,
+                performance_metrics=performance_metrics
             )
             output_path = visualizer.generate_html()
             print(f"\n✅ Generated visualization: {output_path}")

@@ -46,7 +46,7 @@ from src.visualization.core import (
 from src.strategy.models import TradeSignal, PartialSetup
 from src.indicators.smc_custom import smc_custom
 from src.indicators.smc import smc
-from src.backtesting.models import TradeResult, TradeOutcome, ExitType, SkippedTrade, SkipReason, SKIP_REASON_MESSAGES
+from src.backtesting.models import TradeResult, TradeOutcome, ExitType, SkippedTrade, SkipReason, SKIP_REASON_MESSAGES, PerformanceMetrics
 
 
 @dataclass
@@ -81,7 +81,8 @@ class StrategySweepVisualizer:
         symbol: str = 'TSLA',
         output_dir: Optional[Path] = None,
         trade_results: Optional[List['TradeResult']] = None,
-        skipped_trades: Optional[List['SkippedTrade']] = None
+        skipped_trades: Optional[List['SkippedTrade']] = None,
+        performance_metrics: Optional['PerformanceMetrics'] = None
     ):
         """
         Initialize visualizer.
@@ -92,11 +93,13 @@ class StrategySweepVisualizer:
             output_dir: Custom output directory (defaults to results/)
             trade_results: Optional list of TradeResult objects from backtesting
             skipped_trades: Optional list of SkippedTrade objects for trades that weren't executed
+            performance_metrics: Optional PerformanceMetrics from backtesting for Dashboard tab
         """
         self.strategy = strategy
         self.symbol = symbol.upper()
         self.trade_results = trade_results or []
         self.skipped_trades = skipped_trades or []
+        self.performance_metrics = performance_metrics
 
         # Build lookup from signal timestamp to trade result for efficient access
         self._trade_result_lookup: Dict[datetime, TradeResult] = {}
@@ -113,7 +116,7 @@ class StrategySweepVisualizer:
         if output_dir is None:
             current_file = Path(__file__)
             project_root = current_file.parent.parent
-            self.output_dir = project_root / 'results'
+            self.output_dir = project_root / 'results/visualizations'
         else:
             self.output_dir = Path(output_dir)
 
@@ -270,6 +273,9 @@ class StrategySweepVisualizer:
             'text': 'SWEEP'
         }
 
+        # Calculate focus window around sweep (for context window feature)
+        focus_time = int(sweep_time.timestamp())
+
         return {
             'timeframe': self.tf_labels.get('high', '1H'),
             'tabName': self.tf_labels.get('high', '1H'),
@@ -282,7 +288,9 @@ class StrategySweepVisualizer:
             'markers': [sweep_marker],
             'equilibriumLine': None,
             'tpLine': None,
-            'slLine': None
+            'slLine': None,
+            'focusTime': focus_time,
+            'contextCandles': 30  # Show 30 candles on each side of focus
         }
 
     def _generate_tab_5m_event_b(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -337,6 +345,9 @@ class StrategySweepVisualizer:
             'text': f'EB:{event_b_type}'
         }
 
+        # Focus on Event B time
+        focus_time = int(event_b_time.timestamp())
+
         return {
             'timeframe': self.tf_labels.get('mid', '5M'),
             'tabName': f"{self.tf_labels.get('mid', '5M')} Event B",
@@ -351,7 +362,9 @@ class StrategySweepVisualizer:
             'eventBTime': int(event_b_time.timestamp()),
             'equilibriumLine': None,
             'tpLine': None,
-            'slLine': None
+            'slLine': None,
+            'focusTime': focus_time,
+            'contextCandles': 40  # Show 40 candles on each side for 5M
         }
 
     def _generate_tab_5m_validation(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -423,6 +436,9 @@ class StrategySweepVisualizer:
                 'label': f'EQ: ${equilibrium_level:.2f}'
             }
 
+        # Focus on validation time
+        focus_time = int(validation_time.timestamp())
+
         return {
             'timeframe': self.tf_labels.get('mid', '5M'),
             'tabName': f"{self.tf_labels.get('mid', '5M')} Validation",
@@ -436,7 +452,9 @@ class StrategySweepVisualizer:
             'validationType': validation_type,
             'equilibriumLine': equilibrium_line,
             'tpLine': None,
-            'slLine': None
+            'slLine': None,
+            'focusTime': focus_time,
+            'contextCandles': 40  # Show 40 candles on each side for 5M
         }
 
     def _generate_tab_1m(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -505,6 +523,9 @@ class StrategySweepVisualizer:
                 'label': f'SL: ${sl_price:.2f}'
             }
 
+        # Focus on confirmation/entry time
+        focus_time = int(confirmation_time.timestamp())
+
         return {
             'timeframe': self.tf_labels.get('low', '1M'),
             'tabName': self.tf_labels.get('low', '1M'),
@@ -517,7 +538,9 @@ class StrategySweepVisualizer:
             'markers': [confirmation_marker],
             'equilibriumLine': None,
             'tpLine': tp_line,
-            'slLine': sl_line
+            'slLine': sl_line,
+            'focusTime': focus_time,
+            'contextCandles': 60  # Show 60 candles on each side for 1M (covers more time)
         }
 
     def _get_trade_result_for_sweep(self, sweep_entry: SweepEntry) -> Optional[TradeResult]:
@@ -739,12 +762,91 @@ class StrategySweepVisualizer:
             'pnlUnavailableReason': pnl_unavailable_reason
         }
 
-    def _create_html_template(self, all_sweeps_data: List[Dict]) -> str:
+    def _generate_performance_data(self) -> Optional[Dict]:
+        """
+        Generate performance data for the Dashboard tab.
+
+        Returns:
+            Dict with performance metrics and equity curve data, or None if not available.
+        """
+        if not self.performance_metrics:
+            return None
+
+        metrics = self.performance_metrics
+
+        # Convert equity curve to chart-friendly format
+        # Each point is indexed by trade number
+        equity_curve_data = []
+        for i, capital in enumerate(metrics.equity_curve):
+            equity_curve_data.append({
+                'trade': i,
+                'capital': float(capital)
+            })
+
+        # Handle infinity for profit factor display
+        profit_factor = metrics.profit_factor
+        if profit_factor == float('inf'):
+            profit_factor_str = "∞"
+            profit_factor_num = None
+        else:
+            profit_factor_str = f"{profit_factor:.2f}"
+            profit_factor_num = float(profit_factor)
+
+        return {
+            # KPI card data
+            'totalReturn': float(metrics.total_return_percent),
+            'winRate': float(metrics.win_rate * 100),
+            'profitFactor': profit_factor_num,
+            'profitFactorStr': profit_factor_str,
+            'maxDrawdownPercent': float(metrics.max_drawdown_percent),
+            'maxDrawdownDollars': float(metrics.max_drawdown_dollars),
+
+            # Trade statistics
+            'totalTrades': int(metrics.total_trades),
+            'winningTrades': int(metrics.winning_trades),
+            'losingTrades': int(metrics.losing_trades),
+
+            # Exit breakdown
+            'tpExits': int(metrics.tp_exits),
+            'slExits': int(metrics.sl_exits),
+            'timeoutExits': int(metrics.timeout_exits),
+            'bosExits': int(metrics.bos_exits),
+
+            # Risk metrics
+            'avgRMultiple': float(metrics.average_r_multiple),
+            'maxConsecWins': int(metrics.max_consecutive_wins),
+            'maxConsecLosses': int(metrics.max_consecutive_losses),
+
+            # Win/Loss breakdown
+            'avgWinDollars': float(metrics.average_win_dollars),
+            'avgLossDollars': float(metrics.average_loss_dollars),
+            'largestWin': float(metrics.largest_win_dollars),
+            'largestLoss': float(metrics.largest_loss_dollars),
+
+            # Capital
+            'initialCapital': float(metrics.initial_capital),
+            'finalCapital': float(metrics.final_capital),
+            'totalPnl': float(metrics.total_pnl_dollars),
+
+            # Direction breakdown
+            'longTrades': int(metrics.long_trades),
+            'shortTrades': int(metrics.short_trades),
+            'longWins': int(metrics.long_wins),
+            'shortWins': int(metrics.short_wins),
+
+            # Equity curve data
+            'equityCurve': equity_curve_data
+        }
+
+    def _create_html_template(self, all_sweeps_data: List[Dict], performance_data: Optional[Dict] = None) -> str:
         """Create the complete HTML template with embedded data."""
 
         tf_high = self.tf_labels.get('high', '1H')
         tf_mid = self.tf_labels.get('mid', '5M')
         tf_low = self.tf_labels.get('low', '1M')
+
+        # Serialize performance data
+        performance_json = json.dumps(performance_data, cls=NumpyEncoder) if performance_data else 'null'
 
         return f"""
 <!DOCTYPE html>
@@ -999,6 +1101,125 @@ class StrategySweepVisualizer:
             padding: 8px 0;
             text-align: center;
         }}
+
+        /* Dashboard Styles */
+        #dashboard-container {{
+            display: none;
+            padding: 24px;
+            overflow-y: auto;
+            height: 100%;
+        }}
+        #dashboard-container.active {{
+            display: block;
+        }}
+        .dashboard-no-data {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #787b86;
+            font-size: 16px;
+        }}
+        .kpi-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }}
+        .kpi-card {{
+            background-color: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }}
+        .kpi-card.positive {{
+            border-color: rgba(8, 153, 129, 0.4);
+        }}
+        .kpi-card.negative {{
+            border-color: rgba(242, 54, 69, 0.4);
+        }}
+        .kpi-label {{
+            color: #787b86;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }}
+        .kpi-value {{
+            font-size: 28px;
+            font-weight: 600;
+        }}
+        .kpi-value.positive {{
+            color: #089981;
+        }}
+        .kpi-value.negative {{
+            color: #f23645;
+        }}
+        .kpi-value.neutral {{
+            color: #d1d4dc;
+        }}
+        .equity-chart-container {{
+            background-color: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+            height: 300px;
+        }}
+        .equity-chart-title {{
+            color: #787b86;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }}
+        #equity-chart {{
+            width: 100%;
+            height: calc(100% - 30px);
+        }}
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }}
+        .stats-card {{
+            background-color: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            padding: 16px;
+        }}
+        .stats-card-title {{
+            color: #787b86;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #2b2b43;
+        }}
+        .stats-row {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }}
+        .stats-row:last-child {{
+            margin-bottom: 0;
+        }}
+        .stats-label {{
+            color: #787b86;
+        }}
+        .stats-value {{
+            color: #d1d4dc;
+            font-weight: 500;
+        }}
+        .stats-value.positive {{
+            color: #089981;
+        }}
+        .stats-value.negative {{
+            color: #f23645;
+        }}
     </style>
 </head>
 <body>
@@ -1020,11 +1241,13 @@ class StrategySweepVisualizer:
             <div class="tab" data-tab="5M_VALIDATION" onclick="switchTab('5M_VALIDATION')">{tf_mid} Validation</div>
             <div class="tab" data-tab="1M" onclick="switchTab('1M')">{tf_low}</div>
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
+            <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
         </div>
 
         <div id="main">
             <div id="chart-area">
                 <div id="chart-container"></div>
+                <div id="dashboard-container"></div>
             </div>
 
             <div id="sidebar">
@@ -1136,7 +1359,7 @@ class StrategySweepVisualizer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1 2 3 4 5</span>
+                        <span class="shortcut-key">1 2 3 4 5 6</span>
                     </div>
                 </div>
             </div>
@@ -1147,11 +1370,16 @@ class StrategySweepVisualizer:
         // Embed all sweep data
         const allSweepsData = {json.dumps(all_sweeps_data, cls=NumpyEncoder)};
 
+        // Embed performance data for Dashboard
+        const performanceData = {performance_json};
+
         let currentSweepIdx = 0;
         let currentTab = '1H';
         let chart = null;
+        let equityChart = null;
         let candlestickSeries = null;
         let activeLineSeries = [];
+        let dashboardRendered = false;
 
         // Chart options
         const chartOptions = {{
@@ -1220,6 +1448,7 @@ class StrategySweepVisualizer:
                 if (e.key === '3') switchTab('5M_VALIDATION');
                 if (e.key === '4') switchTab('1M');
                 if (e.key === '5') switchTab('PNL');
+                if (e.key === '6') switchTab('DASHBOARD');
             }});
 
             // Resize handler
@@ -1385,12 +1614,13 @@ class StrategySweepVisualizer:
                 if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
                 if (tabId === '1M' && sweep.tab1M) hasData = true;
                 if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
+                if (tabId === 'DASHBOARD') hasData = true;  // Dashboard is always available
 
                 if (!hasData) {{
                     tab.classList.add('disabled');
                 }}
 
-                if (tabId === sweep.activeTab) {{
+                if (tabId === sweep.activeTab || (currentTab === 'DASHBOARD' && tabId === 'DASHBOARD')) {{
                     tab.classList.add('active');
                 }}
             }});
@@ -1406,6 +1636,7 @@ class StrategySweepVisualizer:
             if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
             if (tabId === '1M' && sweep.tab1M) hasData = true;
             if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
+            if (tabId === 'DASHBOARD') hasData = true;  // Dashboard is always available
 
             if (!hasData) return;
 
@@ -1416,7 +1647,14 @@ class StrategySweepVisualizer:
             }});
 
             currentTab = tabId;
-            showChart(sweep);
+
+            // Handle Dashboard tab separately
+            if (tabId === 'DASHBOARD') {{
+                showDashboard();
+            }} else {{
+                hideDashboard();
+                showChart(sweep);
+            }}
         }}
 
         function showChart(sweep) {{
@@ -1539,11 +1777,42 @@ class StrategySweepVisualizer:
                 activeLineSeries.push(slSeries);
             }}
 
-            // Fit content
-            chart.timeScale().fitContent();
+            // Apply context window - focus on key event instead of fitting all content
+            applyContextWindow(tabData);
 
             // Redraw overlays (FVG, OB zones)
             setTimeout(redrawOverlays, 50);
+        }}
+
+        function applyContextWindow(tabData) {{
+            // If we have focus time and context candles, set visible range around focus
+            if (tabData.focusTime && tabData.contextCandles && tabData.candleData && tabData.candleData.length > 0) {{
+                const focusTime = tabData.focusTime;
+                const contextCandles = tabData.contextCandles;
+
+                // Find the index of the candle closest to focus time
+                let focusIdx = 0;
+                for (let i = 0; i < tabData.candleData.length; i++) {{
+                    if (tabData.candleData[i].time >= focusTime) {{
+                        focusIdx = i;
+                        break;
+                    }}
+                    focusIdx = i;  // Last candle if focus time is beyond data
+                }}
+
+                // Calculate visible range indices
+                const startIdx = Math.max(0, focusIdx - contextCandles);
+                const endIdx = Math.min(tabData.candleData.length - 1, focusIdx + contextCandles);
+
+                // Set visible logical range (index-based)
+                chart.timeScale().setVisibleLogicalRange({{
+                    from: startIdx,
+                    to: endIdx
+                }});
+            }} else {{
+                // Fallback to fit content if no focus info
+                chart.timeScale().fitContent();
+            }}
         }}
 
         function clearLineSeries() {{
@@ -1748,6 +2017,272 @@ class StrategySweepVisualizer:
             chart.timeScale().fitContent();
         }}
 
+        function showDashboard() {{
+            // Hide chart container, show dashboard container
+            document.getElementById('chart-container').style.display = 'none';
+            const dashboardContainer = document.getElementById('dashboard-container');
+            dashboardContainer.classList.add('active');
+
+            // Render dashboard content if not already done or if data changed
+            if (!dashboardRendered) {{
+                renderDashboard();
+                dashboardRendered = true;
+            }}
+        }}
+
+        function hideDashboard() {{
+            // Show chart container, hide dashboard container
+            document.getElementById('chart-container').style.display = 'block';
+            document.getElementById('dashboard-container').classList.remove('active');
+        }}
+
+        function renderDashboard() {{
+            const container = document.getElementById('dashboard-container');
+
+            if (!performanceData) {{
+                container.innerHTML = '<div class="dashboard-no-data">No performance data available. Run backtest to see dashboard.</div>';
+                return;
+            }}
+
+            const data = performanceData;
+
+            // Format values
+            const formatDollars = (val) => {{
+                if (val === null || val === undefined) return '-';
+                const prefix = val >= 0 ? '+' : '';
+                return prefix + '$' + val.toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ',');
+            }};
+
+            const formatPercent = (val) => {{
+                if (val === null || val === undefined) return '-';
+                const prefix = val >= 0 ? '+' : '';
+                return prefix + val.toFixed(2) + '%';
+            }};
+
+            const formatR = (val) => {{
+                if (val === null || val === undefined) return '-';
+                const prefix = val >= 0 ? '+' : '';
+                return prefix + val.toFixed(2) + 'R';
+            }};
+
+            // Calculate direction win rates
+            const longWinRate = data.longTrades > 0 ? ((data.longWins / data.longTrades) * 100).toFixed(1) : '0';
+            const shortWinRate = data.shortTrades > 0 ? ((data.shortWins / data.shortTrades) * 100).toFixed(1) : '0';
+
+            // Determine value classes
+            const returnClass = data.totalReturn >= 0 ? 'positive' : 'negative';
+            const winRateClass = data.winRate >= 50 ? 'positive' : 'negative';
+            const pfClass = data.profitFactor !== null && data.profitFactor >= 1 ? 'positive' : (data.profitFactor !== null ? 'negative' : 'neutral');
+            const ddClass = 'negative';  // Drawdown is always shown as negative
+
+            container.innerHTML = `
+                <!-- KPI Cards -->
+                <div class="kpi-grid">
+                    <div class="kpi-card ${{data.totalReturn >= 0 ? 'positive' : 'negative'}}">
+                        <div class="kpi-label">Total Return</div>
+                        <div class="kpi-value ${{returnClass}}">${{formatPercent(data.totalReturn)}}</div>
+                    </div>
+                    <div class="kpi-card ${{data.winRate >= 50 ? 'positive' : 'negative'}}">
+                        <div class="kpi-label">Win Rate</div>
+                        <div class="kpi-value ${{winRateClass}}">${{data.winRate.toFixed(1)}}%</div>
+                    </div>
+                    <div class="kpi-card ${{pfClass === 'positive' ? 'positive' : ''}}">
+                        <div class="kpi-label">Profit Factor</div>
+                        <div class="kpi-value ${{pfClass}}">${{data.profitFactorStr}}</div>
+                    </div>
+                    <div class="kpi-card negative">
+                        <div class="kpi-label">Max Drawdown</div>
+                        <div class="kpi-value negative">-${{data.maxDrawdownPercent.toFixed(1)}}%</div>
+                    </div>
+                </div>
+
+                <!-- Equity Curve Chart -->
+                <div class="equity-chart-container">
+                    <div class="equity-chart-title">Equity Curve</div>
+                    <div id="equity-chart"></div>
+                </div>
+
+                <!-- Stats Grid -->
+                <div class="stats-grid">
+                    <!-- Trade Statistics -->
+                    <div class="stats-card">
+                        <div class="stats-card-title">Trade Statistics</div>
+                        <div class="stats-row">
+                            <span class="stats-label">Total Trades</span>
+                            <span class="stats-value">${{data.totalTrades}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Winning Trades</span>
+                            <span class="stats-value positive">${{data.winningTrades}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Losing Trades</span>
+                            <span class="stats-value negative">${{data.losingTrades}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Long Trades</span>
+                            <span class="stats-value">${{data.longTrades}} (${{longWinRate}}% WR)</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Short Trades</span>
+                            <span class="stats-value">${{data.shortTrades}} (${{shortWinRate}}% WR)</span>
+                        </div>
+                    </div>
+
+                    <!-- Exit Breakdown -->
+                    <div class="stats-card">
+                        <div class="stats-card-title">Exit Breakdown</div>
+                        <div class="stats-row">
+                            <span class="stats-label">TP Exits</span>
+                            <span class="stats-value positive">${{data.tpExits}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">SL Exits</span>
+                            <span class="stats-value negative">${{data.slExits}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Timeout Exits</span>
+                            <span class="stats-value">${{data.timeoutExits}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">BOS Exits</span>
+                            <span class="stats-value">${{data.bosExits}}</span>
+                        </div>
+                    </div>
+
+                    <!-- Risk Metrics -->
+                    <div class="stats-card">
+                        <div class="stats-card-title">Risk Metrics</div>
+                        <div class="stats-row">
+                            <span class="stats-label">Average R</span>
+                            <span class="stats-value ${{data.avgRMultiple >= 0 ? 'positive' : 'negative'}}">${{formatR(data.avgRMultiple)}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Max Drawdown</span>
+                            <span class="stats-value negative">${{formatDollars(-data.maxDrawdownDollars)}} (${{data.maxDrawdownPercent.toFixed(1)}}%)</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Max Consec. Wins</span>
+                            <span class="stats-value positive">${{data.maxConsecWins}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Max Consec. Losses</span>
+                            <span class="stats-value negative">${{data.maxConsecLosses}}</span>
+                        </div>
+                    </div>
+
+                    <!-- P&L Breakdown -->
+                    <div class="stats-card">
+                        <div class="stats-card-title">P&L Breakdown</div>
+                        <div class="stats-row">
+                            <span class="stats-label">Initial Capital</span>
+                            <span class="stats-value">$${{data.initialCapital.toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ',')}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Final Capital</span>
+                            <span class="stats-value">$${{data.finalCapital.toFixed(2).replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ',')}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Total P&L</span>
+                            <span class="stats-value ${{data.totalPnl >= 0 ? 'positive' : 'negative'}}">${{formatDollars(data.totalPnl)}}</span>
+                        </div>
+                    </div>
+
+                    <!-- Win/Loss Breakdown -->
+                    <div class="stats-card">
+                        <div class="stats-card-title">Win/Loss Breakdown</div>
+                        <div class="stats-row">
+                            <span class="stats-label">Average Win</span>
+                            <span class="stats-value positive">${{formatDollars(data.avgWinDollars)}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Average Loss</span>
+                            <span class="stats-value negative">${{formatDollars(data.avgLossDollars)}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Largest Win</span>
+                            <span class="stats-value positive">${{formatDollars(data.largestWin)}}</span>
+                        </div>
+                        <div class="stats-row">
+                            <span class="stats-label">Largest Loss</span>
+                            <span class="stats-value negative">${{formatDollars(data.largestLoss)}}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Render equity curve chart
+            renderEquityCurve(data.equityCurve);
+        }}
+
+        function renderEquityCurve(equityCurveData) {{
+            if (!equityCurveData || equityCurveData.length < 2) return;
+
+            const chartContainer = document.getElementById('equity-chart');
+            if (!chartContainer) return;
+
+            // Create TradingView chart for equity curve
+            equityChart = LightweightCharts.createChart(chartContainer, {{
+                layout: {{
+                    background: {{ color: '#1e222d' }},
+                    textColor: '#d1d4dc',
+                }},
+                grid: {{
+                    vertLines: {{ color: '#2b2b43' }},
+                    horzLines: {{ color: '#2b2b43' }},
+                }},
+                rightPriceScale: {{
+                    borderColor: '#2b2b43',
+                    scaleMargins: {{
+                        top: 0.1,
+                        bottom: 0.1,
+                    }},
+                }},
+                timeScale: {{
+                    borderColor: '#2b2b43',
+                    visible: true,
+                    timeVisible: false,
+                    tickMarkFormatter: (time) => `Trade ${{time}}`,
+                }},
+                handleScroll: false,
+                handleScale: false,
+            }});
+
+            // Create area series for equity curve
+            const areaSeries = equityChart.addAreaSeries({{
+                topColor: 'rgba(41, 98, 255, 0.4)',
+                bottomColor: 'rgba(41, 98, 255, 0.0)',
+                lineColor: '#2962ff',
+                lineWidth: 2,
+                priceLineVisible: false,
+                lastValueVisible: true,
+            }});
+
+            // Convert equity curve data to chart format
+            const chartData = equityCurveData.map(d => ({{
+                time: d.trade,
+                value: d.capital
+            }}));
+
+            areaSeries.setData(chartData);
+
+            // Add initial capital line
+            const initialCapital = equityCurveData[0].capital;
+            const initCapSeries = equityChart.addLineSeries({{
+                color: '#787b86',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            }});
+            initCapSeries.setData([
+                {{ time: 0, value: initialCapital }},
+                {{ time: equityCurveData.length - 1, value: initialCapital }}
+            ]);
+
+            equityChart.timeScale().fitContent();
+        }}
+
         function prevSweep() {{
             if (currentSweepIdx > 0) {{
                 showSweep(currentSweepIdx - 1);
@@ -1796,12 +2331,21 @@ class StrategySweepVisualizer:
             sweep_data = self._generate_sweep_data(sweep_entry, idx)
             all_sweeps_data.append(sweep_data)
 
+        # Generate performance data for Dashboard
+        print("Generating performance data for Dashboard...")
+        performance_data = self._generate_performance_data()
+        if performance_data:
+            print(f"  ✓ Performance data generated ({performance_data['totalTrades']} trades)")
+        else:
+            print("  ⚠ No performance data available (backtest not run)")
+
         # Generate HTML
         print("\nCreating HTML file...")
-        html_content = self._create_html_template(all_sweeps_data)
+        html_content = self._create_html_template(all_sweeps_data, performance_data)
 
         # Save file
-        output_path = self.output_dir / f"{self.symbol.lower()}_sweeps.html"
+        symbol = self.symbol if '/' not in self.symbol else self.symbol.replace('/','_')
+        output_path = self.output_dir / f"{symbol.lower()}_sweeps.html"
         with open(output_path, 'w') as f:
             f.write(html_content)
 

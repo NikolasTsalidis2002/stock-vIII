@@ -557,7 +557,12 @@ class StrategyEngine:
             final_last_time_scanned = None
 
             while revalidation_attempt < max_revalidation_attempts:
-                start_low = time_mid_validation
+                # Start searching from the candle AFTER validation (e.g., if validation at 13:05, start at 13:06)
+                indices_after_validation = self._tm.df_low.index[self._tm.df_low.index > time_mid_validation]
+                if len(indices_after_validation) == 0:
+                    # No candles after validation time - cannot search for confirmation
+                    break
+                start_low = indices_after_validation[0]
 
                 (confirmation, sweep_broken, new_sweep_occurred, last_time_scanned,
                  fvg_invalidated, fvg_invalidation_time) = self._search_for_confirmation_low(

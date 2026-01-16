@@ -1,9 +1,9 @@
 {
-  "symbol": "TSLA",
+  "symbol": "COST",
   "timeframes": {
-    "high": "4h",
-    "mid": "1h",
-    "low": "15min"
+    "high": "1h",
+    "mid": "5min",
+    "low": "1min"
   },
   "backtest": {
     "enabled": true,
@@ -16,5 +16,5 @@
     "visualize": true,
     "export_journal": "auto"
   },
-  "asset_options": ["XAU/USD", "MSFT", "TSLA", "AAPL", "AMZN", "GOOGL", "NVDA", "META", "NFLX", "INTC", "AMD"]
+  "asset_options": ["BTC/USD", "XAU/USD", "MSFT", "TSLA", "AAPL", "AMZN", "GOOGL", "NVDA", "META", "NFLX", "INTC", "AMD"]
 }
