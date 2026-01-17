@@ -5,17 +5,23 @@
     "mid": "5min",
     "low": "1min"
   },
+  "_general_descriptions": {
+    "symbol": "The asset symbol to analyze. Choose from asset_options below or use any valid Twelve Data symbol.",
+    "timeframes": {
+      "high": "Higher timeframe for detecting liquidity sweeps and overall structure. Options: 1min, 5min, 15min, 30min, 1h, 4h, 1day",
+      "mid": "Mid timeframe for Event B (BOS/IFVG) and validation. Should be smaller than high TF.",
+      "low": "Lowest timeframe for entry confirmation and trade execution. Should be smallest of all three."
+    }
+  },
   "validation": {
     "use_fvg_validation": false,
     "use_equilibrium_validation": true,
-    "require_fvg_in_equilibrium": true,
-
+    "require_fvg_in_equilibrium": false,
     "_descriptions": {
       "use_fvg_validation": "When true, FVG respect is checked first and takes priority. If an FVG is touched/respected, validation triggers immediately without checking equilibrium.",
       "use_equilibrium_validation": "When true, checks if price enters the premium/discount zone (above/below equilibrium). For SHORT: trigger when price enters premium. For LONG: trigger when price enters discount.",
       "require_fvg_in_equilibrium": "OVERRIDES other settings when true. Requires an FVG that structurally overlaps with the equilibrium zone to be touched. This is the strictest validation mode."
     },
-
     "_usage_notes": {
       "mode_priority": "require_fvg_in_equilibrium takes precedence over the other two settings. When true, the other flags are ignored.",
       "recommended_modes": [
@@ -32,13 +38,35 @@
     "hold_overnight": false,
     "bos_exit_enabled": false,
     "bos_exit_threshold_percent": 50.0,
-    "min_profit_percent": 0.1
+    "min_profit_percent": 0.1,
+    "trend_filter_enabled": true,
+    "trend_filter_lookback": 500,
+    "_descriptions": {
+      "enabled": "When true, runs backtest simulation on found signals. Set to false to only scan for setups without simulating trades.",
+      "initial_capital": "Starting capital in USD for the backtest. Trades use full capital (compounding).",
+      "hold_overnight": "When false (default), exits all positions at market close (intraday only). When true, allows holding positions overnight.",
+      "bos_exit_enabled": "When true, exits trades early if an opposing BOS (Break of Structure) signal appears while in profit.",
+      "bos_exit_threshold_percent": "Minimum profit as percentage of TP target required before BOS exit is allowed. E.g., 50 means you need 50% of the way to TP before early exit triggers.",
+      "min_profit_percent": "Skip trades where expected profit (entry to TP) is below this percentage. Set to 0 to disable.",
+      "trend_filter_enabled": "When true, uses ARMA analysis to determine market trend and filters trades against it. Bullish trend = only LONG trades. Bearish trend = only SHORT trades. Neutral = all trades allowed.",
+      "trend_filter_lookback": "Number of mid-timeframe candles to use for ARMA trend calculation. Higher values = smoother/longer-term trend detection."
+    },
+    "_usage_notes": {
+      "trend_filter": "The ARMA model calculates a Signal-to-Noise Ratio (SNR). If SNR < 0.05, trend is considered 'neutral' and no filtering occurs. This prevents false signals from noisy/sideways markets.",
+      "compounding": "Capital compounds after each trade. Wins increase position size, losses decrease it.",
+      "exit_priority": "TP/SL are checked first, then BOS exit (if enabled), then market close (if intraday only)."
+    }
   },
   "output": {
     "visualize": true,
-    "export_journal": "auto"
+    "export_journal": "auto",
+    "_descriptions": {
+      "visualize": "When true, generates an interactive HTML visualization of all sweeps with step-by-step analysis.",
+      "export_journal": "Controls trade journal CSV export. Options: 'auto' (saves to results/trades/{symbol}_trades.csv), a custom filepath, or false to disable."
+    }
   },
   "asset_options": {
+    "_description": "Reference lists of available symbols organized by category. Use any of these values for the 'symbol' field above.",
     "commodities": [
       "XAU/USD",
       "XAG/USD",

@@ -37,7 +37,8 @@ class TradeSimulator:
         bos_mid_df: pd.DataFrame = None,
         df_mid: pd.DataFrame = None,
         symbol: str = 'TSLA',
-        min_profit_percent: float = 0.0
+        min_profit_percent: float = 0.0,
+        trend_filter: str = None
     ) -> None:
         """
         Initialize trade simulator.
@@ -53,6 +54,7 @@ class TradeSimulator:
             df_mid: Mid timeframe OHLCV DataFrame with datetime index
             symbol: Stock symbol being backtested (default 'TSLA')
             min_profit_percent: Minimum profit % to accept a trade (default 0.0, disabled)
+            trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
@@ -60,6 +62,7 @@ class TradeSimulator:
         self.intraday_only = intraday_only
         self.symbol = symbol.upper()
         self.min_profit_percent = min_profit_percent
+        self.trend_filter = trend_filter  # 'bullish', 'bearish', 'neutral', or None
 
         # Store data date range for validation
         self.data_start = df_low.index.min()
@@ -642,6 +645,26 @@ class TradeSimulator:
                         signal_entry_time=signal.timestamp_entry,
                         skip_reason=SkipReason.OVERLAP,
                         details=f"Previous trade exits at {previous_result.exit_time}"
+                    ))
+                    continue
+
+            # Skip signals that go against the ARMA trend filter
+            if self.trend_filter and self.trend_filter != 'neutral':
+                signal_is_long = signal.entry_direction == 'long'
+                if self.trend_filter == 'bullish' and not signal_is_long:
+                    print(f"  Trade {i+1}: SKIPPED - SHORT signal rejected (trend is bullish)")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.AGAINST_TREND,
+                        details=f"SHORT signal rejected - ARMA trend is bullish"
+                    ))
+                    continue
+                elif self.trend_filter == 'bearish' and signal_is_long:
+                    print(f"  Trade {i+1}: SKIPPED - LONG signal rejected (trend is bearish)")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.AGAINST_TREND,
+                        details=f"LONG signal rejected - ARMA trend is bearish"
                     ))
                     continue
 

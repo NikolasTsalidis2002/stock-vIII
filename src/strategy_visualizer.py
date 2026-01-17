@@ -82,7 +82,8 @@ class StrategySweepVisualizer:
         output_dir: Optional[Path] = None,
         trade_results: Optional[List['TradeResult']] = None,
         skipped_trades: Optional[List['SkippedTrade']] = None,
-        performance_metrics: Optional['PerformanceMetrics'] = None
+        performance_metrics: Optional['PerformanceMetrics'] = None,
+        arma_data: Optional[Dict] = None
     ):
         """
         Initialize visualizer.
@@ -94,12 +95,14 @@ class StrategySweepVisualizer:
             trade_results: Optional list of TradeResult objects from backtesting
             skipped_trades: Optional list of SkippedTrade objects for trades that weren't executed
             performance_metrics: Optional PerformanceMetrics from backtesting for Dashboard tab
+            arma_data: Optional dict with ARMA trend analysis results for Trend Analysis tab
         """
         self.strategy = strategy
         self.symbol = symbol.upper()
         self.trade_results = trade_results or []
         self.skipped_trades = skipped_trades or []
         self.performance_metrics = performance_metrics
+        self.arma_data = arma_data
 
         # Build lookup from signal timestamp to trade result for efficient access
         self._trade_result_lookup: Dict[datetime, TradeResult] = {}
@@ -890,7 +893,7 @@ class StrategySweepVisualizer:
             ]
         }
 
-    def _create_html_template(self, all_sweeps_data: List[Dict], performance_data: Optional[Dict] = None) -> str:
+    def _create_html_template(self, all_sweeps_data: List[Dict], performance_data: Optional[Dict] = None, arma_data: Optional[Dict] = None) -> str:
         """Create the complete HTML template with embedded data."""
 
         tf_high = self.tf_labels.get('high', '1H')
@@ -900,6 +903,9 @@ class StrategySweepVisualizer:
         # Serialize performance data
         performance_json = json.dumps(performance_data, cls=NumpyEncoder) if performance_data else 'null'
 
+        # Serialize ARMA trend data
+        arma_json = json.dumps(arma_data, cls=NumpyEncoder) if arma_data else 'null'
+
         return f"""
 <!DOCTYPE html>
 <html>
@@ -908,6 +914,7 @@ class StrategySweepVisualizer:
     <title>{self.symbol} Strategy Sweep Visualization</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         * {{
             margin: 0;
@@ -1172,6 +1179,91 @@ class StrategySweepVisualizer:
         #dashboard-container.active {{
             display: block;
         }}
+
+        /* Trend Analysis Styles */
+        #trend-container {{
+            display: none;
+            padding: 24px;
+            overflow-y: auto;
+            height: 100%;
+        }}
+        #trend-container.active {{
+            display: block;
+        }}
+        .trend-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }}
+        .trend-header h2 {{
+            margin: 0;
+            color: #fff;
+            font-size: 20px;
+        }}
+        .trend-signal {{
+            font-size: 32px;
+            font-weight: bold;
+        }}
+        .trend-stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }}
+        .trend-stat {{
+            background: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }}
+        .trend-stat .stat-value {{
+            font-size: 24px;
+            font-weight: bold;
+            color: #2196F3;
+        }}
+        .trend-stat .stat-label {{
+            color: #787b86;
+            margin-top: 4px;
+            font-size: 12px;
+            text-transform: uppercase;
+        }}
+        .trend-stat .stat-note {{
+            color: #555;
+            font-size: 11px;
+            margin-top: 4px;
+        }}
+        .trend-charts {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }}
+        .trend-chart {{
+            background: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            height: 300px;
+        }}
+        .trend-details {{
+            display: flex;
+            gap: 24px;
+            color: #787b86;
+            font-size: 14px;
+        }}
+        .trend-details .label {{
+            color: #555;
+        }}
+        .trend-no-data {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #787b86;
+            font-size: 16px;
+        }}
+
         .dashboard-no-data {{
             display: flex;
             align-items: center;
@@ -1465,6 +1557,7 @@ class StrategySweepVisualizer:
             <div class="tab" data-tab="5M_VALIDATION" onclick="switchTab('5M_VALIDATION')">{tf_mid} Validation</div>
             <div class="tab" data-tab="1M" onclick="switchTab('1M')">{tf_low}</div>
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
+            <div class="tab" data-tab="TREND" onclick="switchTab('TREND')">Trend</div>
             <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
         </div>
 
@@ -1472,6 +1565,7 @@ class StrategySweepVisualizer:
             <div id="chart-area">
                 <div id="chart-container"></div>
                 <div id="dashboard-container"></div>
+                <div id="trend-container"></div>
             </div>
 
             <div id="sidebar">
@@ -1597,6 +1691,9 @@ class StrategySweepVisualizer:
         // Embed performance data for Dashboard
         const performanceData = {performance_json};
 
+        // Embed ARMA trend data for Trend Analysis tab
+        const armaData = {arma_json};
+
         let currentSweepIdx = 0;
         let currentTab = '1H';
         let chart = null;
@@ -1604,6 +1701,7 @@ class StrategySweepVisualizer:
         let candlestickSeries = null;
         let activeLineSeries = [];
         let dashboardRendered = false;
+        let trendRendered = false;
 
         // Chart options
         const chartOptions = {{
@@ -1843,13 +1941,14 @@ class StrategySweepVisualizer:
                 if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
                 if (tabId === '1M' && sweep.tab1M) hasData = true;
                 if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
+                if (tabId === 'TREND' && armaData) hasData = true;  // Trend tab enabled only if ARMA data exists
                 if (tabId === 'DASHBOARD') hasData = true;  // Dashboard is always available
 
                 if (!hasData) {{
                     tab.classList.add('disabled');
                 }}
 
-                if (tabId === sweep.activeTab || (currentTab === 'DASHBOARD' && tabId === 'DASHBOARD')) {{
+                if (tabId === sweep.activeTab || (currentTab === 'DASHBOARD' && tabId === 'DASHBOARD') || (currentTab === 'TREND' && tabId === 'TREND')) {{
                     tab.classList.add('active');
                 }}
             }});
@@ -1865,6 +1964,7 @@ class StrategySweepVisualizer:
             if (tabId === '5M_VALIDATION' && sweep.tab5MValidation) hasData = true;
             if (tabId === '1M' && sweep.tab1M) hasData = true;
             if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
+            if (tabId === 'TREND' && armaData) hasData = true;  // Trend tab enabled only if ARMA data exists
             if (tabId === 'DASHBOARD') hasData = true;  // Dashboard is always available
 
             if (!hasData) return;
@@ -1877,11 +1977,18 @@ class StrategySweepVisualizer:
 
             currentTab = tabId;
 
-            // Handle Dashboard tab separately
-            if (tabId === 'DASHBOARD') {{
+            // Handle special tabs separately
+            if (tabId === 'TREND') {{
+                hideDashboard();
+                document.getElementById('chart-container').style.display = 'none';
+                showTrendAnalysis();
+            }} else if (tabId === 'DASHBOARD') {{
+                hideTrendAnalysis();
                 showDashboard();
             }} else {{
                 hideDashboard();
+                hideTrendAnalysis();
+                document.getElementById('chart-container').style.display = 'block';
                 showChart(sweep);
             }}
         }}
@@ -2280,6 +2387,163 @@ class StrategySweepVisualizer:
             // Show chart container, hide dashboard container
             document.getElementById('chart-container').style.display = 'block';
             document.getElementById('dashboard-container').classList.remove('active');
+        }}
+
+        // Trend Analysis Functions
+        function showTrendAnalysis() {{
+            const container = document.getElementById('trend-container');
+            container.classList.add('active');
+
+            if (!trendRendered && armaData) {{
+                renderTrendAnalysis();
+                trendRendered = true;
+            }}
+        }}
+
+        function hideTrendAnalysis() {{
+            document.getElementById('trend-container').classList.remove('active');
+        }}
+
+        function renderTrendAnalysis() {{
+            const container = document.getElementById('trend-container');
+
+            if (!armaData) {{
+                container.innerHTML = '<div class="trend-no-data">No trend data available. Enable trend_filter in config to see ARMA analysis.</div>';
+                return;
+            }}
+
+            // Determine trend color
+            const trendColor = armaData.trend_signal === 'bullish' ? '#089981' :
+                               armaData.trend_signal === 'bearish' ? '#f23645' : '#787b86';
+
+            container.innerHTML = `
+                <div class="trend-header">
+                    <h2>ARMA Trend Analysis</h2>
+                    <div class="trend-signal" style="color: ${{trendColor}}">
+                        ${{armaData.trend_signal.toUpperCase()}}
+                    </div>
+                </div>
+
+                <div class="trend-stats-grid">
+                    <div class="trend-stat">
+                        <div class="stat-value">${{armaData.snr.toFixed(4)}}</div>
+                        <div class="stat-label">SNR</div>
+                        <div class="stat-note">${{armaData.snr >= 0.05 ? 'Above threshold' : 'Below threshold (0.05)'}}</div>
+                    </div>
+                    <div class="trend-stat">
+                        <div class="stat-value">${{armaData.drift.toExponential(2)}}</div>
+                        <div class="stat-label">Drift (μ)</div>
+                        <div class="stat-note">${{armaData.drift > 0 ? 'Positive' : armaData.drift < 0 ? 'Negative' : 'Zero'}}</div>
+                    </div>
+                    <div class="trend-stat">
+                        <div class="stat-value">ARMA(${{armaData.order[0]}}, ${{armaData.order[1]}})</div>
+                        <div class="stat-label">Model Order</div>
+                        <div class="stat-note">Auto-selected by AIC</div>
+                    </div>
+                    <div class="trend-stat">
+                        <div class="stat-value">${{armaData.lookback}}</div>
+                        <div class="stat-label">Lookback</div>
+                        <div class="stat-note">Candles analyzed</div>
+                    </div>
+                </div>
+
+                <div class="trend-charts">
+                    <div id="price-chart" class="trend-chart"></div>
+                    <div id="returns-chart" class="trend-chart"></div>
+                </div>
+
+                <div class="trend-details">
+                    <div class="detail-item">
+                        <span class="label">AIC:</span> ${{armaData.aic.toFixed(2)}}
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">BIC:</span> ${{armaData.bic.toFixed(2)}}
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Residual Std:</span> ${{armaData.residual_std.toFixed(6)}}
+                    </div>
+                </div>
+            `;
+
+            // Render price chart
+            renderPriceChart();
+
+            // Render returns chart with trend line
+            renderReturnsChart();
+        }}
+
+        function renderPriceChart() {{
+            const trace = {{
+                y: armaData.prices,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Close Price',
+                line: {{ color: '#2196F3', width: 1.5 }}
+            }};
+
+            const layout = {{
+                title: {{ text: 'Lookback Price Series', font: {{ color: '#d1d4dc', size: 14 }} }},
+                paper_bgcolor: '#1e222d',
+                plot_bgcolor: '#1e222d',
+                font: {{ color: '#d1d4dc' }},
+                xaxis: {{ title: 'Candle Index', gridcolor: '#2b2b43', zerolinecolor: '#2b2b43' }},
+                yaxis: {{ title: 'Price', gridcolor: '#2b2b43', zerolinecolor: '#2b2b43' }},
+                margin: {{ t: 40, r: 20, b: 40, l: 60 }}
+            }};
+
+            Plotly.newPlot('price-chart', [trace], layout, {{ responsive: true }});
+        }}
+
+        function renderReturnsChart() {{
+            // Log returns
+            const returnsTrace = {{
+                y: armaData.log_returns,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Log Returns',
+                line: {{ color: '#787b86', width: 1 }}
+            }};
+
+            // Fitted values (trend)
+            const fittedTrace = {{
+                y: armaData.fitted_returns,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'ARMA Fitted',
+                line: {{ color: '#ff9800', width: 2 }}
+            }};
+
+            // Zero line
+            const zeroLine = {{
+                y: Array(armaData.log_returns.length).fill(0),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Zero',
+                line: {{ color: '#555', width: 1, dash: 'dash' }}
+            }};
+
+            // Drift line
+            const driftColor = armaData.drift > 0 ? '#089981' : armaData.drift < 0 ? '#f23645' : '#787b86';
+            const driftLine = {{
+                y: Array(armaData.log_returns.length).fill(armaData.drift),
+                type: 'scatter',
+                mode: 'lines',
+                name: `Drift (${{armaData.drift.toExponential(2)}})`,
+                line: {{ color: driftColor, width: 2, dash: 'dot' }}
+            }};
+
+            const layout = {{
+                title: {{ text: 'Log Returns & ARMA Model', font: {{ color: '#d1d4dc', size: 14 }} }},
+                paper_bgcolor: '#1e222d',
+                plot_bgcolor: '#1e222d',
+                font: {{ color: '#d1d4dc' }},
+                xaxis: {{ title: 'Period', gridcolor: '#2b2b43', zerolinecolor: '#2b2b43' }},
+                yaxis: {{ title: 'Log Return', gridcolor: '#2b2b43', zerolinecolor: '#2b2b43' }},
+                margin: {{ t: 40, r: 20, b: 40, l: 60 }},
+                legend: {{ x: 0, y: 1.15, orientation: 'h', font: {{ size: 10 }} }}
+            }};
+
+            Plotly.newPlot('returns-chart', [returnsTrace, fittedTrace, zeroLine, driftLine], layout, {{ responsive: true }});
         }}
 
         function renderDashboard() {{
@@ -2738,9 +3002,15 @@ class StrategySweepVisualizer:
         else:
             print("  ⚠ No performance data available (backtest not run)")
 
+        # Report ARMA trend data status
+        if self.arma_data:
+            print(f"  ✓ ARMA trend data available (signal: {self.arma_data['trend_signal'].upper()})")
+        else:
+            print("  ⚠ No ARMA trend data (enable trend_filter in config)")
+
         # Generate HTML
         print("\nCreating HTML file...")
-        html_content = self._create_html_template(all_sweeps_data, performance_data)
+        html_content = self._create_html_template(all_sweeps_data, performance_data, self.arma_data)
 
         # Save file
         symbol = self.symbol if '/' not in self.symbol else self.symbol.replace('/','_')

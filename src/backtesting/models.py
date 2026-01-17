@@ -25,6 +25,7 @@ class SkipReason(Enum):
     PARTIAL_SETUP = "partial_setup"        # Setup conditions not met
     NO_BACKTEST = "no_backtest"            # Backtest not run
     INSUFFICIENT_PROFIT = "insufficient_profit"  # Below min_profit_percent threshold
+    AGAINST_TREND = "against_trend"        # Trade direction opposes ARMA trend
 
 
 # Human-readable messages for skip reasons
@@ -36,6 +37,7 @@ SKIP_REASON_MESSAGES = {
     SkipReason.PARTIAL_SETUP: "Setup incomplete",
     SkipReason.NO_BACKTEST: "No backtest data available",
     SkipReason.INSUFFICIENT_PROFIT: "Skipped - profit potential below minimum threshold",
+    SkipReason.AGAINST_TREND: "Skipped - trade direction opposes ARMA trend",
 }
 
 

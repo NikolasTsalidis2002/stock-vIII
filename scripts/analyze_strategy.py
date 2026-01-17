@@ -361,6 +361,8 @@ def main():
             bos_exit_enabled=backtest_cfg.get('bos_exit_enabled', False),
             bos_exit_threshold_percent=backtest_cfg.get('bos_exit_threshold_percent', 50.0),
             min_profit_percent=backtest_cfg.get('min_profit_percent', 0.0),
+            trend_filter_enabled=backtest_cfg.get('trend_filter_enabled', False),
+            trend_filter_lookback=backtest_cfg.get('trend_filter_lookback', 500),
             visualize=output_cfg.get('visualize', False),
             export_journal=output_cfg.get('export_journal', 'auto'),
             use_fvg_validation=validation_cfg.get('use_fvg_validation', True),
@@ -379,6 +381,8 @@ def main():
     bos_exit_enabled = getattr(args, 'bos_exit_enabled', False)
     bos_exit_threshold_percent = getattr(args, 'bos_exit_threshold_percent', 50.0)
     min_profit_percent = getattr(args, 'min_profit_percent', 0.0)
+    trend_filter_enabled = getattr(args, 'trend_filter_enabled', False)
+    trend_filter_lookback = getattr(args, 'trend_filter_lookback', 500)
     if args.bos_exit:
         bos_exit_enabled = True
     elif args.no_bos_exit:
@@ -413,6 +417,10 @@ def main():
         print(f"  BOS Exit:         Disabled")
     if min_profit_percent > 0:
         print(f"  Min Profit:       {min_profit_percent}% (skip trades below)")
+    if trend_filter_enabled:
+        print(f"  Trend Filter:     Enabled (ARMA, lookback={trend_filter_lookback})")
+    else:
+        print(f"  Trend Filter:     Disabled")
     # Display validation mode
     if require_fvg_in_equilibrium:
         print(f"  Validation Mode:  FVG-in-Equilibrium (strictest - FVG must overlap equilibrium zone)")
@@ -458,6 +466,47 @@ def main():
         print(f"\n✅ Found {len(signals)} complete trade setups!")
         print("   (Skipping old visualization - use TradingView analyzer instead)")
 
+    # Run ARMA trend analysis if enabled (before backtest, for both backtest and visualization)
+    import numpy as np
+    trend_signal = None
+    arma_data = None
+    if trend_filter_enabled:
+        from src.arma_trend_analysis import ARMA
+
+        # Use mid timeframe prices for trend calculation
+        mid_prices = list(df_mid['close'])
+        lookback_prices = mid_prices[-trend_filter_lookback:] if len(mid_prices) >= trend_filter_lookback else mid_prices
+
+        arma_result = ARMA.fit_arma(lookback_prices, auto_select=True, max_order=3)
+        trend_signal = arma_result['trend_signal']
+
+        print(f"\n📊 ARMA Trend Analysis:")
+        print(f"   Lookback:  {len(lookback_prices)} candles")
+        print(f"   Order:     ARMA({arma_result['order'][0]}, {arma_result['order'][1]})")
+        print(f"   Drift:     {arma_result['drift']:.6f}")
+        print(f"   SNR:       {arma_result['snr']:.4f}")
+        print(f"   Trend:     {trend_signal.upper()}")
+        if trend_signal != 'neutral':
+            print(f"   Filter:    Active - only {trend_signal.upper()} trades allowed")
+        else:
+            print(f"   Filter:    Inactive (neutral trend - all directions allowed)")
+        print("")
+
+        # Prepare ARMA data for visualization
+        arma_data = {
+            'prices': lookback_prices,
+            'log_returns': arma_result['log_returns'].tolist(),
+            'fitted_returns': arma_result['fitted_returns'].tolist(),
+            'trend_signal': trend_signal,
+            'snr': arma_result['snr'],
+            'drift': arma_result['drift'],
+            'order': list(arma_result['order']),
+            'aic': arma_result['aic'],
+            'bic': arma_result['bic'],
+            'lookback': len(lookback_prices),
+            'residual_std': float(np.sqrt(arma_result['sigma2']))
+        }
+
     # Run backtest if requested
     backtester = None
     if not args.no_backtest and len(signals) > 0:
@@ -472,7 +521,8 @@ def main():
             intraday_only=not args.hold_overnight,
             bos_exit_enabled=bos_exit_enabled,
             bos_exit_threshold_percent=bos_exit_threshold_percent,
-            min_profit_percent=min_profit_percent
+            min_profit_percent=min_profit_percent,
+            trend_filter=trend_signal if trend_filter_enabled else None
         )
         _results = backtester.run(signals)
         backtester.print_summary()
@@ -507,7 +557,8 @@ def main():
                 symbol=symbol,
                 trade_results=trade_results,
                 skipped_trades=skipped_trades,
-                performance_metrics=performance_metrics
+                performance_metrics=performance_metrics,
+                arma_data=arma_data
             )
             output_path = visualizer.generate_html()
             print(f"\n✅ Generated visualization: {output_path}")

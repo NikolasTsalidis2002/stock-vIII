@@ -234,10 +234,10 @@ class EquilibriumValidator:
 
         if self.entry_direction == 'short':
             # Premium area = above equilibrium
-            return candle['high'] > self._equilibrium
+            return candle['close'] > self._equilibrium
         else:  # long
             # Discount area = below equilibrium
-            return candle['low'] < self._equilibrium
+            return candle['close'] < self._equilibrium
 
     def get_current_state(self) -> EquilibriumState:
         """Return current equilibrium tracking state."""

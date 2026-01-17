@@ -45,7 +45,8 @@ class Backtester:
         bos_exit_threshold_percent: float = 50.0,
         bos_mid_df: pd.DataFrame = None,
         df_mid: pd.DataFrame = None,
-        min_profit_percent: float = 0.0
+        min_profit_percent: float = 0.0,
+        trend_filter: str = None
     ) -> None:
         """
         Initialize backtester.
@@ -61,6 +62,7 @@ class Backtester:
             bos_mid_df: Mid timeframe BOS DataFrame (columns: BOS, Level, etc.)
             df_mid: Mid timeframe OHLCV DataFrame with datetime index
             min_profit_percent: Minimum profit % to accept a trade (default 0.0, disabled)
+            trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
@@ -80,7 +82,8 @@ class Backtester:
             bos_mid_df=bos_mid_df,
             df_mid=df_mid,
             symbol=self.symbol,
-            min_profit_percent=min_profit_percent
+            min_profit_percent=min_profit_percent,
+            trend_filter=trend_filter
         )
         self._tracker = PerformanceTracker(initial_capital=initial_capital)
         self._journal = TradeJournal(symbol=self.symbol)
@@ -101,7 +104,8 @@ class Backtester:
         intraday_only: bool = True,
         bos_exit_enabled: bool = False,
         bos_exit_threshold_percent: float = 50.0,
-        min_profit_percent: float = 0.0
+        min_profit_percent: float = 0.0,
+        trend_filter: str = None
     ) -> "Backtester":
         """
         Create backtester directly from strategy instance.
@@ -115,6 +119,7 @@ class Backtester:
             bos_exit_enabled: If True, exit when opposing BOS signal detected while in profit
             bos_exit_threshold_percent: Min profit as % of TP target before BOS exit allowed (default 50%)
             min_profit_percent: Minimum profit % to accept a trade (default 0.0, disabled)
+            trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
 
         Returns:
             Configured Backtester instance
@@ -129,7 +134,8 @@ class Backtester:
             bos_exit_threshold_percent=bos_exit_threshold_percent,
             bos_mid_df=strategy.bos_mid if bos_exit_enabled else None,
             df_mid=strategy.df_mid if bos_exit_enabled else None,  # Use filtered data (matches bos_mid)
-            min_profit_percent=min_profit_percent
+            min_profit_percent=min_profit_percent,
+            trend_filter=trend_filter
         )
 
     def run(self, signals: List[TradeSignal]) -> List[TradeResult]:
