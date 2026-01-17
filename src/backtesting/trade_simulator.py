@@ -36,7 +36,8 @@ class TradeSimulator:
         bos_exit_threshold_percent: float = 50.0,
         bos_mid_df: pd.DataFrame = None,
         df_mid: pd.DataFrame = None,
-        symbol: str = 'TSLA'
+        symbol: str = 'TSLA',
+        min_profit_percent: float = 0.0
     ) -> None:
         """
         Initialize trade simulator.
@@ -51,12 +52,14 @@ class TradeSimulator:
             bos_mid_df: Mid timeframe BOS DataFrame (columns: BOS, Level, etc.)
             df_mid: Mid timeframe OHLCV DataFrame with datetime index
             symbol: Stock symbol being backtested (default 'TSLA')
+            min_profit_percent: Minimum profit % to accept a trade (default 0.0, disabled)
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
         self.max_trade_duration = timedelta(hours=max_trade_duration_hours)
         self.intraday_only = intraday_only
         self.symbol = symbol.upper()
+        self.min_profit_percent = min_profit_percent
 
         # Store data date range for validation
         self.data_start = df_low.index.min()
@@ -613,6 +616,22 @@ class TradeSimulator:
                     details="Take profit or stop loss not defined"
                 ))
                 continue
+
+            # Skip signals below minimum profit threshold
+            if self.min_profit_percent > 0:
+                if signal.entry_direction == 'long':
+                    expected_profit_pct = ((signal.take_profit_price - signal.price_entry) / signal.price_entry) * 100
+                else:  # short
+                    expected_profit_pct = ((signal.price_entry - signal.take_profit_price) / signal.price_entry) * 100
+
+                if expected_profit_pct < self.min_profit_percent:
+                    print(f"  Trade {i+1}: SKIPPED - Profit {expected_profit_pct:.2f}% below {self.min_profit_percent}% threshold")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.INSUFFICIENT_PROFIT,
+                        details=f"Expected profit {expected_profit_pct:.2f}% < {self.min_profit_percent}% minimum"
+                    ))
+                    continue
 
             # Skip signals that overlap with previous trade (can only be in one position at a time)
             if results:

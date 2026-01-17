@@ -341,12 +341,15 @@ class StrategyEngine:
                 if entry_direction == 'long':
                     # For LONG: swept a LOW, find the mid TF candle with min low
                     start_mid = candles_mid_in_high['low'].idxmin()
+                    actual_sweep_price = self._tm.df_mid.loc[start_mid, 'low']
                 else:
                     # For SHORT: swept a HIGH, find the mid TF candle with max high
                     start_mid = candles_mid_in_high['high'].idxmax()
-                print(f"    Actual sweep point: {start_mid}")
+                    actual_sweep_price = self._tm.df_mid.loc[start_mid, 'high']
+                print(f"    Actual sweep point: {start_mid} (price: {actual_sweep_price:.2f})")
             else:
                 start_mid = time_high_sweep  # Fallback
+                actual_sweep_price = swept_level  # Fallback to 1H level
 
             end_mid = market_close_cutoff
 
@@ -404,15 +407,16 @@ class StrategyEngine:
 
                         # Create validator ONCE with pre-calculated inflexions (O(n) optimization)
                         # Pass sweep_time (actual 5M sweep point) for FVG filtering
+                        # Use actual_sweep_price (5M sweep price) instead of swept_level (1H inflexion)
                         equilibrium_validator = EquilibriumValidator(
                             df_mid=self._tm.df_mid,
-                            swept_level=swept_level,
+                            swept_level=actual_sweep_price,  # Use actual 5M sweep price, not 1H inflexion
                             entry_direction=entry_direction,
                             fvg_mid=self._tm.fvg_mid,
                             sweep_time=start_mid,  # Use actual 5M sweep point
                             inflexions_mid=self._tm.inflexions_mid
                         )
-                        print(f"    [DEBUG] EquilibriumValidator created with sweep_time={start_mid}")
+                        print(f"    [DEBUG] EquilibriumValidator created with sweep_time={start_mid}, actual_sweep_price={actual_sweep_price:.2f}")
                         self._tm.fvg_mid.to_csv("fvg_mid_debug.csv")
 
                 # State 2: Event B found, looking for FVG respect OR Equilibrium zone entry

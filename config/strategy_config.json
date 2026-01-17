@@ -1,5 +1,5 @@
 {
-  "symbol": "COST",
+  "symbol": "ETH/USD",
   "timeframes": {
     "high": "1h",
     "mid": "5min",
@@ -10,11 +10,29 @@
     "initial_capital": 10000.0,
     "hold_overnight": false,
     "bos_exit_enabled": false,
-    "bos_exit_threshold_percent": 50.0
+    "bos_exit_threshold_percent": 50.0,
+    "min_profit_percent": 0.1
   },
   "output": {
     "visualize": true,
     "export_journal": "auto"
   },
-  "asset_options": ["BTC/USD", "XAU/USD", "MSFT", "TSLA", "AAPL", "AMZN", "GOOGL", "NVDA", "META", "NFLX", "INTC", "AMD"]
+  "asset_options": [
+    "BTC/USD",
+    "ETH/USD",
+    "XAU/USD",
+    "ABNB",
+    "INTC",
+    "SHOP",
+    "MSFT",
+    "TSLA",
+    "AAPL",
+    "AMZN",
+    "GOOGL",
+    "NVDA",
+    "META",
+    "NFLX",
+    "INTC",
+    "AMD"
+  ]
 }

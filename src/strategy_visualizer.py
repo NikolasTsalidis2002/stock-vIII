@@ -286,7 +286,7 @@ class StrategySweepVisualizer:
             'liquidityLines': liquidity_lines,
             'sweepMarker': sweep_marker,
             'markers': [sweep_marker],
-            'equilibriumLine': None,
+            'fibonacciLines': None,
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
@@ -360,7 +360,7 @@ class StrategySweepVisualizer:
             'markers': [event_b_marker],
             'eventBType': event_b_type,
             'eventBTime': int(event_b_time.timestamp()),
-            'equilibriumLine': None,
+            'fibonacciLines': None,
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
@@ -379,11 +379,15 @@ class StrategySweepVisualizer:
             validation_time = sweep_entry.signal.timestamp_5m_validation
             validation_type = sweep_entry.signal.condition_validation
             equilibrium_level = sweep_entry.signal.equilibrium_level
+            equilibrium_fixed = sweep_entry.signal.equilibrium_fixed_level
+            equilibrium_extreme = sweep_entry.signal.equilibrium_running_extreme
             exit_ob_start_idx = sweep_entry.signal.exit_ob_start_idx
         elif sweep_entry.partial and sweep_entry.partial.timestamp_5m_validation:
             validation_time = sweep_entry.partial.timestamp_5m_validation
             validation_type = sweep_entry.partial.condition_validation
             equilibrium_level = None  # Partial setups may not have this
+            equilibrium_fixed = None
+            equilibrium_extreme = None
             exit_ob_start_idx = None
         else:
             return None  # No validation found
@@ -426,15 +430,40 @@ class StrategySweepVisualizer:
             'text': f'VAL:{validation_type}'
         }
 
-        # Equilibrium line (if applicable)
-        equilibrium_line = None
+        # Fibonacci levels (TradingView-inspired colors)
+        # Shows: Fixed level (0%), Equilibrium (50%), Running extreme (100%)
+        fibonacci_lines = None
         if validation_type == 'Equilibrium' and equilibrium_level is not None:
-            equilibrium_line = {
+            fibonacci_lines = []
+
+            # 0% level - Fixed/Swept level (Red - like TradingView's 0 level)
+            if equilibrium_fixed is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_fixed),
+                    'color': '#f44336',  # Red
+                    'lineWidth': 1,
+                    'label': f'0% ${equilibrium_fixed:.2f}',
+                    'level': '0%'
+                })
+
+            # 50% level - Equilibrium (Yellow/Gold - like TradingView's 0.5 level)
+            fibonacci_lines.append({
                 'price': float(equilibrium_level),
-                'color': '#9c27b0',  # Purple
+                'color': '#ffeb3b',  # Yellow
                 'lineWidth': 2,
-                'label': f'EQ: ${equilibrium_level:.2f}'
-            }
+                'label': f'50% ${equilibrium_level:.2f}',
+                'level': '50%'
+            })
+
+            # 100% level - Running extreme (Green - like TradingView's 1 level)
+            if equilibrium_extreme is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_extreme),
+                    'color': '#4caf50',  # Green
+                    'lineWidth': 1,
+                    'label': f'100% ${equilibrium_extreme:.2f}',
+                    'level': '100%'
+                })
 
         # Focus on validation time
         focus_time = int(validation_time.timestamp())
@@ -450,7 +479,7 @@ class StrategySweepVisualizer:
             'sweepMarker': None,
             'markers': [validation_marker],
             'validationType': validation_type,
-            'equilibriumLine': equilibrium_line,
+            'fibonacciLines': fibonacci_lines,
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
@@ -536,7 +565,7 @@ class StrategySweepVisualizer:
             'liquidityLines': liquidity_lines,
             'sweepMarker': None,
             'markers': [confirmation_marker],
-            'equilibriumLine': None,
+            'fibonacciLines': None,
             'tpLine': tp_line,
             'slLine': sl_line,
             'focusTime': focus_time,
@@ -835,7 +864,26 @@ class StrategySweepVisualizer:
             'shortWins': int(metrics.short_wins),
 
             # Equity curve data
-            'equityCurve': equity_curve_data
+            'equityCurve': equity_curve_data,
+
+            # Individual trade results for transactions table
+            'trades': [
+                {
+                    'tradeNum': i + 1,
+                    'entryTime': result.entry_time.strftime('%Y-%m-%d %H:%M'),
+                    'exitTime': result.exit_time.strftime('%Y-%m-%d %H:%M') if result.exit_time else '-',
+                    'direction': result.entry_direction,
+                    'entryPrice': float(result.entry_price),
+                    'exitPrice': float(result.exit_price) if result.exit_price else None,
+                    'pnlDollars': float(result.pnl_dollars),
+                    'pnlPercent': float(result.pnl_percent),
+                    'pnlR': float(result.pnl_r_multiple),
+                    'outcome': result.outcome.value if result.outcome else None,
+                    'exitType': result.exit_type.value if result.exit_type else None,
+                    'durationMin': result.duration_minutes,
+                }
+                for i, result in enumerate(self.trade_results)
+            ]
         }
 
     def _create_html_template(self, all_sweeps_data: List[Dict], performance_data: Optional[Dict] = None) -> str:
@@ -1219,6 +1267,170 @@ class StrategySweepVisualizer:
         }}
         .stats-value.negative {{
             color: #f23645;
+        }}
+
+        /* Transactions Table Styles */
+        .transactions-container {{
+            margin-top: 20px;
+            background-color: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+        .transactions-header {{
+            padding: 12px 16px;
+            border-bottom: 1px solid #2b2b43;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .transactions-title {{
+            color: #d1d4dc;
+            font-size: 14px;
+            font-weight: 600;
+        }}
+        .transactions-count {{
+            color: #787b86;
+            font-size: 12px;
+        }}
+        .transactions-table-wrapper {{
+            max-height: 400px;
+            overflow-y: auto;
+        }}
+        .transactions-table-wrapper::-webkit-scrollbar {{
+            width: 8px;
+        }}
+        .transactions-table-wrapper::-webkit-scrollbar-track {{
+            background: #1e222d;
+        }}
+        .transactions-table-wrapper::-webkit-scrollbar-thumb {{
+            background: #363a45;
+            border-radius: 4px;
+        }}
+        .transactions-table-wrapper::-webkit-scrollbar-thumb:hover {{
+            background: #4a4e59;
+        }}
+        .transactions-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }}
+        .transactions-table thead {{
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }}
+        .transactions-table th {{
+            background-color: #131722;
+            color: #787b86;
+            font-weight: 500;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #2b2b43;
+        }}
+        .transactions-table th.sortable {{
+            cursor: pointer;
+            user-select: none;
+        }}
+        .transactions-table th.sortable:hover {{
+            color: #d1d4dc;
+        }}
+        .transactions-table th .sort-indicator {{
+            margin-left: 4px;
+            opacity: 0.5;
+        }}
+        .transactions-table th.sort-asc .sort-indicator::after {{
+            content: '▲';
+        }}
+        .transactions-table th.sort-desc .sort-indicator::after {{
+            content: '▼';
+        }}
+        .transactions-table td {{
+            padding: 10px 12px;
+            border-bottom: 1px solid #2b2b43;
+            color: #d1d4dc;
+        }}
+        .transactions-table tr.win-row {{
+            background-color: rgba(8, 153, 129, 0.05);
+        }}
+        .transactions-table tr.win-row:hover {{
+            background-color: rgba(8, 153, 129, 0.1);
+        }}
+        .transactions-table tr.loss-row {{
+            background-color: rgba(242, 54, 69, 0.05);
+        }}
+        .transactions-table tr.loss-row:hover {{
+            background-color: rgba(242, 54, 69, 0.1);
+        }}
+        .trade-num {{
+            color: #787b86;
+        }}
+        .direction-badge {{
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }}
+        .direction-badge.long {{
+            background-color: rgba(8, 153, 129, 0.2);
+            color: #089981;
+        }}
+        .direction-badge.short {{
+            background-color: rgba(242, 54, 69, 0.2);
+            color: #f23645;
+        }}
+        .pnl-value {{
+            font-weight: 500;
+        }}
+        .pnl-value.positive {{
+            color: #089981;
+        }}
+        .pnl-value.negative {{
+            color: #f23645;
+        }}
+        .outcome-badge {{
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }}
+        .outcome-badge.win {{
+            background-color: rgba(8, 153, 129, 0.2);
+            color: #089981;
+        }}
+        .outcome-badge.loss {{
+            background-color: rgba(242, 54, 69, 0.2);
+            color: #f23645;
+        }}
+        .exit-type-badge {{
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }}
+        .exit-type-badge.tp {{
+            background-color: rgba(8, 153, 129, 0.15);
+            color: #089981;
+        }}
+        .exit-type-badge.sl {{
+            background-color: rgba(242, 54, 69, 0.15);
+            color: #f23645;
+        }}
+        .exit-type-badge.timeout {{
+            background-color: rgba(120, 123, 134, 0.15);
+            color: #787b86;
+        }}
+        .exit-type-badge.bos {{
+            background-color: rgba(41, 98, 255, 0.15);
+            color: #2962ff;
         }}
     </style>
 </head>
@@ -1721,23 +1933,26 @@ class StrategySweepVisualizer:
                 }});
             }}
 
-            // Draw equilibrium line (5M Validation tab)
-            if (tabData.equilibriumLine) {{
-                const eqSeries = chart.addLineSeries({{
-                    color: tabData.equilibriumLine.color,
-                    lineWidth: tabData.equilibriumLine.lineWidth || 2,
-                    lineStyle: LightweightCharts.LineStyle.Dashed,
-                    priceLineVisible: false,
-                    lastValueVisible: true,
-                    title: 'EQ',
-                }});
+            // Draw Fibonacci levels (5M Validation tab) - TradingView style
+            if (tabData.fibonacciLines && tabData.fibonacciLines.length > 0) {{
                 const firstTime = tabData.candleData[0].time;
                 const lastTime = tabData.candleData[tabData.candleData.length - 1].time;
-                eqSeries.setData([
-                    {{ time: firstTime, value: tabData.equilibriumLine.price }},
-                    {{ time: lastTime, value: tabData.equilibriumLine.price }}
-                ]);
-                activeLineSeries.push(eqSeries);
+
+                tabData.fibonacciLines.forEach(fib => {{
+                    const fibSeries = chart.addLineSeries({{
+                        color: fib.color,
+                        lineWidth: fib.lineWidth || 1,
+                        lineStyle: fib.level === '50%' ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Dotted,
+                        priceLineVisible: false,
+                        lastValueVisible: true,
+                        title: fib.level,
+                    }});
+                    fibSeries.setData([
+                        {{ time: firstTime, value: fib.price }},
+                        {{ time: lastTime, value: fib.price }}
+                    ]);
+                    activeLineSeries.push(fibSeries);
+                }});
             }}
 
             // Draw TP/SL lines (1M tab only)
@@ -2209,10 +2424,37 @@ class StrategySweepVisualizer:
                         </div>
                     </div>
                 </div>
+
+                <!-- Transactions Table -->
+                <div class="transactions-container">
+                    <div class="transactions-header">
+                        <span class="transactions-title">Transactions</span>
+                        <span class="transactions-count" id="transactions-count">0 trades</span>
+                    </div>
+                    <div class="transactions-table-wrapper">
+                        <table class="transactions-table">
+                            <thead>
+                                <tr>
+                                    <th class="sortable" data-sort="tradeNum"># <span class="sort-indicator"></span></th>
+                                    <th class="sortable" data-sort="entryTime">Entry <span class="sort-indicator"></span></th>
+                                    <th>Dir</th>
+                                    <th>P&L</th>
+                                    <th>Outcome</th>
+                                    <th>Exit</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transactions-body">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             `;
 
             // Render equity curve chart
             renderEquityCurve(data.equityCurve);
+
+            // Render transactions table
+            renderTransactionsTable(data.trades);
         }}
 
         function renderEquityCurve(equityCurveData) {{
@@ -2281,6 +2523,132 @@ class StrategySweepVisualizer:
             ]);
 
             equityChart.timeScale().fitContent();
+        }}
+
+        // Transactions table state
+        let transactionsData = [];
+        let sortColumn = 'tradeNum';
+        let sortDirection = 'asc';
+
+        function renderTransactionsTable(trades) {{
+            if (!trades || trades.length === 0) return;
+
+            transactionsData = trades;
+
+            // Update count
+            const countEl = document.getElementById('transactions-count');
+            if (countEl) {{
+                countEl.textContent = `${{trades.length}} trade${{trades.length !== 1 ? 's' : ''}}`;
+            }}
+
+            // Render rows
+            renderTradeRows(trades);
+
+            // Setup sorting
+            setupTableSorting();
+        }}
+
+        function renderTradeRows(trades) {{
+            const tbody = document.getElementById('transactions-body');
+            if (!tbody) return;
+
+            // Sort trades
+            const sortedTrades = [...trades].sort((a, b) => {{
+                let valA = a[sortColumn];
+                let valB = b[sortColumn];
+
+                // Handle string dates
+                if (sortColumn === 'entryTime') {{
+                    valA = new Date(valA).getTime();
+                    valB = new Date(valB).getTime();
+                }}
+
+                if (sortDirection === 'asc') {{
+                    return valA > valB ? 1 : valA < valB ? -1 : 0;
+                }} else {{
+                    return valA < valB ? 1 : valA > valB ? -1 : 0;
+                }}
+            }});
+
+            // Build HTML
+            let html = '';
+            sortedTrades.forEach(trade => {{
+                const isWin = trade.outcome === 'win';
+                const rowClass = isWin ? 'win-row' : 'loss-row';
+
+                // Direction badge
+                const dirClass = trade.direction === 'long' ? 'long' : 'short';
+                const dirText = trade.direction.toUpperCase();
+
+                // P&L formatting
+                const pnlClass = trade.pnlDollars >= 0 ? 'positive' : 'negative';
+                const pnlSign = trade.pnlDollars >= 0 ? '+' : '';
+                const pnlFormatted = `${{pnlSign}}$${{trade.pnlDollars.toFixed(2)}}`;
+
+                // Outcome badge
+                const outcomeClass = isWin ? 'win' : 'loss';
+                const outcomeText = isWin ? 'WIN' : 'LOSS';
+
+                // Exit type badge
+                let exitClass = 'timeout';
+                let exitText = 'TIME';
+                if (trade.exitType === 'tp_hit') {{
+                    exitClass = 'tp';
+                    exitText = 'TP';
+                }} else if (trade.exitType === 'sl_hit') {{
+                    exitClass = 'sl';
+                    exitText = 'SL';
+                }} else if (trade.exitType === 'bos_exit') {{
+                    exitClass = 'bos';
+                    exitText = 'BOS';
+                }}
+
+                html += `
+                    <tr class="${{rowClass}}">
+                        <td class="trade-num">${{trade.tradeNum}}</td>
+                        <td>${{trade.entryTime}}</td>
+                        <td><span class="direction-badge ${{dirClass}}">${{dirText}}</span></td>
+                        <td><span class="pnl-value ${{pnlClass}}">${{pnlFormatted}}</span></td>
+                        <td><span class="outcome-badge ${{outcomeClass}}">${{outcomeText}}</span></td>
+                        <td><span class="exit-type-badge ${{exitClass}}">${{exitText}}</span></td>
+                    </tr>
+                `;
+            }});
+
+            tbody.innerHTML = html;
+        }}
+
+        function setupTableSorting() {{
+            const headers = document.querySelectorAll('.transactions-table th.sortable');
+
+            headers.forEach(header => {{
+                header.addEventListener('click', () => {{
+                    const column = header.dataset.sort;
+
+                    // Toggle direction if same column
+                    if (column === sortColumn) {{
+                        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                    }} else {{
+                        sortColumn = column;
+                        sortDirection = 'asc';
+                    }}
+
+                    // Update header classes
+                    headers.forEach(h => {{
+                        h.classList.remove('sort-asc', 'sort-desc');
+                    }});
+                    header.classList.add(sortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
+
+                    // Re-render
+                    renderTradeRows(transactionsData);
+                }});
+            }});
+
+            // Set initial sort indicator
+            const initialHeader = document.querySelector(`.transactions-table th[data-sort="${{sortColumn}}"]`);
+            if (initialHeader) {{
+                initialHeader.classList.add('sort-asc');
+            }}
         }}
 
         function prevSweep() {{

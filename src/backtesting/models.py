@@ -24,6 +24,7 @@ class SkipReason(Enum):
     AFTER_MARKET_CLOSE = "after_close"     # Entry time after market hours
     PARTIAL_SETUP = "partial_setup"        # Setup conditions not met
     NO_BACKTEST = "no_backtest"            # Backtest not run
+    INSUFFICIENT_PROFIT = "insufficient_profit"  # Below min_profit_percent threshold
 
 
 # Human-readable messages for skip reasons
@@ -34,6 +35,7 @@ SKIP_REASON_MESSAGES = {
     SkipReason.AFTER_MARKET_CLOSE: "Skipped - entry after market close",
     SkipReason.PARTIAL_SETUP: "Setup incomplete",
     SkipReason.NO_BACKTEST: "No backtest data available",
+    SkipReason.INSUFFICIENT_PROFIT: "Skipped - profit potential below minimum threshold",
 }
 
 

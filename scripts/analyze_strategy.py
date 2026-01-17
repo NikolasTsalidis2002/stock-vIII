@@ -359,6 +359,7 @@ def main():
             hold_overnight=backtest_cfg.get('hold_overnight', False),
             bos_exit_enabled=backtest_cfg.get('bos_exit_enabled', False),
             bos_exit_threshold_percent=backtest_cfg.get('bos_exit_threshold_percent', 50.0),
+            min_profit_percent=backtest_cfg.get('min_profit_percent', 0.0),
             visualize=output_cfg.get('visualize', False),
             export_journal=output_cfg.get('export_journal', 'auto'),
         )
@@ -373,6 +374,7 @@ def main():
     # Resolve bos_exit setting: CLI flags take precedence over config
     bos_exit_enabled = getattr(args, 'bos_exit_enabled', False)
     bos_exit_threshold_percent = getattr(args, 'bos_exit_threshold_percent', 50.0)
+    min_profit_percent = getattr(args, 'min_profit_percent', 0.0)
     if args.bos_exit:
         bos_exit_enabled = True
     elif args.no_bos_exit:
@@ -400,6 +402,8 @@ def main():
         print(f"  BOS Exit:         Enabled (exit on opposing BOS when profit >= {bos_exit_threshold_percent:.0f}% of TP)")
     else:
         print(f"  BOS Exit:         Disabled")
+    if min_profit_percent > 0:
+        print(f"  Min Profit:       {min_profit_percent}% (skip trades below)")
     print(f"  Visualization:    {'Enabled' if args.visualize else 'Disabled'}")
     print(f"  Export Journal:   {args.export_journal if args.export_journal else 'Disabled'}")
     print("")
@@ -442,7 +446,8 @@ def main():
             symbol=symbol,
             intraday_only=not args.hold_overnight,
             bos_exit_enabled=bos_exit_enabled,
-            bos_exit_threshold_percent=bos_exit_threshold_percent
+            bos_exit_threshold_percent=bos_exit_threshold_percent,
+            min_profit_percent=min_profit_percent
         )
         _results = backtester.run(signals)
         backtester.print_summary()
