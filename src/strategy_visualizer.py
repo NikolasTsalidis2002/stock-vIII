@@ -432,8 +432,9 @@ class StrategySweepVisualizer:
 
         # Fibonacci levels (TradingView-inspired colors)
         # Shows: Fixed level (0%), Equilibrium (50%), Running extreme (100%)
+        # Show Fibonacci lines whenever equilibrium data exists (useful for all validation modes)
         fibonacci_lines = None
-        if validation_type == 'Equilibrium' and equilibrium_level is not None:
+        if equilibrium_level is not None:
             fibonacci_lines = []
 
             # 0% level - Fixed/Swept level (Red - like TradingView's 0 level)
@@ -1619,6 +1620,11 @@ class StrategySweepVisualizer:
             }},
             rightPriceScale: {{
                 borderColor: '#2b2b43',
+                scaleMargins: {{
+                    top: 0.15,
+                    bottom: 0.15,
+                }},
+                autoScale: true,
             }},
             timeScale: {{
                 borderColor: '#2b2b43',
@@ -1903,6 +1909,15 @@ class StrategySweepVisualizer:
             // Update candlesticks
             candlestickSeries.setData(tabData.candleData);
 
+            // Reset price scale to ensure proper auto-scaling for new data
+            chart.priceScale('right').applyOptions({{
+                autoScale: true,
+                scaleMargins: {{
+                    top: 0.15,
+                    bottom: 0.15,
+                }},
+            }});
+
             // Set markers
             const markers = tabData.markers || [];
             if (tabData.sweepMarker) markers.push(tabData.sweepMarker);
@@ -2035,6 +2050,11 @@ class StrategySweepVisualizer:
                     from: startIdx,
                     to: endIdx
                 }});
+
+                // Trigger price scale recalculation after time range is set
+                setTimeout(() => {{
+                    chart.priceScale('right').applyOptions({{ autoScale: true }});
+                }}, 50);
             }} else {{
                 // Fallback to fit content if no focus info
                 chart.timeScale().fitContent();

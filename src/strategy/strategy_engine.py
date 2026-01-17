@@ -35,7 +35,9 @@ class StrategyEngine:
     def __init__(
         self,
         timeframe_manager: TimeframeManager,
-        use_fvg_validation: bool = True
+        use_fvg_validation: bool = True,
+        use_equilibrium_validation: bool = True,
+        require_fvg_in_equilibrium: bool = False
     ) -> None:
         """
         Initialize with pre-configured timeframe manager.
@@ -43,10 +45,17 @@ class StrategyEngine:
         Args:
             timeframe_manager: TimeframeManager with loaded data
             use_fvg_validation: If True, check FVG respect in validation (takes priority).
-                               If False, only use equilibrium validation.
+                               If False, skip FVG validation.
+            use_equilibrium_validation: If True, check equilibrium zone entry.
+                                       If False, skip equilibrium validation.
+            require_fvg_in_equilibrium: If True (OVERRIDES other settings), require
+                                       an FVG that structurally overlaps with the
+                                       equilibrium zone. This is the strictest mode.
         """
         self._tm = timeframe_manager
         self._use_fvg_validation = use_fvg_validation
+        self._use_equilibrium_validation = use_equilibrium_validation
+        self._require_fvg_in_equilibrium = require_fvg_in_equilibrium
 
         # Reuse existing detectors from base strategy
         self._liquidity_detector = LiquidityDetector(
@@ -419,7 +428,9 @@ class StrategyEngine:
                             fvg_mid=self._tm.fvg_mid,
                             sweep_time=start_mid,  # Use actual 5M sweep point
                             inflexions_mid=self._tm.inflexions_mid,
-                            use_fvg_validation=self._use_fvg_validation
+                            use_fvg_validation=self._use_fvg_validation,
+                            use_equilibrium_validation=self._use_equilibrium_validation,
+                            require_fvg_in_equilibrium=self._require_fvg_in_equilibrium
                         )
                         print(f"    [DEBUG] EquilibriumValidator created with sweep_time={start_mid}, actual_sweep_price={actual_sweep_price:.2f}")
                         self._tm.fvg_mid.to_csv("fvg_mid_debug.csv")
@@ -613,7 +624,9 @@ class StrategyEngine:
                         fvg_mid=self._tm.fvg_mid,
                         sweep_time=start_mid,  # Use actual 5M sweep point
                         inflexions_mid=self._tm.inflexions_mid,
-                        use_fvg_validation=self._use_fvg_validation
+                        use_fvg_validation=self._use_fvg_validation,
+                        use_equilibrium_validation=self._use_equilibrium_validation,
+                        require_fvg_in_equilibrium=self._require_fvg_in_equilibrium
                     )
 
                     # Loop through candles using single-candle method (O(n) optimization)

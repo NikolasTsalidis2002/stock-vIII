@@ -37,7 +37,9 @@ class MultiTimeframeStrategy:
         df_mid: pd.DataFrame,
         df_low: pd.DataFrame,
         timeframe_config: Optional[Dict[str, str]] = None,
-        use_fvg_validation: bool = True
+        use_fvg_validation: bool = True,
+        use_equilibrium_validation: bool = True,
+        require_fvg_in_equilibrium: bool = False
     ):
         """
         Initialize strategy with multi-timeframe data.
@@ -49,13 +51,23 @@ class MultiTimeframeStrategy:
             timeframe_config: Optional dict with timeframe labels for display
                               e.g., {'high': '4h', 'mid': '15min', 'low': '5min'}
             use_fvg_validation: If True, check FVG respect in validation (takes priority).
-                               If False, only use equilibrium validation.
+                               If False, skip FVG validation.
+            use_equilibrium_validation: If True, check equilibrium zone entry.
+                                       If False, skip equilibrium validation.
+            require_fvg_in_equilibrium: If True (OVERRIDES other settings), require
+                                       an FVG that structurally overlaps with the
+                                       equilibrium zone. This is the strictest mode.
         """
         # Initialize timeframe manager
         self._tm = TimeframeManager(df_high, df_mid, df_low, timeframe_config)
 
         # Initialize strategy engine
-        self._engine = StrategyEngine(self._tm, use_fvg_validation=use_fvg_validation)
+        self._engine = StrategyEngine(
+            self._tm,
+            use_fvg_validation=use_fvg_validation,
+            use_equilibrium_validation=use_equilibrium_validation,
+            require_fvg_in_equilibrium=require_fvg_in_equilibrium
+        )
 
         # Expose attributes for convenience
         self.df_high = self._tm.df_high

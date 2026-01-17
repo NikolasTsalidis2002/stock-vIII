@@ -38,7 +38,9 @@ class EquilibriumValidator:
         fvg_mid: Optional[pd.DataFrame] = None,
         sweep_time: Optional[datetime] = None,
         inflexions_mid: Optional[pd.DataFrame] = None,
-        use_fvg_validation: bool = True
+        use_fvg_validation: bool = True,
+        use_equilibrium_validation: bool = True,
+        require_fvg_in_equilibrium: bool = False
     ) -> None:
         """
         Initialize equilibrium validator.
@@ -51,7 +53,12 @@ class EquilibriumValidator:
             sweep_time: Liquidity sweep timestamp (used for FVG filtering)
             inflexions_mid: Pre-calculated inflection points (optional, for O(n) optimization)
             use_fvg_validation: If True, check FVG respect first (takes priority over equilibrium).
-                               If False, only use equilibrium validation.
+                               If False, skip FVG validation.
+            use_equilibrium_validation: If True, check equilibrium zone entry.
+                                       If False, skip equilibrium validation.
+            require_fvg_in_equilibrium: If True (OVERRIDES other settings), require
+                                       an FVG that structurally overlaps with the
+                                       equilibrium zone. This is the strictest mode.
         """
         self.df_mid = df_mid
         self.swept_level = swept_level
@@ -60,6 +67,8 @@ class EquilibriumValidator:
         self.sweep_time = sweep_time
         self.inflexions_mid = inflexions_mid
         self._use_fvg_validation = use_fvg_validation
+        self._use_equilibrium_validation = use_equilibrium_validation
+        self._require_fvg_in_equilibrium = require_fvg_in_equilibrium
 
         # Initialize state
         if entry_direction == 'short':
@@ -129,13 +138,8 @@ class EquilibriumValidator:
                 self._in_target_zone = True
                 self._trigger_time = time_5m
 
-                # Get trigger price based on direction
-                if self.entry_direction == 'short':
-                    # For SHORT, trigger when price enters premium (above equilibrium)
-                    self._trigger_price = candle['high']
-                else:
-                    # For LONG, trigger when price enters discount (below equilibrium)
-                    self._trigger_price = candle['low']
+                # Trigger price is always the candle close
+                self._trigger_price = candle['close']
 
                 state = self.get_current_state()
                 return (time_5m, 'Equilibrium', self._trigger_price, state)
@@ -262,7 +266,13 @@ class EquilibriumValidator:
         time_5m: datetime
     ) -> Optional[Tuple[datetime, str, float, EquilibriumState]]:
         """
-        Check single 5M candle for FVG respect OR equilibrium zone entry.
+        Check single 5M candle for validation based on configured mode.
+
+        Validation priority:
+        1. If require_fvg_in_equilibrium=True: ONLY use combined mode
+           (FVG must structurally overlap equilibrium zone)
+        2. Else if use_fvg_validation=True: check FVG respect first
+        3. If no FVG found and use_equilibrium_validation=True: check equilibrium zone
 
         This is the O(n) optimized version that processes one candle at a time,
         using pre-calculated inflection points instead of recalculating them.
@@ -276,7 +286,28 @@ class EquilibriumValidator:
         candle = self.df_mid.loc[time_5m]
         current_idx = self.df_mid.index.get_loc(time_5m)
 
-        # 1. Check FVG respect FIRST (takes priority) - only if FVG validation is enabled
+        # Always update running extreme first (needed for equilibrium calculations)
+        self._update_running_extreme_up_to(time_5m)
+        if self._confirmed_extreme_level is not None:
+            self._equilibrium = self._calculate_equilibrium()
+
+        # MODE 1: require_fvg_in_equilibrium - STRICTEST (overrides other settings)
+        if self._require_fvg_in_equilibrium:
+            if self.fvg_mid is None or self._equilibrium is None:
+                return None
+
+            # Find FVGs that overlap with equilibrium zone AND are being touched
+            fvgs_in_eq = self.detect_fvg_in_equilibrium_zone(time_5m, current_idx)
+            if fvgs_in_eq:
+                self._tracked_fvgs.extend(fvgs_in_eq)
+                self._validation_type = 'FVG_in_Equilibrium'
+                self._trigger_time = time_5m
+                self._trigger_price = candle['close']
+                self._in_target_zone = True
+                return (time_5m, 'FVG_in_Equilibrium', self._trigger_price, self.get_current_state())
+            return None
+
+        # MODE 2: FVG validation (takes priority if enabled)
         if self._use_fvg_validation and self.fvg_mid is not None:
             new_fvgs = self.detect_fvg_respect_at_candle(time_5m, current_idx)
             if new_fvgs:  # If any FVGs found
@@ -284,25 +315,21 @@ class EquilibriumValidator:
                 self._tracked_fvgs.extend(new_fvgs)
                 self._validation_type = 'FVG_Respect'
                 self._trigger_time = time_5m
-                self._trigger_price = candle['high'] if self.entry_direction == 'short' else candle['low']
+                self._trigger_price = candle['close']
                 self._in_target_zone = True
                 return (time_5m, 'FVG_Respect', self._trigger_price, self.get_current_state())
 
-        # 2. Update running extreme from pre-calculated inflection points up to this candle
-        self._update_running_extreme_up_to(time_5m)
+        # MODE 3: Equilibrium zone validation (fallback if enabled)
+        if self._use_equilibrium_validation:
+            if self._confirmed_extreme_level is None:
+                return None
 
-        # 3. Check equilibrium zone if we have a confirmed inflection
-        if self._confirmed_extreme_level is None:
-            return None
-
-        self._equilibrium = self._calculate_equilibrium()
-
-        if self._is_in_target_zone(candle):
-            self._in_target_zone = True
-            self._trigger_time = time_5m
-            self._validation_type = 'Equilibrium'
-            self._trigger_price = candle['high'] if self.entry_direction == 'short' else candle['low']
-            return (time_5m, 'Equilibrium', self._trigger_price, self.get_current_state())
+            if self._is_in_target_zone(candle):
+                self._in_target_zone = True
+                self._trigger_time = time_5m
+                self._validation_type = 'Equilibrium'
+                self._trigger_price = candle['close']
+                return (time_5m, 'Equilibrium', self._trigger_price, self.get_current_state())
 
         return None
 
@@ -444,3 +471,110 @@ class EquilibriumValidator:
             return False
 
         return int(status_idx) == current_5m_idx and fvg_row['Respected'] == False
+
+    def _is_fvg_in_equilibrium_zone(self, fvg_top: float, fvg_bottom: float) -> bool:
+        """
+        Check if entire FVG is within the equilibrium zone.
+
+        For SHORT: Entire FVG must be in premium zone (FVG bottom >= equilibrium)
+        For LONG: Entire FVG must be in discount zone (FVG top <= equilibrium)
+
+        Args:
+            fvg_top: Top price level of the FVG
+            fvg_bottom: Bottom price level of the FVG
+
+        Returns:
+            True if entire FVG is within the target equilibrium zone
+        """
+        if self._equilibrium is None:
+            return False
+
+        if self.entry_direction == 'short':
+            # SHORT: FVG bottom must be >= equilibrium (fully in premium zone)
+            return fvg_bottom >= self._equilibrium
+        else:  # long
+            # LONG: FVG top must be <= equilibrium (fully in discount zone)
+            return fvg_top <= self._equilibrium
+
+    def detect_fvg_in_equilibrium_zone(
+        self,
+        time_5m: datetime,
+        current_idx: int
+    ) -> List[TrackedFVG]:
+        """
+        Detect FVGs that are being touched AND overlap with equilibrium zone.
+
+        This is the strictest validation mode (require_fvg_in_equilibrium).
+        Only returns FVGs that:
+        1. Are being mitigated (touched) at current_idx
+        2. Structurally overlap with the equilibrium zone (premium for SHORT, discount for LONG)
+        3. Are not same-candle disrespected
+
+        Args:
+            time_5m: Current 5M candle timestamp
+            current_idx: Current candle index in df_mid
+
+        Returns:
+            List of TrackedFVG objects that meet all criteria (empty list if none)
+        """
+        candidates = []
+
+        if self.fvg_mid is None or self.sweep_time is None or self._equilibrium is None:
+            return candidates
+
+        # Get sweep index
+        try:
+            sweep_idx = self.df_mid.index.get_loc(self.sweep_time)
+        except KeyError:
+            return candidates
+
+        # Determine target FVG type based on entry direction
+        # For LONG: look for bullish FVG (1) being respected (support zone)
+        # For SHORT: look for bearish FVG (-1) being respected (resistance zone)
+        target_fvg_type = 1 if self.entry_direction == 'long' else -1
+
+        # Create position array for filtering
+        positions = pd.Series(range(len(self.fvg_mid)), index=self.fvg_mid.index)
+
+        # Build mask for valid FVGs being touched now
+        mask = (
+            (self.fvg_mid['MitigatedIndex'] == current_idx) &  # Being touched NOW
+            (self.fvg_mid['FVG'] == target_fvg_type) &          # Correct type
+            (positions > sweep_idx)                              # Formed after sweep
+        )
+
+        # Apply mask to get potential matches
+        potential_matches = self.fvg_mid[mask]
+
+        # Process matches and check for equilibrium overlap + same-candle disrespect
+        for idx in potential_matches.index:
+            fvg_row = potential_matches.loc[idx]
+            fvg_pos = positions.loc[idx]
+            fvg_top = fvg_row['Top']
+            fvg_bottom = fvg_row['Bottom']
+
+            # Check 1: Does this FVG overlap with equilibrium zone?
+            if not self._is_fvg_in_equilibrium_zone(fvg_top, fvg_bottom):
+                print(f"      [DEBUG] FVG at idx {fvg_pos} skipped: does not overlap equilibrium zone")
+                continue
+
+            # Check 2: Skip if touched AND disrespected on SAME candle
+            status_idx = fvg_row['StatusIndex']
+            mitigated_idx = fvg_row['MitigatedIndex']
+            respected = fvg_row['Respected']
+            if not pd.isna(status_idx) and int(status_idx) == int(mitigated_idx) and respected == False:
+                print(f"      [DEBUG] FVG at idx {fvg_pos} skipped: same-candle disrespect")
+                continue
+
+            # Valid candidate - add to list
+            print(f"      [DEBUG] FVG in equilibrium zone found: fvg_idx={fvg_pos}, top={fvg_top:.2f}, bottom={fvg_bottom:.2f}")
+            candidates.append(TrackedFVG(
+                fvg_index=fvg_pos,
+                fvg_type=int(fvg_row['FVG']),
+                top=fvg_top,
+                bottom=fvg_bottom,
+                respected_at_index=current_idx,
+                respected_at_time=time_5m
+            ))
+
+        return candidates

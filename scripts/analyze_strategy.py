@@ -364,6 +364,8 @@ def main():
             visualize=output_cfg.get('visualize', False),
             export_journal=output_cfg.get('export_journal', 'auto'),
             use_fvg_validation=validation_cfg.get('use_fvg_validation', True),
+            use_equilibrium_validation=validation_cfg.get('use_equilibrium_validation', True),
+            require_fvg_in_equilibrium=validation_cfg.get('require_fvg_in_equilibrium', False),
         )
 
     args = parser.parse_args()
@@ -382,8 +384,10 @@ def main():
     elif args.no_bos_exit:
         bos_exit_enabled = False
 
-    # Get validation settings from config (default: True)
+    # Get validation settings from config
     use_fvg_validation = getattr(args, 'use_fvg_validation', True)
+    use_equilibrium_validation = getattr(args, 'use_equilibrium_validation', True)
+    require_fvg_in_equilibrium = getattr(args, 'require_fvg_in_equilibrium', False)
 
     # Create timeframe config for display
     timeframe_config = {
@@ -409,7 +413,17 @@ def main():
         print(f"  BOS Exit:         Disabled")
     if min_profit_percent > 0:
         print(f"  Min Profit:       {min_profit_percent}% (skip trades below)")
-    print(f"  FVG Validation:   {'Enabled (FVG takes priority)' if use_fvg_validation else 'Disabled (Equilibrium only)'}")
+    # Display validation mode
+    if require_fvg_in_equilibrium:
+        print(f"  Validation Mode:  FVG-in-Equilibrium (strictest - FVG must overlap equilibrium zone)")
+    elif use_fvg_validation and use_equilibrium_validation:
+        print(f"  Validation Mode:  FVG Priority with Equilibrium Fallback")
+    elif use_fvg_validation:
+        print(f"  Validation Mode:  FVG Only")
+    elif use_equilibrium_validation:
+        print(f"  Validation Mode:  Equilibrium Only")
+    else:
+        print(f"  Validation Mode:  None (warning: no validation enabled)")
     print(f"  Visualization:    {'Enabled' if args.visualize else 'Disabled'}")
     print(f"  Export Journal:   {args.export_journal if args.export_journal else 'Disabled'}")
     print("")
@@ -430,7 +444,9 @@ def main():
     print("\n🔧 Initializing strategy engine...")
     strategy = MultiTimeframeStrategy(
         df_high, df_mid, df_low, timeframe_config,
-        use_fvg_validation=use_fvg_validation
+        use_fvg_validation=use_fvg_validation,
+        use_equilibrium_validation=use_equilibrium_validation,
+        require_fvg_in_equilibrium=require_fvg_in_equilibrium
     )
 
     # Step 3: Scan for signals

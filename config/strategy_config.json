@@ -1,12 +1,30 @@
 {
-  "symbol": "DOGE/USD",
+  "symbol": "XAU/USD",
   "timeframes": {
     "high": "1h",
     "mid": "5min",
     "low": "1min"
   },
   "validation": {
-    "use_fvg_validation": false
+    "use_fvg_validation": false,
+    "use_equilibrium_validation": true,
+    "require_fvg_in_equilibrium": true,
+
+    "_descriptions": {
+      "use_fvg_validation": "When true, FVG respect is checked first and takes priority. If an FVG is touched/respected, validation triggers immediately without checking equilibrium.",
+      "use_equilibrium_validation": "When true, checks if price enters the premium/discount zone (above/below equilibrium). For SHORT: trigger when price enters premium. For LONG: trigger when price enters discount.",
+      "require_fvg_in_equilibrium": "OVERRIDES other settings when true. Requires an FVG that structurally overlaps with the equilibrium zone to be touched. This is the strictest validation mode."
+    },
+
+    "_usage_notes": {
+      "mode_priority": "require_fvg_in_equilibrium takes precedence over the other two settings. When true, the other flags are ignored.",
+      "recommended_modes": [
+        "FVG only: use_fvg_validation=true, use_equilibrium_validation=false",
+        "Equilibrium only: use_fvg_validation=false, use_equilibrium_validation=true",
+        "FVG priority with equilibrium fallback: use_fvg_validation=true, use_equilibrium_validation=true",
+        "FVG within equilibrium (strictest): require_fvg_in_equilibrium=true"
+      ]
+    }
   },
   "backtest": {
     "enabled": true,
