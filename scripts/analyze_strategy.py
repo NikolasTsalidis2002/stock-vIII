@@ -348,6 +348,7 @@ def main():
         timeframes = config.get('timeframes', {})
         backtest_cfg = config.get('backtest', {})
         output_cfg = config.get('output', {})
+        validation_cfg = config.get('validation', {})
 
         parser.set_defaults(
             symbol=config.get('symbol', 'TSLA'),
@@ -362,6 +363,7 @@ def main():
             min_profit_percent=backtest_cfg.get('min_profit_percent', 0.0),
             visualize=output_cfg.get('visualize', False),
             export_journal=output_cfg.get('export_journal', 'auto'),
+            use_fvg_validation=validation_cfg.get('use_fvg_validation', True),
         )
 
     args = parser.parse_args()
@@ -379,6 +381,9 @@ def main():
         bos_exit_enabled = True
     elif args.no_bos_exit:
         bos_exit_enabled = False
+
+    # Get validation settings from config (default: True)
+    use_fvg_validation = getattr(args, 'use_fvg_validation', True)
 
     # Create timeframe config for display
     timeframe_config = {
@@ -404,6 +409,7 @@ def main():
         print(f"  BOS Exit:         Disabled")
     if min_profit_percent > 0:
         print(f"  Min Profit:       {min_profit_percent}% (skip trades below)")
+    print(f"  FVG Validation:   {'Enabled (FVG takes priority)' if use_fvg_validation else 'Disabled (Equilibrium only)'}")
     print(f"  Visualization:    {'Enabled' if args.visualize else 'Disabled'}")
     print(f"  Export Journal:   {args.export_journal if args.export_journal else 'Disabled'}")
     print("")
@@ -422,7 +428,10 @@ def main():
 
     # Step 2: Initialize strategy
     print("\n🔧 Initializing strategy engine...")
-    strategy = MultiTimeframeStrategy(df_high, df_mid, df_low, timeframe_config)
+    strategy = MultiTimeframeStrategy(
+        df_high, df_mid, df_low, timeframe_config,
+        use_fvg_validation=use_fvg_validation
+    )
 
     # Step 3: Scan for signals
     print("\n🔍 Scanning for trade setups...")

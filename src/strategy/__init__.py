@@ -36,7 +36,8 @@ class MultiTimeframeStrategy:
         df_high: pd.DataFrame,
         df_mid: pd.DataFrame,
         df_low: pd.DataFrame,
-        timeframe_config: Optional[Dict[str, str]] = None
+        timeframe_config: Optional[Dict[str, str]] = None,
+        use_fvg_validation: bool = True
     ):
         """
         Initialize strategy with multi-timeframe data.
@@ -47,12 +48,14 @@ class MultiTimeframeStrategy:
             df_low: Low timeframe OHLCV data with 'time' column (e.g., 1M or 5M)
             timeframe_config: Optional dict with timeframe labels for display
                               e.g., {'high': '4h', 'mid': '15min', 'low': '5min'}
+            use_fvg_validation: If True, check FVG respect in validation (takes priority).
+                               If False, only use equilibrium validation.
         """
         # Initialize timeframe manager
         self._tm = TimeframeManager(df_high, df_mid, df_low, timeframe_config)
 
         # Initialize strategy engine
-        self._engine = StrategyEngine(self._tm)
+        self._engine = StrategyEngine(self._tm, use_fvg_validation=use_fvg_validation)
 
         # Expose attributes for convenience
         self.df_high = self._tm.df_high

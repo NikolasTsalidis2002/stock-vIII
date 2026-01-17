@@ -37,7 +37,8 @@ class EquilibriumValidator:
         entry_direction: str,
         fvg_mid: Optional[pd.DataFrame] = None,
         sweep_time: Optional[datetime] = None,
-        inflexions_mid: Optional[pd.DataFrame] = None
+        inflexions_mid: Optional[pd.DataFrame] = None,
+        use_fvg_validation: bool = True
     ) -> None:
         """
         Initialize equilibrium validator.
@@ -49,6 +50,8 @@ class EquilibriumValidator:
             fvg_mid: FVG DataFrame for mid TF (optional, for FVG respect validation)
             sweep_time: Liquidity sweep timestamp (used for FVG filtering)
             inflexions_mid: Pre-calculated inflection points (optional, for O(n) optimization)
+            use_fvg_validation: If True, check FVG respect first (takes priority over equilibrium).
+                               If False, only use equilibrium validation.
         """
         self.df_mid = df_mid
         self.swept_level = swept_level
@@ -56,6 +59,7 @@ class EquilibriumValidator:
         self.fvg_mid = fvg_mid
         self.sweep_time = sweep_time
         self.inflexions_mid = inflexions_mid
+        self._use_fvg_validation = use_fvg_validation
 
         # Initialize state
         if entry_direction == 'short':
@@ -272,8 +276,8 @@ class EquilibriumValidator:
         candle = self.df_mid.loc[time_5m]
         current_idx = self.df_mid.index.get_loc(time_5m)
 
-        # 1. Check FVG respect FIRST (takes priority)
-        if self.fvg_mid is not None:
+        # 1. Check FVG respect FIRST (takes priority) - only if FVG validation is enabled
+        if self._use_fvg_validation and self.fvg_mid is not None:
             new_fvgs = self.detect_fvg_respect_at_candle(time_5m, current_idx)
             if new_fvgs:  # If any FVGs found
                 # Add new FVGs to tracked list

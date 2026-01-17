@@ -609,7 +609,10 @@ class StrategySweepVisualizer:
             entry_time = sweep_entry.signal.timestamp_entry
             if entry_time in self._skip_reason_lookup:
                 skip = self._skip_reason_lookup[entry_time]
-                return SKIP_REASON_MESSAGES.get(skip.skip_reason, "Trade skipped")
+                reason_message = SKIP_REASON_MESSAGES.get(skip.skip_reason, "Trade skipped")
+                if skip.details:
+                    return f"{reason_message}<br><span class='skip-details'>{skip.details}</span>"
+                return reason_message
 
         # No trade results available (backtest not run)
         if not self.trade_results:
@@ -1148,6 +1151,14 @@ class StrategySweepVisualizer:
             font-style: italic;
             padding: 8px 0;
             text-align: center;
+        }}
+
+        .skip-details {{
+            display: block;
+            margin-top: 4px;
+            font-size: 11px;
+            color: #9ca3af;
+            font-style: normal;
         }}
 
         /* Dashboard Styles */

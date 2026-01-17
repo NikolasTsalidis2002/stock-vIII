@@ -1,9 +1,12 @@
 {
-  "symbol": "ETH/USD",
+  "symbol": "DOGE/USD",
   "timeframes": {
     "high": "1h",
     "mid": "5min",
     "low": "1min"
+  },
+  "validation": {
+    "use_fvg_validation": false
   },
   "backtest": {
     "enabled": true,
@@ -17,22 +20,93 @@
     "visualize": true,
     "export_journal": "auto"
   },
-  "asset_options": [
-    "BTC/USD",
-    "ETH/USD",
-    "XAU/USD",
-    "ABNB",
-    "INTC",
-    "SHOP",
-    "MSFT",
-    "TSLA",
-    "AAPL",
-    "AMZN",
-    "GOOGL",
-    "NVDA",
-    "META",
-    "NFLX",
-    "INTC",
-    "AMD"
-  ]
+  "asset_options": {
+    "commodities": [
+      "XAU/USD",
+      "XAG/USD",
+      "BRENT",
+      "WTI",
+      "NG"
+    ],
+    "forex": [
+      "EUR/USD",
+      "GBP/USD",
+      "USD/JPY",
+      "AUD/USD",
+      "USD/CAD",
+      "USD/CHF",
+      "NZD/USD",
+      "EUR/GBP"
+    ],
+    "crypto": [
+      "BTC/USD",
+      "ETH/USD",
+      "SOL/USD",
+      "XRP/USD",
+      "ADA/USD",
+      "DOGE/USD",
+      "AVAX/USD",
+      "LINK/USD"
+    ],
+    "stocks_tech": [
+      "AAPL",
+      "MSFT",
+      "GOOGL",
+      "AMZN",
+      "META",
+      "NVDA",
+      "TSLA",
+      "AMD",
+      "INTC",
+      "NFLX",
+      "SHOP",
+      "ABNB",
+      "CRM",
+      "ORCL",
+      "ADBE"
+    ],
+    "stocks_finance": [
+      "JPM",
+      "BAC",
+      "GS",
+      "MS",
+      "V",
+      "MA",
+      "PYPL",
+      "C"
+    ],
+    "stocks_healthcare": [
+      "JNJ",
+      "UNH",
+      "PFE",
+      "ABBV",
+      "MRK",
+      "LLY"
+    ],
+    "stocks_energy": [
+      "XOM",
+      "CVX",
+      "COP",
+      "SLB",
+      "EOG"
+    ],
+    "etfs": [
+      "SPY",
+      "QQQ",
+      "IWM",
+      "DIA",
+      "GLD",
+      "SLV",
+      "USO",
+      "XLF",
+      "XLE",
+      "ARKK"
+    ],
+    "indices": [
+      "SPX",
+      "NDX",
+      "DJI",
+      "VIX"
+    ]
+  }
 }

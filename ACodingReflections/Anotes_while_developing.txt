@@ -11,3 +11,7 @@ This should be enabled thorugh a boolean in the configuration
 visualizations that we are making money, but according to the p&l we are losing money
 
 - apply context window for visualizing start
+
+- add condition to only consider fvgs that are at x% in the equlibrium please (else we find some that are too far away from the liquidity point)
+
+- consiuder making transactions that only go with the asset's trend
