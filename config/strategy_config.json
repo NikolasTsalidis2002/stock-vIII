@@ -1,9 +1,14 @@
 {
-  "symbol": "XAU/USD",
+  "symbol": "TSLA",
   "timeframes": {
     "high": "1h",
-    "mid": "5min",
-    "low": "1min"
+    "mid": "15min",
+    "low": "5min"
+  },
+  "timeframes_copy": {
+    "high": "1day",
+    "mid": "1h",
+    "low": "15min"
   },
   "_general_descriptions": {
     "symbol": "The asset symbol to analyze. Choose from asset_options below or use any valid Twelve Data symbol.",
@@ -13,14 +18,22 @@
       "low": "Lowest timeframe for entry confirmation and trade execution. Should be smallest of all three."
     }
   },
+  "liquidity": {
+    "sweep_proximity_threshold_percent": 0.01,
+    "_descriptions": {
+      "sweep_proximity_threshold_percent": "Percentage threshold for near-sweep detection. If price comes within this % of an inflection level, it counts as a sweep. 0 = exact touch required (default). Example: 0.5 means price within 0.5% of level counts as swept."
+    }
+  },
   "validation": {
     "use_fvg_validation": false,
     "use_equilibrium_validation": true,
     "require_fvg_in_equilibrium": false,
+    "abandon_on_new_sweep": true,
     "_descriptions": {
       "use_fvg_validation": "When true, FVG respect is checked first and takes priority. If an FVG is touched/respected, validation triggers immediately without checking equilibrium.",
       "use_equilibrium_validation": "When true, checks if price enters the premium/discount zone (above/below equilibrium). For SHORT: trigger when price enters premium. For LONG: trigger when price enters discount.",
-      "require_fvg_in_equilibrium": "OVERRIDES other settings when true. Requires an FVG that structurally overlaps with the equilibrium zone to be touched. This is the strictest validation mode."
+      "require_fvg_in_equilibrium": "OVERRIDES other settings when true. Requires an FVG that structurally overlaps with the equilibrium zone to be touched. This is the strictest validation mode.",
+      "abandon_on_new_sweep": "When true, abandons current setup if a new liquidity sweep occurs during mid/low TF scanning. When false, continues building the current setup regardless of new sweeps."
     },
     "_usage_notes": {
       "mode_priority": "require_fvg_in_equilibrium takes precedence over the other two settings. When true, the other flags are ignored.",
@@ -35,12 +48,13 @@
   "backtest": {
     "enabled": true,
     "initial_capital": 10000.0,
-    "hold_overnight": false,
+    "hold_overnight": true,
     "bos_exit_enabled": false,
     "bos_exit_threshold_percent": 50.0,
-    "min_profit_percent": 0.1,
-    "trend_filter_enabled": true,
+    "min_profit_percent": 0.5,
+    "trend_filter_enabled": false,
     "trend_filter_lookback": 500,
+    "bos_1h_trend_filter_enabled": false,
     "_descriptions": {
       "enabled": "When true, runs backtest simulation on found signals. Set to false to only scan for setups without simulating trades.",
       "initial_capital": "Starting capital in USD for the backtest. Trades use full capital (compounding).",
@@ -49,7 +63,8 @@
       "bos_exit_threshold_percent": "Minimum profit as percentage of TP target required before BOS exit is allowed. E.g., 50 means you need 50% of the way to TP before early exit triggers.",
       "min_profit_percent": "Skip trades where expected profit (entry to TP) is below this percentage. Set to 0 to disable.",
       "trend_filter_enabled": "When true, uses ARMA analysis to determine market trend and filters trades against it. Bullish trend = only LONG trades. Bearish trend = only SHORT trades. Neutral = all trades allowed.",
-      "trend_filter_lookback": "Number of mid-timeframe candles to use for ARMA trend calculation. Higher values = smoother/longer-term trend detection."
+      "trend_filter_lookback": "Number of mid-timeframe candles to use for ARMA trend calculation. Higher values = smoother/longer-term trend detection.",
+      "bos_1h_trend_filter_enabled": "When true, filters trades to follow 1H BOS trend direction. Bullish 1H trend = only LONG trades. Bearish 1H trend = only SHORT trades."
     },
     "_usage_notes": {
       "trend_filter": "The ARMA model calculates a Signal-to-Noise Ratio (SNR). If SNR < 0.05, trend is considered 'neutral' and no filtering occurs. This prevents false signals from noisy/sideways markets.",

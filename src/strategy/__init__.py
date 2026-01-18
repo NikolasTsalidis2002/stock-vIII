@@ -39,7 +39,9 @@ class MultiTimeframeStrategy:
         timeframe_config: Optional[Dict[str, str]] = None,
         use_fvg_validation: bool = True,
         use_equilibrium_validation: bool = True,
-        require_fvg_in_equilibrium: bool = False
+        require_fvg_in_equilibrium: bool = False,
+        sweep_proximity_threshold: float = 0.0,
+        abandon_on_new_sweep: bool = True
     ):
         """
         Initialize strategy with multi-timeframe data.
@@ -57,6 +59,12 @@ class MultiTimeframeStrategy:
             require_fvg_in_equilibrium: If True (OVERRIDES other settings), require
                                        an FVG that structurally overlaps with the
                                        equilibrium zone. This is the strictest mode.
+            sweep_proximity_threshold: Percentage threshold (as decimal) for near-sweep detection.
+                                      If price comes within this % of the level, it counts as swept.
+                                      Default 0.0 = exact touch required.
+            abandon_on_new_sweep: If True (default), abandons current setup if a new liquidity
+                                 sweep occurs during mid/low TF scanning. If False, continues
+                                 building the current setup regardless of new sweeps.
         """
         # Initialize timeframe manager
         self._tm = TimeframeManager(df_high, df_mid, df_low, timeframe_config)
@@ -66,7 +74,9 @@ class MultiTimeframeStrategy:
             self._tm,
             use_fvg_validation=use_fvg_validation,
             use_equilibrium_validation=use_equilibrium_validation,
-            require_fvg_in_equilibrium=require_fvg_in_equilibrium
+            require_fvg_in_equilibrium=require_fvg_in_equilibrium,
+            sweep_proximity_threshold=sweep_proximity_threshold,
+            abandon_on_new_sweep=abandon_on_new_sweep
         )
 
         # Expose attributes for convenience

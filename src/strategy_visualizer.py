@@ -828,7 +828,14 @@ class StrategySweepVisualizer:
             profit_factor_str = f"{profit_factor:.2f}"
             profit_factor_num = float(profit_factor)
 
+        # Get analysis period from low timeframe data
+        analysis_start = self.df_low.index.min().strftime('%Y-%m-%d')
+        analysis_end = self.df_low.index.max().strftime('%Y-%m-%d')
+
         return {
+            # Analysis period
+            'analysisStart': analysis_start,
+            'analysisEnd': analysis_end,
             # KPI card data
             'totalReturn': float(metrics.total_return_percent),
             'winRate': float(metrics.win_rate * 100),
@@ -1277,6 +1284,20 @@ class StrategySweepVisualizer:
             grid-template-columns: repeat(4, 1fr);
             gap: 16px;
             margin-bottom: 24px;
+        }}
+        .analysis-period {{
+            text-align: center;
+            padding: 12px 0;
+            margin-bottom: 16px;
+            color: #9db2c8;
+            font-size: 14px;
+        }}
+        .analysis-period .period-label {{
+            color: #6e7a8a;
+        }}
+        .analysis-period .period-value {{
+            color: #d1d4dc;
+            font-weight: 500;
         }}
         .kpi-card {{
             background-color: #1e222d;
@@ -2586,6 +2607,12 @@ class StrategySweepVisualizer:
             const ddClass = 'negative';  // Drawdown is always shown as negative
 
             container.innerHTML = `
+                <!-- Analysis Period -->
+                <div class="analysis-period">
+                    <span class="period-label">Analysis Period:</span>
+                    <span class="period-value">${{data.analysisStart}} to ${{data.analysisEnd}}</span>
+                </div>
+
                 <!-- KPI Cards -->
                 <div class="kpi-grid">
                     <div class="kpi-card ${{data.totalReturn >= 0 ? 'positive' : 'negative'}}">
@@ -2734,6 +2761,7 @@ class StrategySweepVisualizer:
                                     <th class="sortable" data-sort="entryTime">Entry <span class="sort-indicator"></span></th>
                                     <th>Dir</th>
                                     <th>P&L</th>
+                                    <th>% Growth</th>
                                     <th>Outcome</th>
                                     <th>Exit</th>
                                 </tr>
@@ -2904,6 +2932,7 @@ class StrategySweepVisualizer:
                         <td>${{trade.entryTime}}</td>
                         <td><span class="direction-badge ${{dirClass}}">${{dirText}}</span></td>
                         <td><span class="pnl-value ${{pnlClass}}">${{pnlFormatted}}</span></td>
+                        <td><span class="pnl-value ${{pnlClass}}">${{trade.pnlPercent.toFixed(2)}}%</span></td>
                         <td><span class="outcome-badge ${{outcomeClass}}">${{outcomeText}}</span></td>
                         <td><span class="exit-type-badge ${{exitClass}}">${{exitText}}</span></td>
                     </tr>

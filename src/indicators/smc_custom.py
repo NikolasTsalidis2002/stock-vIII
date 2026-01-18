@@ -72,7 +72,7 @@ class smc_custom:
     __version__ = "1.0.0"
 
     @classmethod
-    def inflexion_points(cls, ohlc: DataFrame) -> DataFrame:
+    def inflexion_points(cls, ohlc: DataFrame, proximity_threshold: float = 0.0) -> DataFrame:
         """
         Inflexion Points - Local Extrema Detection
 
@@ -85,6 +85,12 @@ class smc_custom:
 
         A convex inflexion (valley) occurs when:
             low[i] <= low[i-1] AND low[i] < low[i+1]
+
+        Parameters:
+        ohlc: DataFrame - OHLCV data
+        proximity_threshold: float - Percentage threshold (as decimal, e.g., 0.005 for 0.5%)
+                            for near-sweep detection. If price comes within this % of the
+                            level, it counts as reached/swept. Default 0.0 = exact touch required.
 
         Returns:
         InflexionType = 1 if concave (peak/resistance), -1 if convex (valley/support), NaN if none
@@ -151,14 +157,17 @@ class smc_custom:
                     respected[i] = False
                     status_index[i] = i + 1 + np.argmax(disrespected_mask)
                     disrespected_indices.add(i)
-                # Respected if any high reaches level but doesn't close through
-                elif np.any(future_highs >= level[i]):
-                    respected[i] = True
-                    status_index[i] = i + 1 + np.argmax(future_highs >= level[i])
-                # Still pending
                 else:
-                    respected[i] = None
-                    status_index[i] = 0
+                    # Respected if any high reaches level (with proximity threshold) but doesn't close through
+                    # For peaks: price approaching from below, so threshold allows slightly lower highs
+                    sweep_threshold_level = level[i] * (1 - proximity_threshold)
+                    if np.any(future_highs >= sweep_threshold_level):
+                        respected[i] = True
+                        status_index[i] = i + 1 + np.argmax(future_highs >= sweep_threshold_level)
+                    # Still pending
+                    else:
+                        respected[i] = None
+                        status_index[i] = 0
 
             # Convex detection (valley)
             if low_prices[i] <= low_prices[i-1] and low_prices[i] < low_prices[i+1]:
@@ -176,14 +185,17 @@ class smc_custom:
                     respected[i] = False
                     status_index[i] = i + 1 + np.argmax(disrespected_mask)
                     disrespected_indices.add(i)
-                # Respected if any low reaches level but doesn't close through
-                elif np.any(future_lows <= level[i]):
-                    respected[i] = True
-                    status_index[i] = i + 1 + np.argmax(future_lows <= level[i])
-                # Still pending
                 else:
-                    respected[i] = None
-                    status_index[i] = 0
+                    # Respected if any low reaches level (with proximity threshold) but doesn't close through
+                    # For valleys: price approaching from above, so threshold allows slightly higher lows
+                    sweep_threshold_level = level[i] * (1 + proximity_threshold)
+                    if np.any(future_lows <= sweep_threshold_level):
+                        respected[i] = True
+                        status_index[i] = i + 1 + np.argmax(future_lows <= sweep_threshold_level)
+                    # Still pending
+                    else:
+                        respected[i] = None
+                        status_index[i] = 0
 
         # Convert to Series
         inflexion_type_series = pd.Series(inflexion_type, name="InflexionType")

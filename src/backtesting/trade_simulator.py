@@ -12,7 +12,10 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Optional, Dict
 
 from src.strategy.models import TradeSignal
-from .models import TradeResult, TradeOutcome, ExitType, SkipReason, SkippedTrade
+from .models import (
+    TradeResult, TradeOutcome, ExitType, SkipReason, SkippedTrade,
+    RejectionReason, REJECTION_REASON_MESSAGES
+)
 
 
 class TradeSimulator:
@@ -38,7 +41,8 @@ class TradeSimulator:
         df_mid: pd.DataFrame = None,
         symbol: str = 'TSLA',
         min_profit_percent: float = 0.0,
-        trend_filter: str = None
+        trend_filter: str = None,
+        bos_1h_trend_filter_enabled: bool = False
     ) -> None:
         """
         Initialize trade simulator.
@@ -55,6 +59,7 @@ class TradeSimulator:
             symbol: Stock symbol being backtested (default 'TSLA')
             min_profit_percent: Minimum profit % to accept a trade (default 0.0, disabled)
             trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
+            bos_1h_trend_filter_enabled: If True, filter trades to follow 1H BOS trend direction
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
@@ -63,6 +68,7 @@ class TradeSimulator:
         self.symbol = symbol.upper()
         self.min_profit_percent = min_profit_percent
         self.trend_filter = trend_filter  # 'bullish', 'bearish', 'neutral', or None
+        self.bos_1h_trend_filter_enabled = bos_1h_trend_filter_enabled
 
         # Store data date range for validation
         self.data_start = df_low.index.min()
@@ -158,7 +164,8 @@ class TradeSimulator:
         last_candle_of_day = self.last_candle_by_date.get(entry_date)
         if last_candle_of_day and entry_time >= last_candle_of_day:
             return self._create_timeout_result(
-                signal, signal_index, current_capital, 0, 0.0, 0.0, 0
+                signal, signal_index, current_capital, 0, 0.0, 0.0, 0,
+                rejection_reason=RejectionReason.AFTER_MARKET_CLOSE
             )
 
         # Calculate position size (full capital)
@@ -183,7 +190,8 @@ class TradeSimulator:
         start_idx = self._find_start_index(entry_time)
         if start_idx is None:
             return self._create_timeout_result(
-                signal, signal_index, current_capital, shares, 0.0, 0.0, 0
+                signal, signal_index, current_capital, shares, 0.0, 0.0, 0,
+                rejection_reason=RejectionReason.ENTRY_NOT_FOUND
             )
 
         # Check if entry candle already hit TP/SL (reject trade if so)
@@ -198,7 +206,8 @@ class TradeSimulator:
         if tp_hit_on_entry or sl_hit_on_entry:
             # Entry candle already touched target - reject trade
             return self._create_timeout_result(
-                signal, signal_index, current_capital, 0, 0.0, 0.0, 0
+                signal, signal_index, current_capital, 0, 0.0, 0.0, 0,
+                rejection_reason=RejectionReason.ENTRY_ALREADY_HIT_TP_SL
             )
 
         # Skip entry candle, start walk-forward from next candle
@@ -206,7 +215,8 @@ class TradeSimulator:
         start_idx += 1
         if start_idx >= len(self.df_low):
             return self._create_timeout_result(
-                signal, signal_index, current_capital, shares, 0.0, 0.0, 0
+                signal, signal_index, current_capital, shares, 0.0, 0.0, 0,
+                rejection_reason=RejectionReason.NO_DATA_AFTER_ENTRY
             )
 
         # Calculate timeout boundary
@@ -220,13 +230,13 @@ class TradeSimulator:
             candle_time = self.df_low.index[idx]
             candles_scanned += 1
 
-            # Check timeout (24h max)
-            if candle_time > timeout_time:
-                exit_price = candle['close']
-                exit_time = candle_time
-                exit_candle_idx = idx
-                exit_type = ExitType.TIMEOUT
-                break
+            # # Check timeout (24h max)
+            # if candle_time > timeout_time:
+            #     exit_price = candle['close']
+            #     exit_time = candle_time
+            #     exit_candle_idx = idx
+            #     exit_type = ExitType.TIMEOUT
+            #     break
 
             candle_open = candle['open']
             candle_high = candle['high']
@@ -549,9 +559,14 @@ class TradeSimulator:
         shares: float,
         max_favorable: float,
         max_adverse: float,
-        candles_scanned: int
+        candles_scanned: int,
+        rejection_reason: RejectionReason = RejectionReason.NONE
     ) -> TradeResult:
-        """Create a timeout result when no data available."""
+        """Create a timeout result when trade was rejected before execution.
+
+        Args:
+            rejection_reason: Specific reason why the trade was rejected
+        """
         return TradeResult(
             signal_index=signal_index,
             entry_direction=signal.entry_direction,
@@ -563,6 +578,7 @@ class TradeSimulator:
             exit_time=None,
             outcome=TradeOutcome.LOSS,  # No P&L = LOSS
             exit_type=ExitType.TIMEOUT,
+            rejection_reason=rejection_reason,
             capital_before=current_capital,
             position_size_usd=current_capital,
             shares_traded=shares,
@@ -627,6 +643,10 @@ class TradeSimulator:
                 else:  # short
                     expected_profit_pct = ((signal.price_entry - signal.take_profit_price) / signal.price_entry) * 100
 
+                print('signal.take_profit_price --> ', signal.take_profit_price)
+                print('signal.price_entry --> ', signal.price_entry)
+                print(f"  Trade {i+1} - Expected profit %: {expected_profit_pct:.2f}%")
+
                 if expected_profit_pct < self.min_profit_percent:
                     print(f"  Trade {i+1}: SKIPPED - Profit {expected_profit_pct:.2f}% below {self.min_profit_percent}% threshold")
                     skipped_trades.append(SkippedTrade(
@@ -668,16 +688,60 @@ class TradeSimulator:
                     ))
                     continue
 
+            # Skip signals that go against the 1H BOS trend direction
+            if self.bos_1h_trend_filter_enabled:
+                signal_is_long = signal.entry_direction == 'long'
+                trend_1h = signal.trend_1h_before_sweep  # 'bullish' or 'bearish'
+
+                if trend_1h == 'bullish' and not signal_is_long:
+                    print(f"  Trade {i+1}: SKIPPED - SHORT signal rejected (1H BOS trend is bullish)")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.AGAINST_TREND,
+                        details=f"SHORT signal rejected - 1H BOS trend is bullish"
+                    ))
+                    continue
+                elif trend_1h == 'bearish' and signal_is_long:
+                    print(f"  Trade {i+1}: SKIPPED - LONG signal rejected (1H BOS trend is bearish)")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.AGAINST_TREND,
+                        details=f"LONG signal rejected - 1H BOS trend is bearish"
+                    ))
+                    continue
+
             # Simulate this trade with current capital
             result = self.simulate_trade(signal, i, current_capital)
 
-            # Skip rejected trades (entry after market close)
+            # Skip rejected trades (various reasons tracked by rejection_reason)
             if result.exit_price is None:
-                print(f"  Trade {i+1}: REJECTED - Entry after market close ({signal.timestamp_entry})")
+                # Get human-readable message for the rejection reason
+                reason = result.rejection_reason or RejectionReason.NONE
+                reason_msg = REJECTION_REASON_MESSAGES.get(reason, "Unknown rejection reason")
+
+                # Map rejection reasons to skip reasons
+                skip_reason_map = {
+                    RejectionReason.AFTER_MARKET_CLOSE: SkipReason.AFTER_MARKET_CLOSE,
+                    RejectionReason.ENTRY_NOT_FOUND: SkipReason.PARTIAL_SETUP,
+                    RejectionReason.ENTRY_ALREADY_HIT_TP_SL: SkipReason.PARTIAL_SETUP,
+                    RejectionReason.NO_DATA_AFTER_ENTRY: SkipReason.PARTIAL_SETUP,
+                }
+                skip_reason = skip_reason_map.get(reason, SkipReason.PARTIAL_SETUP)
+
+                # Build detailed message based on rejection reason
+                if reason == RejectionReason.AFTER_MARKET_CLOSE:
+                    entry_date = signal.timestamp_entry.date()
+                    market_close_time = self.last_candle_by_date.get(entry_date)
+                    market_close_str = market_close_time.strftime('%H:%M') if market_close_time else "unknown"
+                    details = f"Entry time {signal.timestamp_entry.strftime('%H:%M')} at/after market close ({market_close_str})"
+                else:
+                    details = reason_msg
+
+                print(f"  Trade {i+1}: REJECTED - {reason_msg} ({signal.timestamp_entry})")
                 skipped_trades.append(SkippedTrade(
                     signal_entry_time=signal.timestamp_entry,
-                    skip_reason=SkipReason.AFTER_MARKET_CLOSE,
-                    details=f"Entry time {signal.timestamp_entry.strftime('%H:%M')} after market close"
+                    skip_reason=skip_reason,
+                    details=details
                 ))
                 continue
 
@@ -704,8 +768,8 @@ class TradeSimulator:
                 f"Capital: ${result.capital_after:>10,.2f}"
             )
 
-            # Plot unrealized P&L for this trade
-            self.plot_unrealized_pnl(result, i+1)
+            # # Plot unrealized P&L for this trade
+            # self.plot_unrealized_pnl(result, i+1)
 
         print("-" * 60)
         print(f"  Final capital: ${current_capital:,.2f}")

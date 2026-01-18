@@ -27,7 +27,8 @@ class LiquidityDetector:
         self,
         df_high: pd.DataFrame,
         inflexions_high: pd.DataFrame,
-        bos_high: pd.DataFrame
+        bos_high: pd.DataFrame,
+        proximity_threshold: float = 0.0
     ) -> None:
         """
         Initialize with high timeframe data and indicators.
@@ -36,10 +37,14 @@ class LiquidityDetector:
             df_high: High TF OHLCV DataFrame with datetime index
             inflexions_high: Pre-calculated inflexion points
             bos_high: Pre-calculated BOS data
+            proximity_threshold: Percentage threshold (as decimal) for near-sweep detection.
+                                If price comes within this % of the level, it counts as swept.
+                                Default 0.0 = exact touch required.
         """
         self.df_high = df_high
         self.inflexions_high = inflexions_high
         self.bos_high = bos_high
+        self.proximity_threshold = proximity_threshold
 
     def detect_all_sweeps(self) -> List[SweepInfo]:
         """
@@ -65,7 +70,7 @@ class LiquidityDetector:
             df_slice = self.df_high.iloc[:i+1]
 
             # Calculate indicators on this slice (same as walkthrough line 55)
-            inflexions_slice = smc_custom.inflexion_points(df_slice)
+            inflexions_slice = smc_custom.inflexion_points(df_slice, proximity_threshold=self.proximity_threshold)
 
             # Track NEW sweeps at this candle (for dual sweep detection)
             new_high_sweeps = []  # List of (inflexion_idx, level)
@@ -184,7 +189,7 @@ class LiquidityDetector:
         df_slice = self.df_high.loc[:end_time]
 
         # Calculate inflexions on this time-limited slice
-        inflexions_slice = smc_custom.inflexion_points(df_slice)
+        inflexions_slice = smc_custom.inflexion_points(df_slice, proximity_threshold=self.proximity_threshold)
 
         # Check if this inflexion is broken in the slice
         if inflexion_idx < len(inflexions_slice):

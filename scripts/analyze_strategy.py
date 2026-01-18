@@ -10,16 +10,26 @@ Usage:
     python3 scripts/analyze_strategy.py --symbol META --visualize  # Generate unified HTML
     python3 scripts/analyze_strategy.py --high-tf 4h --mid-tf 15min --low-tf 5min  # Custom timeframes
 
+Batch Mode:
+    python3 scripts/analyze_strategy.py --all-symbols           # Run for all symbols in config
+    python3 scripts/analyze_strategy.py --all-symbols --summary-output results/my_batch.csv  # Custom summary path
+
 Output:
     --visualize flag generates: results/{symbol}_sweeps.html
     (Single interactive file with all sweeps, tabs for timeframes, arrow key navigation)
+
+    --all-symbols generates:
+    - results/trades/{symbol}_trades.csv (individual trade journals)
+    - results/summary/batch_summary.csv (consolidated summary with metrics)
 """
 
 import sys
 import os
 import json
+import csv
 from pathlib import Path
 import argparse
+from datetime import datetime
 
 # Add src directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -28,6 +38,301 @@ from data_loader import DataLoader
 from strategy import MultiTimeframeStrategy
 from strategy_visualizer import StrategySweepVisualizer
 from backtesting import Backtester
+
+
+def get_all_symbols_from_config(config):
+    """Extract all symbols from all categories in config.
+
+    Args:
+        config: Configuration dictionary with asset_options containing symbol lists.
+
+    Returns:
+        list: All symbols from all categories.
+    """
+    symbols = []
+    asset_options = config.get("asset_options", {})
+    for category, symbol_list in asset_options.items():
+        if category.startswith("_"):
+            continue  # Skip description fields
+        if isinstance(symbol_list, list):
+            symbols.extend(symbol_list)
+    return symbols
+
+
+def has_required_cache(symbol: str, timeframes: dict) -> bool:
+    """Check if symbol has all required timeframe data cached.
+
+    Args:
+        symbol: The trading symbol (e.g., 'TSLA', 'BTC/USD').
+        timeframes: Dict with 'high', 'mid', 'low' timeframe keys.
+
+    Returns:
+        bool: True if all required cache files exist.
+    """
+    safe_symbol = symbol.lower().replace('/', '_')
+    data_dir = Path(__file__).parent.parent / 'data' / safe_symbol
+
+    required_tfs = [timeframes['high'], timeframes['mid'], timeframes['low']]
+    for tf in required_tfs:
+        cache_file = data_dir / f"{safe_symbol}_{tf}.csv"
+        if not cache_file.exists():
+            return False
+    return True
+
+
+def generate_summary_csv(results, output_path):
+    """Write consolidated batch results to CSV.
+
+    Args:
+        results: List of result dictionaries from batch analysis.
+        output_path: Path to write the summary CSV.
+    """
+    # Ensure directory exists
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    fieldnames = [
+        'symbol', 'status', 'num_trades', 'long_trades', 'short_trades',
+        'total_pnl_dollars', 'total_pnl_percent', 'win_rate',
+        'avg_pnl_per_trade', 'best_trade_pnl', 'worst_trade_pnl', 'error'
+    ]
+
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(result)
+
+    print(f"\n📊 Batch summary saved to: {output_path}")
+
+
+def run_single_symbol(symbol, config, args):
+    """Run analysis for a single symbol and return result dict.
+
+    Args:
+        symbol: The symbol to analyze.
+        config: Configuration dictionary.
+        args: Parsed command-line arguments.
+
+    Returns:
+        dict: Result dictionary with metrics or error info.
+    """
+    # Get timeframe settings
+    timeframes = config.get('timeframes', {})
+    high_tf = timeframes.get('high', '1h')
+    mid_tf = timeframes.get('mid', '5min')
+    low_tf = timeframes.get('low', '1min')
+
+    timeframe_config = {
+        'high': high_tf.upper(),
+        'mid': mid_tf.upper(),
+        'low': low_tf.upper()
+    }
+
+    # Get validation settings
+    validation_cfg = config.get('validation', {})
+    use_fvg_validation = validation_cfg.get('use_fvg_validation', True)
+    use_equilibrium_validation = validation_cfg.get('use_equilibrium_validation', True)
+    require_fvg_in_equilibrium = validation_cfg.get('require_fvg_in_equilibrium', False)
+    abandon_on_new_sweep = validation_cfg.get('abandon_on_new_sweep', True)
+
+    # Get liquidity settings
+    liquidity_cfg = config.get('liquidity', {})
+    sweep_proximity_threshold = liquidity_cfg.get('sweep_proximity_threshold_percent', 0.0) / 100.0
+
+    # Get backtest settings
+    backtest_cfg = config.get('backtest', {})
+    initial_capital = backtest_cfg.get('initial_capital', 10000.0)
+    hold_overnight = backtest_cfg.get('hold_overnight', False)
+    bos_exit_enabled = backtest_cfg.get('bos_exit_enabled', False)
+    bos_exit_threshold_percent = backtest_cfg.get('bos_exit_threshold_percent', 50.0)
+    min_profit_percent = backtest_cfg.get('min_profit_percent', 0.0)
+    trend_filter_enabled = backtest_cfg.get('trend_filter_enabled', False)
+    trend_filter_lookback = backtest_cfg.get('trend_filter_lookback', 500)
+    bos_1h_trend_filter_enabled = backtest_cfg.get('bos_1h_trend_filter_enabled', False)
+
+    print(f"\n{'='*60}")
+    print(f"Analyzing {symbol}...")
+    print(f"{'='*60}")
+
+    # Load data
+    loader = DataLoader(symbol=symbol)
+    df_high = loader.get_data(high_tf, force_refresh=False)
+    df_mid = loader.get_data(mid_tf, force_refresh=False)
+    df_low = loader.get_data(low_tf, force_refresh=False)
+
+    print(f"  {high_tf.upper()}: {len(df_high)} candles | {mid_tf.upper()}: {len(df_mid)} candles | {low_tf.upper()}: {len(df_low)} candles")
+
+    # Initialize strategy
+    strategy = MultiTimeframeStrategy(
+        df_high, df_mid, df_low, timeframe_config,
+        use_fvg_validation=use_fvg_validation,
+        use_equilibrium_validation=use_equilibrium_validation,
+        require_fvg_in_equilibrium=require_fvg_in_equilibrium,
+        sweep_proximity_threshold=sweep_proximity_threshold,
+        abandon_on_new_sweep=abandon_on_new_sweep
+    )
+
+    # Scan for signals
+    signals = strategy.scan_for_signals(max_signals=5)
+
+    if len(signals) == 0:
+        print(f"  No signals found for {symbol}")
+        return {
+            'symbol': symbol,
+            'status': 'success',
+            'num_trades': 0,
+            'long_trades': 0,
+            'short_trades': 0,
+            'total_pnl_dollars': 0.0,
+            'total_pnl_percent': 0.0,
+            'win_rate': 0.0,
+            'avg_pnl_per_trade': 0.0,
+            'best_trade_pnl': 0.0,
+            'worst_trade_pnl': 0.0,
+            'error': ''
+        }
+
+    # Run ARMA trend analysis if enabled
+    import numpy as np
+    trend_signal = None
+    if trend_filter_enabled:
+        from src.arma_trend_analysis import ARMA
+        mid_prices = list(df_mid['close'])
+        lookback_prices = mid_prices[-trend_filter_lookback:] if len(mid_prices) >= trend_filter_lookback else mid_prices
+        arma_result = ARMA.fit_arma(lookback_prices, auto_select=True, max_order=3)
+        trend_signal = arma_result['trend_signal']
+
+    # Run backtest
+    backtester = Backtester.from_strategy(
+        strategy,
+        initial_capital=initial_capital,
+        symbol=symbol,
+        intraday_only=not hold_overnight,
+        bos_exit_enabled=bos_exit_enabled,
+        bos_exit_threshold_percent=bos_exit_threshold_percent,
+        min_profit_percent=min_profit_percent,
+        trend_filter=trend_signal if trend_filter_enabled else None,
+        bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled
+    )
+    _results = backtester.run(signals)
+
+    # Export trade journal
+    os.makedirs("results/trades", exist_ok=True)
+    journal_path = f"results/trades/{symbol.lower().replace('/', '_')}_trades.csv"
+    backtester.export_journal(journal_path)
+
+    # Extract metrics
+    metrics = backtester.metrics
+    trade_results = backtester.results
+
+    # Calculate additional metrics
+    num_trades = len(trade_results)
+    long_trades = sum(1 for t in trade_results if t.entry_direction == 'long')
+    short_trades = sum(1 for t in trade_results if t.entry_direction == 'short')
+
+    pnl_values = [t.pnl_dollars for t in trade_results]
+    best_trade = max(pnl_values) if pnl_values else 0.0
+    worst_trade = min(pnl_values) if pnl_values else 0.0
+
+    total_pnl = metrics.total_pnl_dollars if metrics else 0.0
+    total_pnl_pct = metrics.total_return_percent if metrics else 0.0
+    win_rate = metrics.win_rate if metrics else 0.0
+    avg_pnl = total_pnl / num_trades if num_trades > 0 else 0.0
+
+    print(f"  {symbol}: {num_trades} trades, P&L: ${total_pnl:,.2f} ({total_pnl_pct:+.2f}%), Win rate: {win_rate:.1f}%")
+
+    return {
+        'symbol': symbol,
+        'status': 'success',
+        'num_trades': num_trades,
+        'long_trades': long_trades,
+        'short_trades': short_trades,
+        'total_pnl_dollars': round(total_pnl, 2),
+        'total_pnl_percent': round(total_pnl_pct, 2),
+        'win_rate': round(win_rate, 1),
+        'avg_pnl_per_trade': round(avg_pnl, 2),
+        'best_trade_pnl': round(best_trade, 2),
+        'worst_trade_pnl': round(worst_trade, 2),
+        'error': ''
+    }
+
+
+def run_batch_analysis(config, args):
+    """Run analysis for all symbols in config with error handling.
+
+    Only processes symbols with complete cached data (no API calls).
+
+    Args:
+        config: Configuration dictionary.
+        args: Parsed command-line arguments.
+
+    Returns:
+        list: List of result dictionaries for each symbol.
+    """
+    all_symbols = get_all_symbols_from_config(config)
+    results = []
+
+    # Get timeframe settings for cache check
+    timeframes_cfg = config.get('timeframes', {})
+    timeframes = {
+        'high': timeframes_cfg.get('high', '1h'),
+        'mid': timeframes_cfg.get('mid', '15min'),
+        'low': timeframes_cfg.get('low', '5min')
+    }
+
+    # Filter to only symbols with complete cache
+    symbols_with_cache = [s for s in all_symbols if has_required_cache(s, timeframes)]
+    symbols_without_cache = [s for s in all_symbols if not has_required_cache(s, timeframes)]
+
+    print("\n" + "="*80)
+    print("BATCH ANALYSIS - Cache-Only Mode (no API calls)")
+    print("="*80)
+    print(f"Total configured symbols: {len(all_symbols)}")
+    print(f"Symbols with complete cache: {len(symbols_with_cache)}")
+    print(f"Symbols skipped (no cache): {len(symbols_without_cache)}")
+
+    if symbols_without_cache:
+        print(f"\nSkipping {len(symbols_without_cache)} symbols without cache:")
+        for s in symbols_without_cache:
+            print(f"  - {s}")
+            results.append({
+                'symbol': s,
+                'status': 'skipped',
+                'num_trades': 0,
+                'long_trades': 0,
+                'short_trades': 0,
+                'total_pnl_dollars': 0.0,
+                'total_pnl_percent': 0.0,
+                'win_rate': 0.0,
+                'avg_pnl_per_trade': 0.0,
+                'best_trade_pnl': 0.0,
+                'worst_trade_pnl': 0.0,
+                'error': 'No cached data'
+            })
+
+    for i, symbol in enumerate(symbols_with_cache, 1):
+        print(f"\n[{i}/{len(symbols_with_cache)}] Processing {symbol}...")
+        try:
+            result = run_single_symbol(symbol, config, args)
+            results.append(result)
+        except Exception as e:
+            print(f"  Failed to process {symbol}: {e}")
+            results.append({
+                'symbol': symbol,
+                'status': 'failed',
+                'num_trades': 0,
+                'long_trades': 0,
+                'short_trades': 0,
+                'total_pnl_dollars': 0.0,
+                'total_pnl_percent': 0.0,
+                'win_rate': 0.0,
+                'avg_pnl_per_trade': 0.0,
+                'best_trade_pnl': 0.0,
+                'worst_trade_pnl': 0.0,
+                'error': str(e)
+            })
+
+    return results
 
 
 def load_config():
@@ -342,6 +647,17 @@ def main():
         action='store_true',
         help='Disable BOS-based early exit (overrides config file)'
     )
+    parser.add_argument(
+        '--all-symbols',
+        action='store_true',
+        help='Run analysis for all symbols configured in asset_options (batch mode)'
+    )
+    parser.add_argument(
+        '--summary-output',
+        type=str,
+        default='results/summary/batch_summary.csv',
+        help='Path for consolidated summary CSV (default: results/summary/batch_summary.csv)'
+    )
 
     # Apply JSON config as defaults (CLI args will override these)
     if config:
@@ -349,6 +665,7 @@ def main():
         backtest_cfg = config.get('backtest', {})
         output_cfg = config.get('output', {})
         validation_cfg = config.get('validation', {})
+        liquidity_cfg = config.get('liquidity', {})
 
         parser.set_defaults(
             symbol=config.get('symbol', 'TSLA'),
@@ -363,14 +680,41 @@ def main():
             min_profit_percent=backtest_cfg.get('min_profit_percent', 0.0),
             trend_filter_enabled=backtest_cfg.get('trend_filter_enabled', False),
             trend_filter_lookback=backtest_cfg.get('trend_filter_lookback', 500),
+            bos_1h_trend_filter_enabled=backtest_cfg.get('bos_1h_trend_filter_enabled', False),
             visualize=output_cfg.get('visualize', False),
             export_journal=output_cfg.get('export_journal', 'auto'),
             use_fvg_validation=validation_cfg.get('use_fvg_validation', True),
             use_equilibrium_validation=validation_cfg.get('use_equilibrium_validation', True),
             require_fvg_in_equilibrium=validation_cfg.get('require_fvg_in_equilibrium', False),
+            abandon_on_new_sweep=validation_cfg.get('abandon_on_new_sweep', True),
+            sweep_proximity_threshold_percent=liquidity_cfg.get('sweep_proximity_threshold_percent', 0.0),
         )
 
     args = parser.parse_args()
+
+    # Handle batch mode: run for all symbols if --all-symbols is passed
+    if args.all_symbols:
+        results = run_batch_analysis(config, args)
+        generate_summary_csv(results, args.summary_output)
+
+        # Print batch summary
+        print("\n" + "="*80)
+        print("BATCH ANALYSIS COMPLETE")
+        print("="*80)
+
+        successful = sum(1 for r in results if r['status'] == 'success')
+        failed = sum(1 for r in results if r['status'] == 'failed')
+        skipped = sum(1 for r in results if r['status'] == 'skipped')
+        total_trades = sum(r['num_trades'] for r in results)
+        total_pnl = sum(r['total_pnl_dollars'] for r in results)
+
+        print(f"\nSymbols: {len(results)} total ({successful} successful, {failed} failed, {skipped} skipped)")
+        print(f"Total trades across all symbols: {total_trades}")
+        print(f"Combined P&L: ${total_pnl:,.2f}")
+        print(f"\nSummary saved to: {args.summary_output}")
+        print(f"Individual trade journals saved to: results/trades/")
+        print("="*80 + "\n")
+        return
 
     symbol = args.symbol.upper()
     high_tf = args.high_tf
@@ -383,6 +727,7 @@ def main():
     min_profit_percent = getattr(args, 'min_profit_percent', 0.0)
     trend_filter_enabled = getattr(args, 'trend_filter_enabled', False)
     trend_filter_lookback = getattr(args, 'trend_filter_lookback', 500)
+    bos_1h_trend_filter_enabled = getattr(args, 'bos_1h_trend_filter_enabled', False)
     if args.bos_exit:
         bos_exit_enabled = True
     elif args.no_bos_exit:
@@ -392,6 +737,12 @@ def main():
     use_fvg_validation = getattr(args, 'use_fvg_validation', True)
     use_equilibrium_validation = getattr(args, 'use_equilibrium_validation', True)
     require_fvg_in_equilibrium = getattr(args, 'require_fvg_in_equilibrium', False)
+    abandon_on_new_sweep = getattr(args, 'abandon_on_new_sweep', True)
+
+    # Get liquidity sweep settings from config
+    # Convert from percentage to decimal (e.g., 0.5% -> 0.005)
+    sweep_proximity_threshold_percent = getattr(args, 'sweep_proximity_threshold_percent', 0.0)
+    sweep_proximity_threshold = sweep_proximity_threshold_percent / 100.0
 
     # Create timeframe config for display
     timeframe_config = {
@@ -421,6 +772,10 @@ def main():
         print(f"  Trend Filter:     Enabled (ARMA, lookback={trend_filter_lookback})")
     else:
         print(f"  Trend Filter:     Disabled")
+    if bos_1h_trend_filter_enabled:
+        print(f"  1H BOS Filter:    Enabled (trades must follow 1H BOS trend)")
+    else:
+        print(f"  1H BOS Filter:    Disabled")
     # Display validation mode
     if require_fvg_in_equilibrium:
         print(f"  Validation Mode:  FVG-in-Equilibrium (strictest - FVG must overlap equilibrium zone)")
@@ -432,6 +787,10 @@ def main():
         print(f"  Validation Mode:  Equilibrium Only")
     else:
         print(f"  Validation Mode:  None (warning: no validation enabled)")
+    if sweep_proximity_threshold_percent > 0:
+        print(f"  Sweep Proximity:  {sweep_proximity_threshold_percent}% (price within {sweep_proximity_threshold_percent}% of level counts as swept)")
+    else:
+        print(f"  Sweep Proximity:  Exact touch required (0%)")
     print(f"  Visualization:    {'Enabled' if args.visualize else 'Disabled'}")
     print(f"  Export Journal:   {args.export_journal if args.export_journal else 'Disabled'}")
     print("")
@@ -439,10 +798,10 @@ def main():
     # Step 1: Load data (force refresh to get latest)
     print(f"📂 Downloading fresh {symbol} data for all timeframes...")
     loader = DataLoader(symbol=symbol)
-
-    df_high = loader.get_data(high_tf, force_refresh=False)
-    df_mid = loader.get_data(mid_tf, force_refresh=False)
-    df_low = loader.get_data(low_tf, force_refresh=False)
+    force_refresh = False
+    df_high = loader.get_data(high_tf, force_refresh=force_refresh)
+    df_mid = loader.get_data(mid_tf, force_refresh=force_refresh)
+    df_low = loader.get_data(low_tf, force_refresh=force_refresh)
 
     print(f"  ✓ {high_tf.upper()}:  {len(df_high)} candles")
     print(f"  ✓ {mid_tf.upper()}:  {len(df_mid)} candles")
@@ -454,7 +813,9 @@ def main():
         df_high, df_mid, df_low, timeframe_config,
         use_fvg_validation=use_fvg_validation,
         use_equilibrium_validation=use_equilibrium_validation,
-        require_fvg_in_equilibrium=require_fvg_in_equilibrium
+        require_fvg_in_equilibrium=require_fvg_in_equilibrium,
+        sweep_proximity_threshold=sweep_proximity_threshold,
+        abandon_on_new_sweep=abandon_on_new_sweep
     )
 
     # Step 3: Scan for signals
@@ -522,7 +883,8 @@ def main():
             bos_exit_enabled=bos_exit_enabled,
             bos_exit_threshold_percent=bos_exit_threshold_percent,
             min_profit_percent=min_profit_percent,
-            trend_filter=trend_signal if trend_filter_enabled else None
+            trend_filter=trend_signal if trend_filter_enabled else None,
+            bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled
         )
         _results = backtester.run(signals)
         backtester.print_summary()

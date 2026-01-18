@@ -37,7 +37,9 @@ class StrategyEngine:
         timeframe_manager: TimeframeManager,
         use_fvg_validation: bool = True,
         use_equilibrium_validation: bool = True,
-        require_fvg_in_equilibrium: bool = False
+        require_fvg_in_equilibrium: bool = False,
+        sweep_proximity_threshold: float = 0.0,
+        abandon_on_new_sweep: bool = True
     ) -> None:
         """
         Initialize with pre-configured timeframe manager.
@@ -51,17 +53,25 @@ class StrategyEngine:
             require_fvg_in_equilibrium: If True (OVERRIDES other settings), require
                                        an FVG that structurally overlaps with the
                                        equilibrium zone. This is the strictest mode.
+            sweep_proximity_threshold: Percentage threshold (as decimal) for near-sweep detection.
+                                      If price comes within this % of the level, it counts as swept.
+                                      Default 0.0 = exact touch required.
+            abandon_on_new_sweep: If True (default), abandons current setup if a new liquidity
+                                 sweep occurs during mid/low TF scanning. If False, continues
+                                 building the current setup regardless of new sweeps.
         """
         self._tm = timeframe_manager
         self._use_fvg_validation = use_fvg_validation
         self._use_equilibrium_validation = use_equilibrium_validation
         self._require_fvg_in_equilibrium = require_fvg_in_equilibrium
+        self._abandon_on_new_sweep = abandon_on_new_sweep
 
         # Reuse existing detectors from base strategy
         self._liquidity_detector = LiquidityDetector(
             df_high=self._tm.df_high,
             inflexions_high=self._tm.inflexions_high,
-            bos_high=self._tm.bos_high
+            bos_high=self._tm.bos_high,
+            proximity_threshold=sweep_proximity_threshold
         )
 
         self._event_b_detector = EventBDetector(
@@ -216,7 +226,7 @@ class StrategyEngine:
                             break
 
             # Check: New sweep occurred? (invalidates current setup)
-            if self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_low_current):
+            if self._abandon_on_new_sweep and self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_low_current):
                 print(f"    ⚠️  New sweep occurred during low TF scan - abandoning current setup")
                 new_sweep_occurred = True
                 break
@@ -334,35 +344,47 @@ class StrategyEngine:
             market_close = self._tm.get_market_close_for_day(time_high_sweep)
             market_close_cutoff = market_close - timedelta(minutes=10)
 
-            # Skip sweeps that occur too close to market close
-            if time_high_sweep >= market_close_cutoff:
-                print(f"    ⚠️  Sweep too close to market close ({market_close}) - skipping")
+            # Calculate when the liquidity hour closes (needed for look-ahead bias fix)
+            time_high_end = time_high_sweep + high_duration
+
+            # Skip sweeps where the scan can't start (hour closes at/after market close)
+            if time_high_end >= market_close_cutoff:
+                print(f"    ⚠️  Liquidity hour closes too close to market close ({market_close}) - skipping")
                 continue
 
             # Exit target will be found after mid TF BOS (Event B) is detected
             exit_target = None
 
             # Step 2: Progressive mid TF scan for Event B → Equilibrium
-            # Find the actual sweep point within the high TF candle
+            # Find the actual sweep point within the high TF candle (historical lookup - valid)
             # For LONG: find mid TF candle with min low (actual sweep point)
             # For SHORT: find mid TF candle with max high (actual sweep point)
-            time_high_end = time_high_sweep + high_duration
             mask_mid_in_high = (self._tm.df_mid.index >= time_high_sweep) & (self._tm.df_mid.index < time_high_end)
             candles_mid_in_high = self._tm.df_mid.loc[mask_mid_in_high]
 
+            # Find actual sweep point (historical lookup - this is valid)
             if len(candles_mid_in_high) > 0:
                 if entry_direction == 'long':
                     # For LONG: swept a LOW, find the mid TF candle with min low
-                    start_mid = candles_mid_in_high['low'].idxmin()
-                    actual_sweep_price = self._tm.df_mid.loc[start_mid, 'low']
+                    actual_sweep_time = candles_mid_in_high['low'].idxmin()
+                    actual_sweep_price = self._tm.df_mid.loc[actual_sweep_time, 'low']
                 else:
                     # For SHORT: swept a HIGH, find the mid TF candle with max high
-                    start_mid = candles_mid_in_high['high'].idxmax()
-                    actual_sweep_price = self._tm.df_mid.loc[start_mid, 'high']
-                print(f"    Actual sweep point: {start_mid} (price: {actual_sweep_price:.2f})")
+                    actual_sweep_time = candles_mid_in_high['high'].idxmax()
+                    actual_sweep_price = self._tm.df_mid.loc[actual_sweep_time, 'high']
+                print(f"    Actual sweep point: {actual_sweep_time} (price: {actual_sweep_price:.2f})")
             else:
-                start_mid = time_high_sweep  # Fallback
+                actual_sweep_time = time_high_sweep  # Fallback
                 actual_sweep_price = swept_level  # Fallback to 1H level
+
+            # FIX LOOK-AHEAD BIAS: Calculate when we can actually start scanning
+            # We can only know about the sweep AFTER the 1H candle closes (time_high_end)
+            scan_start_candidates = self._tm.df_mid.index[self._tm.df_mid.index >= time_high_end]
+            if len(scan_start_candidates) == 0:
+                print(f"    No 5M candles after liquidity hour closes - skipping")
+                continue
+            scan_start_time = scan_start_candidates[0]
+            print(f"    Scan for Event B starts at: {scan_start_time} (after 1H close at {time_high_end})")
 
             end_mid = market_close_cutoff
 
@@ -375,8 +397,8 @@ class StrategyEngine:
             new_sweep_occurred = False
             price_mid_event_b = None
 
-            # Progressive scan through each mid TF candle
-            for time_mid_current in self._tm.df_mid.loc[start_mid:end_mid].index:
+            # Progressive scan through each mid TF candle (starting AFTER hour closes)
+            for time_mid_current in self._tm.df_mid.loc[scan_start_time:end_mid].index:
                 # Check if we've crossed into a new high TF candle
                 time_elapsed = time_mid_current - time_high_sweep
                 candles_elapsed = time_elapsed.total_seconds() / high_duration.total_seconds()
@@ -392,7 +414,7 @@ class StrategyEngine:
                         break
 
                 # Check: New sweep occurred? (invalidates current setup)
-                if self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_mid_current):
+                if self._abandon_on_new_sweep and self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_mid_current):
                     print(f"    ⚠️  New sweep occurred during mid TF scan - abandoning current setup")
                     new_sweep_occurred = True
                     break
@@ -426,13 +448,13 @@ class StrategyEngine:
                             swept_level=actual_sweep_price,  # Use actual 5M sweep price, not 1H inflexion
                             entry_direction=entry_direction,
                             fvg_mid=self._tm.fvg_mid,
-                            sweep_time=start_mid,  # Use actual 5M sweep point
+                            sweep_time=actual_sweep_time,  # Use actual 5M sweep point for FVG filtering
                             inflexions_mid=self._tm.inflexions_mid,
                             use_fvg_validation=self._use_fvg_validation,
                             use_equilibrium_validation=self._use_equilibrium_validation,
                             require_fvg_in_equilibrium=self._require_fvg_in_equilibrium
                         )
-                        print(f"    [DEBUG] EquilibriumValidator created with sweep_time={start_mid}, actual_sweep_price={actual_sweep_price:.2f}")
+                        print(f"    [DEBUG] EquilibriumValidator created with sweep_time={actual_sweep_time}, actual_sweep_price={actual_sweep_price:.2f}")
                         self._tm.fvg_mid.to_csv("fvg_mid_debug.csv")
 
                 # State 2: Event B found, looking for FVG respect OR Equilibrium zone entry
@@ -529,6 +551,12 @@ class StrategyEngine:
                 continue
 
             if equilibrium_validation is None:
+                # Print the specific failure reason
+                if equilibrium_validator is not None:
+                    reason = equilibrium_validator.get_failure_reason()
+                    if reason:
+                        print(f"    ⚠️  Equilibrium validation failed: {reason}")
+
                 # No FVG respect or equilibrium zone entry - create partial setup
                 time_mid_event_b_tmp, event_b_type_tmp, price_mid_event_b_tmp = event_b
                 self._partial_setups.append(PartialSetup(
@@ -622,7 +650,7 @@ class StrategyEngine:
                         swept_level=swept_level,
                         entry_direction=entry_direction,
                         fvg_mid=self._tm.fvg_mid,
-                        sweep_time=start_mid,  # Use actual 5M sweep point
+                        sweep_time=actual_sweep_time,  # Use actual 5M sweep point for FVG filtering
                         inflexions_mid=self._tm.inflexions_mid,
                         use_fvg_validation=self._use_fvg_validation,
                         use_equilibrium_validation=self._use_equilibrium_validation,
@@ -715,6 +743,7 @@ class StrategyEngine:
                 ))
                 last_analysis_end_time = last_time_scanned
                 continue
+            # print('exit_target.take_profit --> ', exit_target.take_profit)
 
             # All conditions met - generate Strategy signal with TP/SL
             signal = TradeSignal(

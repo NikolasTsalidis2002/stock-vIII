@@ -90,6 +90,9 @@ class EquilibriumValidator:
         self._tracked_fvgs: List[TrackedFVG] = []
         self._validation_type: str = 'Equilibrium'
 
+        # Failure reason tracking for debugging
+        self._last_failure_reason: Optional[str] = None
+
     def validate_equilibrium_zone(
         self,
         start_time: datetime,
@@ -261,6 +264,10 @@ class EquilibriumValidator:
         """Get current min and max levels defining the equilibrium zone."""
         return (self._min_level, self._max_level)
 
+    def get_failure_reason(self) -> Optional[str]:
+        """Returns why validation hasn't succeeded yet."""
+        return self._last_failure_reason
+
     def validate_at_candle(
         self,
         time_5m: datetime
@@ -322,6 +329,8 @@ class EquilibriumValidator:
         # MODE 3: Equilibrium zone validation (fallback if enabled)
         if self._use_equilibrium_validation:
             if self._confirmed_extreme_level is None:
+                target = "valley" if self.entry_direction == 'short' else "peak"
+                self._last_failure_reason = f"No inflection point ({target}) found after sweep"
                 return None
 
             if self._is_in_target_zone(candle):
@@ -330,6 +339,9 @@ class EquilibriumValidator:
                 self._validation_type = 'Equilibrium'
                 self._trigger_price = candle['close']
                 return (time_5m, 'Equilibrium', self._trigger_price, self.get_current_state())
+            else:
+                zone = "premium (above eq)" if self.entry_direction == 'short' else "discount (below eq)"
+                self._last_failure_reason = f"Price not in {zone}, eq={self._equilibrium:.2f}"
 
         return None
 

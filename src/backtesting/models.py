@@ -57,6 +57,25 @@ class ExitType(Enum):
     BOS_EXIT = "bos_exit"     # Exited due to opposing BOS signal while in profit
 
 
+class RejectionReason(Enum):
+    """Reasons why a trade signal was rejected before execution (exit_price=None)."""
+    NONE = "none"                              # Trade was executed (no rejection)
+    AFTER_MARKET_CLOSE = "after_market_close"  # Entry time at/after market close
+    ENTRY_NOT_FOUND = "entry_not_found"        # Entry candle not found in data
+    ENTRY_ALREADY_HIT_TP_SL = "entry_already_hit_tp_sl"  # Entry candle already hit TP or SL
+    NO_DATA_AFTER_ENTRY = "no_data_after_entry"  # No data remaining after entry candle
+
+
+# Human-readable messages for rejection reasons
+REJECTION_REASON_MESSAGES = {
+    RejectionReason.NONE: None,
+    RejectionReason.AFTER_MARKET_CLOSE: "Entry at/after market close",
+    RejectionReason.ENTRY_NOT_FOUND: "Entry candle not found in data",
+    RejectionReason.ENTRY_ALREADY_HIT_TP_SL: "Entry candle already touched TP or SL (invalid setup)",
+    RejectionReason.NO_DATA_AFTER_ENTRY: "No data remaining after entry candle",
+}
+
+
 @dataclass
 class TradeResult:
     """Complete result of a simulated trade execution."""
@@ -88,7 +107,8 @@ class TradeResult:
     pnl_r_multiple: float                # P&L in R (risk units)
     capital_after: float                 # Capital after this trade
 
-    # Trade duration
+    # Trade duration (fields with defaults must come after required fields)
+    rejection_reason: Optional['RejectionReason'] = None  # Why trade was rejected (if exit_price=None)
     duration: Optional[timedelta] = None
     duration_minutes: Optional[int] = None
 
