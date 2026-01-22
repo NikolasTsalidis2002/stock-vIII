@@ -46,7 +46,11 @@ class LiquidityDetector:
         self.bos_high = bos_high
         self.proximity_threshold = proximity_threshold
 
-    def detect_all_sweeps(self, sweep_type_filter: str = None) -> List[SweepInfo]:
+    def detect_all_sweeps(
+        self,
+        sweep_type_filter: str = None,
+        tradable_start: datetime = None
+    ) -> List[SweepInfo]:
         """
         Detect ALL liquidity sweeps progressively (EXACT same logic as walkthrough).
 
@@ -61,9 +65,12 @@ class LiquidityDetector:
                 - 'high': Only return sweeps of HIGHS (buy-side liquidity)
                 - 'low': Only return sweeps of LOWS (sell-side liquidity)
                 - 'both' or None: Return all sweeps (default)
+            tradable_start: If provided, only return sweeps at or after this timestamp.
+                           Sweeps before this time are still detected (for context)
+                           but filtered out before return.
 
         Returns:
-            List of SweepInfo objects for ALL sweeps found
+            List of SweepInfo objects for ALL sweeps found (filtered to tradable period)
         """
         print(f"  Progressively scanning {len(self.df_high)} candles for liquidity sweeps...")
 
@@ -169,6 +176,15 @@ class LiquidityDetector:
                     ))
 
         print(f"  Total sweeps found: {len(all_sweeps)}")
+
+        # Filter to tradable period if specified
+        if tradable_start is not None:
+            pre_filter_count = len(all_sweeps)
+            all_sweeps = [s for s in all_sweeps if s.timestamp >= tradable_start]
+            filtered_out = pre_filter_count - len(all_sweeps)
+            if filtered_out > 0:
+                print(f"  Filtered out {filtered_out} sweeps before tradable_start ({tradable_start})")
+                print(f"  Tradable sweeps: {len(all_sweeps)}")
 
         # Apply sweep type filter if specified
         if sweep_type_filter and sweep_type_filter != 'both':

@@ -410,3 +410,309 @@ def generate_liquidity_lines(df: pd.DataFrame, inflexions: pd.DataFrame) -> List
             })
 
     return liquidity_lines
+
+
+def generate_gmm_zones(gmm_zone_info, df: pd.DataFrame) -> Optional[Dict]:
+    """
+    Generate GMM zone visualization data for dashboard display.
+
+    Creates:
+    - 3 horizontal zone bands (premium, middle, discount)
+    - 7 Fibonacci level lines
+    - Current price indicator with position info
+    - Zone labels for chart overlay
+
+    Args:
+        gmm_zone_info: GMMZoneInfo object from GMM zone detector
+        df: DataFrame with price data (used for time range)
+
+    Returns:
+        Dict with zoneBands, fibLevels, currentPriceIndicator, zoneLabels
+        or None if gmm_zone_info is None
+    """
+    if gmm_zone_info is None:
+        return None
+
+    # Get time range from DataFrame
+    start_time = int(df.index[0].timestamp())
+    end_time = int(df.index[-1].timestamp())
+
+    # Zone colors (low opacity for clearer visualization)
+    zone_colors = {
+        'premium': {
+            'fill': 'rgba(244, 67, 54, 0.05)',
+            'border': '#f44336'  # Red
+        },
+        'middle': {
+            'fill': 'rgba(255, 193, 7, 0.05)',
+            'border': '#ffc107'  # Amber
+        },
+        'discount': {
+            'fill': 'rgba(76, 175, 80, 0.05)',
+            'border': '#4caf50'  # Green
+        }
+    }
+
+    # Fibonacci level colors
+    fib_colors = {
+        1.0: '#f44336',    # Red
+        0.786: '#e91e63',  # Pink
+        0.618: '#9c27b0',  # Purple
+        0.5: '#ffeb3b',    # Yellow (equilibrium)
+        0.382: '#3f51b5',  # Indigo
+        0.236: '#4caf50',  # Green
+        0.0: '#00bcd4'     # Cyan
+    }
+
+    fib_prices = gmm_zone_info.fib_prices
+
+    # Get premium/discount zone boundaries from fib_prices
+    # Premium zone: 0.786 - 1.0
+    # Middle zone: 0.236 - 0.786
+    # Discount zone: 0.0 - 0.236
+    premium_top = fib_prices.get(1.0, 0)
+    premium_bottom = fib_prices.get(0.786, 0)
+    discount_top = fib_prices.get(0.236, 0)
+    discount_bottom = fib_prices.get(0.0, 0)
+
+    # Generate zone bands
+    zone_bands = [
+        {
+            'startTime': start_time,
+            'endTime': end_time,
+            'topPrice': float(premium_top),
+            'bottomPrice': float(premium_bottom),
+            'zoneType': 'premium',
+            'fillColor': zone_colors['premium']['fill'],
+            'borderColor': zone_colors['premium']['border']
+        },
+        {
+            'startTime': start_time,
+            'endTime': end_time,
+            'topPrice': float(premium_bottom),
+            'bottomPrice': float(discount_top),
+            'zoneType': 'middle',
+            'fillColor': zone_colors['middle']['fill'],
+            'borderColor': zone_colors['middle']['border']
+        },
+        {
+            'startTime': start_time,
+            'endTime': end_time,
+            'topPrice': float(discount_top),
+            'bottomPrice': float(discount_bottom),
+            'zoneType': 'discount',
+            'fillColor': zone_colors['discount']['fill'],
+            'borderColor': zone_colors['discount']['border']
+        }
+    ]
+
+    # Generate Fibonacci level lines
+    fib_levels = []
+    for level in sorted(fib_prices.keys(), reverse=True):
+        price = fib_prices[level]
+        color = fib_colors.get(level, '#787b86')  # Default gray
+
+        # Equilibrium line (50%) is dashed and wider
+        line_width = 2 if level == 0.5 else 1
+        line_style = 'Dashed' if level == 0.5 else 'Solid'
+
+        # Create label based on level
+        label = f'{level * 100:.1f}%: ${price:.2f}'
+
+        fib_levels.append({
+            'startTime': start_time,
+            'endTime': end_time,
+            'price': float(price),
+            'level': level,
+            'color': color,
+            'label': label,
+            'lineWidth': line_width,
+            'lineStyle': line_style
+        })
+
+    # Current price indicator
+    current_price_indicator = {
+        'fibPosition': float(gmm_zone_info.current_fib_position),
+        'entryBias': gmm_zone_info.entry_bias,
+        'sweepTypeFilter': gmm_zone_info.sweep_type_filter,
+        'confidence': float(gmm_zone_info.confidence)
+    }
+
+    # Zone labels for chart overlay (positioned at mid-point of each zone)
+    mid_time = (start_time + end_time) // 2
+    zone_labels = [
+        {
+            'time': mid_time,
+            'price': float((premium_top + premium_bottom) / 2),
+            'text': 'PREMIUM',
+            'color': zone_colors['premium']['border']
+        },
+        {
+            'time': mid_time,
+            'price': float(fib_prices.get(0.5, 0)),
+            'text': 'EQUILIBRIUM',
+            'color': '#ffeb3b'
+        },
+        {
+            'time': mid_time,
+            'price': float((discount_top + discount_bottom) / 2),
+            'text': 'DISCOUNT',
+            'color': zone_colors['discount']['border']
+        }
+    ]
+
+    return {
+        'zoneBands': zone_bands,
+        'fibLevels': fib_levels,
+        'currentPriceIndicator': current_price_indicator,
+        'zoneLabels': zone_labels
+    }
+
+
+def generate_gmm_debug_data(gmm_zone_info, df_window: pd.DataFrame) -> Optional[Dict]:
+    """
+    Generate GMM debug visualization data for the debug tab.
+
+    Creates data for Plotly visualization showing:
+    - Left panel: Candlestick chart of window candles
+    - Right panel: Histogram + fitted Gaussian curves
+    - Stats panel: Component details and BIC scores
+
+    Args:
+        gmm_zone_info: GMMZoneInfo object with debug fields populated
+        df_window: DataFrame with OHLCV data for the GMM window
+
+    Returns:
+        Dict with debug visualization data, or None if debug fields not populated
+    """
+    if gmm_zone_info is None:
+        return None
+
+    # Check if debug fields are populated
+    if gmm_zone_info.price_levels is None or gmm_zone_info.bic_scores is None:
+        return None
+
+    # Generate candlestick data for window
+    candle_data = []
+    for idx, row in df_window.iterrows():
+        candle_data.append({
+            'time': idx.strftime('%Y-%m-%d %H:%M') if hasattr(idx, 'strftime') else str(idx),
+            'timestamp': int(idx.timestamp()) if hasattr(idx, 'timestamp') else 0,
+            'open': float(row['open']),
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'close': float(row['close'])
+        })
+
+    # Generate histogram data
+    # Create bins for the histogram
+    price_levels = gmm_zone_info.price_levels
+    num_bins = min(50, len(price_levels) // 20)  # Adaptive bin count
+    num_bins = max(20, num_bins)  # At least 20 bins
+
+    hist_counts, bin_edges = np.histogram(price_levels, bins=num_bins)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    histogram_data = {
+        'counts': hist_counts.tolist(),
+        'binCenters': bin_centers.tolist(),
+        'binEdges': bin_edges.tolist()
+    }
+
+    # Generate Gaussian curve data for each component
+    # Create smooth price range for plotting curves
+    price_min = price_levels.min()
+    price_max = price_levels.max()
+    price_range = np.linspace(price_min, price_max, 200)
+
+    gaussian_curves = []
+    for i in range(gmm_zone_info.n_components):
+        mean = gmm_zone_info.all_means[i]
+        std = gmm_zone_info.all_stds[i]
+        weight = gmm_zone_info.weights[i]
+
+        # Calculate Gaussian PDF (scaled by weight and total count for histogram overlay)
+        if std > 0:
+            pdf = weight * np.exp(-0.5 * ((price_range - mean) / std) ** 2) / (std * np.sqrt(2 * np.pi))
+            # Scale to match histogram
+            bin_width = bin_edges[1] - bin_edges[0]
+            pdf_scaled = pdf * len(price_levels) * bin_width
+        else:
+            pdf_scaled = np.zeros_like(price_range)
+
+        gaussian_curves.append({
+            'componentIndex': i,
+            'mean': float(mean),
+            'std': float(std),
+            'weight': float(weight),
+            'priceRange': price_range.tolist(),
+            'pdfValues': pdf_scaled.tolist(),
+            'isCurrent': i == gmm_zone_info.current_component
+        })
+
+    # Component statistics
+    component_stats = []
+    for i in range(gmm_zone_info.n_components):
+        mean = gmm_zone_info.all_means[i]
+        std = gmm_zone_info.all_stds[i]
+        weight = gmm_zone_info.weights[i]
+
+        # Get price range for this component (soft assignment)
+        # Use confidence > 0.5 threshold to assign prices
+        component_stats.append({
+            'componentIndex': i,
+            'mean': float(mean),
+            'std': float(std),
+            'weight': float(weight),
+            'isCurrent': i == gmm_zone_info.current_component
+        })
+
+    # BIC curve data
+    bic_data = {
+        'components': list(range(1, len(gmm_zone_info.bic_scores) + 1)),
+        'scores': [float(s) for s in gmm_zone_info.bic_scores],
+        'selectedComponents': gmm_zone_info.n_components
+    }
+
+    # Window information
+    window_info = {
+        'startIdx': gmm_zone_info.window_start_idx,
+        'endIdx': gmm_zone_info.window_end_idx,
+        'candleCount': gmm_zone_info.window_candle_count,
+        'startTime': candle_data[0]['time'] if candle_data else None,
+        'endTime': candle_data[-1]['time'] if candle_data else None,
+        'pricePointCount': len(price_levels)
+    }
+
+    # Current price position info
+    current_price_info = {
+        'price': float(gmm_zone_info.current_price) if gmm_zone_info.current_price else None,
+        'fibPosition': float(gmm_zone_info.current_fib_position),
+        'entryBias': gmm_zone_info.entry_bias,
+        'sweepTypeFilter': gmm_zone_info.sweep_type_filter,
+        'confidence': float(gmm_zone_info.confidence),
+        'currentComponent': gmm_zone_info.current_component,
+        'zoneTop': float(gmm_zone_info.zone_top),
+        'zoneBottom': float(gmm_zone_info.zone_bottom),
+        'selectionMethod': gmm_zone_info.selection_method
+    }
+
+    # Fib levels for reference lines
+    fib_levels_data = []
+    for level, price in sorted(gmm_zone_info.fib_prices.items(), reverse=True):
+        fib_levels_data.append({
+            'level': float(level),
+            'price': float(price),
+            'label': f'{level * 100:.1f}%'
+        })
+
+    return {
+        'candleData': candle_data,
+        'histogramData': histogram_data,
+        'gaussianCurves': gaussian_curves,
+        'componentStats': component_stats,
+        'bicData': bic_data,
+        'windowInfo': window_info,
+        'currentPriceInfo': current_price_info,
+        'fibLevels': fib_levels_data
+    }

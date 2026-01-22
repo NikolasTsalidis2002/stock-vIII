@@ -29,7 +29,8 @@ class TimeframeManager:
         df_high: pd.DataFrame,
         df_mid: pd.DataFrame,
         df_low: pd.DataFrame,
-        timeframe_config: Optional[Dict[str, str]] = None
+        timeframe_config: Optional[Dict[str, str]] = None,
+        high_tf_lookback: int = 300
     ) -> None:
         """
         Initialize with multi-timeframe data.
@@ -40,7 +41,10 @@ class TimeframeManager:
             df_low: Low timeframe OHLCV data with 'time' column (e.g., 1M or 5M)
             timeframe_config: Optional dict with timeframe labels for display
                               e.g., {'high': '4h', 'mid': '15min', 'low': '5min'}
+            high_tf_lookback: Number of high TF candles to include before the overlap
+                             period for better inflection point detection. Default 300.
         """
+        self._high_tf_lookback = high_tf_lookback
         # Store timeframe config for display purposes
         self.timeframe_config = timeframe_config or {'high': 'HIGH', 'mid': 'MID', 'low': 'LOW'}
 
@@ -71,6 +75,7 @@ class TimeframeManager:
         # Overlapping period
         self._overlap_start: Optional[datetime] = None
         self._overlap_end: Optional[datetime] = None
+        self._tradable_start: Optional[datetime] = None  # When trading can begin (overlap_start)
 
         # Timeframe mappings
         self.map_high_to_mid: Dict[int, List[datetime]] = {}
@@ -116,7 +121,10 @@ class TimeframeManager:
         """
         Determine the overlapping time period across all timeframes.
 
-        Only analyze the period where all three timeframes have data.
+        Mid/low TF are filtered to the overlap period only.
+        High TF is extended backward by up to high_tf_lookback candles before
+        the overlap start, allowing better inflection point detection while
+        only trading sweeps that occur within the overlap period.
         """
         high_label = self.timeframe_config.get('high', 'HIGH')
         mid_label = self.timeframe_config.get('mid', 'MID')
@@ -134,18 +142,42 @@ class TimeframeManager:
         end_low = self._df_low.index.max()
         self._overlap_end = min(end_high, end_mid, end_low)
 
+        # Store tradable start (when trading can begin = overlap_start)
+        self._tradable_start = self._overlap_start
+
         print(f"\n⏱️  Data overlap period:")
         print(f"  Start: {self._overlap_start}")
         print(f"  End:   {self._overlap_end}")
         print(f"  Duration: {self._overlap_end - self._overlap_start}")
 
-        # Filter dataframes to overlapping period
-        self._df_high = self._df_high.loc[self._overlap_start:self._overlap_end]
+        # Extend 1H data backward by lookback candles for better inflection point detection
+        # Find the index position of overlap_start in the high TF dataframe
+        high_overlap_mask = self._df_high.index >= self._overlap_start
+        if high_overlap_mask.any():
+            # Get the iloc position of the first candle at/after overlap_start
+            high_idx = self._df_high.index.get_loc(
+                self._df_high.index[high_overlap_mask][0]
+            )
+            # Calculate how far back we can extend
+            extended_start_idx = max(0, high_idx - self._high_tf_lookback)
+            extended_start = self._df_high.index[extended_start_idx]
+            lookback_candles_used = high_idx - extended_start_idx
+
+            # Filter 1H with extended lookback, mid/low to overlap only
+            self._df_high = self._df_high.loc[extended_start:self._overlap_end]
+
+            if lookback_candles_used > 0:
+                print(f"  Extended {high_label} lookback: {lookback_candles_used} candles before overlap")
+        else:
+            # Fallback: no overlap found, filter to overlap period
+            self._df_high = self._df_high.loc[self._overlap_start:self._overlap_end]
+
+        # Filter mid/low to overlap period only
         self._df_mid = self._df_mid.loc[self._overlap_start:self._overlap_end]
         self._df_low = self._df_low.loc[self._overlap_start:self._overlap_end]
 
         print(f"\n  Filtered data:")
-        print(f"  {high_label}: {len(self._df_high)} candles")
+        print(f"  {high_label}: {len(self._df_high)} candles (includes extended lookback)")
         print(f"  {mid_label}: {len(self._df_mid)} candles")
         print(f"  {low_label}: {len(self._df_low)} candles")
 
@@ -304,3 +336,12 @@ class TimeframeManager:
     def overlap_end(self) -> datetime:
         """End of overlapping period."""
         return self._overlap_end
+
+    @property
+    def tradable_start(self) -> datetime:
+        """Start time when trading is allowed (overlap period start).
+
+        Sweeps detected before this time are used for historical context
+        (inflection point detection) but should not generate trade signals.
+        """
+        return self._tradable_start

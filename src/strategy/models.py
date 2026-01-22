@@ -7,7 +7,7 @@ Contains all dataclasses and enums used across strategy modules.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 
 class StrategyState(Enum):
@@ -88,6 +88,9 @@ class PartialSetup:
     exit_ob_top: Optional[float] = None
     exit_ob_bottom: Optional[float] = None
 
+    # GMM zone info for debug visualization (set by strategy engine when GMM enabled)
+    gmm_zone_info: Optional[Any] = None  # GMMZoneInfo from gmm_zone_detector
+
 
 @dataclass
 class EquilibriumState:
@@ -160,6 +163,9 @@ class TradeSignal:
     equilibrium_level: Optional[float] = None
     equilibrium_fixed_level: Optional[float] = None
     equilibrium_running_extreme: Optional[float] = None
+
+    # GMM zone info for debug visualization (set by strategy engine when GMM enabled)
+    gmm_zone_info: Optional[Any] = None  # GMMZoneInfo from gmm_zone_detector
 
     def calculate_stop_loss(self) -> None:
         """Calculate stop loss based on 2:1 R/R from take profit."""

@@ -143,6 +143,9 @@ def run_single_symbol(symbol, config, args):
     liquidity_cfg = config.get('liquidity', {})
     sweep_proximity_threshold = liquidity_cfg.get('sweep_proximity_threshold_percent', 0.0) / 100.0
 
+    # Get high TF lookback setting (for extended inflection point detection)
+    high_tf_lookback = liquidity_cfg.get('high_tf_lookback_candles', 300)
+
     # Get GMM zone settings
     gmm_config = config.get('gmm_zones', {})
 
@@ -185,7 +188,8 @@ def run_single_symbol(symbol, config, args):
         require_fvg_in_equilibrium=require_fvg_in_equilibrium,
         sweep_proximity_threshold=sweep_proximity_threshold,
         abandon_on_new_sweep=abandon_on_new_sweep,
-        gmm_config=gmm_config
+        gmm_config=gmm_config,
+        high_tf_lookback=high_tf_lookback
     )
 
     # Scan for signals
@@ -784,6 +788,10 @@ def main():
     sweep_proximity_threshold_percent = getattr(args, 'sweep_proximity_threshold_percent', 0.0)
     sweep_proximity_threshold = sweep_proximity_threshold_percent / 100.0
 
+    # Get high TF lookback setting (for extended inflection point detection)
+    liquidity_cfg = config.get('liquidity', {})
+    high_tf_lookback = liquidity_cfg.get('high_tf_lookback_candles', 300)
+
     # Create timeframe config for display
     timeframe_config = {
         'high': high_tf.upper(),
@@ -871,7 +879,8 @@ def main():
         require_fvg_in_equilibrium=require_fvg_in_equilibrium,
         sweep_proximity_threshold=sweep_proximity_threshold,
         abandon_on_new_sweep=abandon_on_new_sweep,
-        gmm_config=gmm_config
+        gmm_config=gmm_config,
+        high_tf_lookback=high_tf_lookback
     )
 
     # Step 3: Scan for signals

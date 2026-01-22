@@ -41,6 +41,8 @@ from src.visualization.core import (
     generate_ob_zones,
     generate_bos_lines,
     generate_liquidity_lines,
+    generate_gmm_zones,
+    generate_gmm_debug_data,
 )
 
 from src.strategy.models import TradeSignal, PartialSetup
@@ -133,6 +135,10 @@ class StrategySweepVisualizer:
         self.df_mid = strategy.df_mid
         self.df_low = strategy.df_low
 
+        # Store original unfiltered DataFrames (for GMM debug visualization)
+        self.df_high_original = getattr(strategy, 'df_high_original', strategy.df_high)
+        self.df_mid_original = getattr(strategy, 'df_mid_original', strategy.df_mid)
+
         # Indicators
         self.inflexions_high = strategy.inflexions_high
         self.bos_high = strategy.bos_high
@@ -148,6 +154,10 @@ class StrategySweepVisualizer:
         self.high_duration = strategy.high_duration
         self.mid_duration = strategy.mid_duration
         self.low_duration = strategy.low_duration
+
+        # GMM Zone info (if enabled)
+        self.gmm_zone = getattr(strategy, 'gmm_zone', None)
+        self.gmm_enabled = getattr(strategy, 'gmm_enabled', False)
 
     def _build_sweep_list(self) -> List[SweepEntry]:
         """
@@ -254,16 +264,12 @@ class StrategySweepVisualizer:
         if len(df_slice) == 0:
             return None
 
-        # Calculate indicators on slice
+        # Calculate indicators on slice (1H shows only liquidity and BOS, no FVG/OB)
         inflexions_slice = smc_custom.inflexion_points(df_slice)
         bos_slice = smc_custom.bos(df_slice, inflexions_slice, close_break=True)
-        fvg_slice = smc.fvg(df_slice, join_consecutive=True)
-        ob_slice = smc_custom.ob(df_slice, bos_slice, inflexions_slice)
 
         # Generate data using shared visualization functions
         candle_data = generate_candle_data(df_slice)
-        fvg_zones = generate_fvg_zones(df_slice, fvg_slice)
-        ob_zones = generate_ob_zones(df_slice, ob_slice)
         bos_lines = generate_bos_lines(df_slice, bos_slice, inflexions_slice)
         liquidity_lines = generate_liquidity_lines(df_slice, inflexions_slice)
 
@@ -279,21 +285,73 @@ class StrategySweepVisualizer:
         # Calculate focus window around sweep (for context window feature)
         focus_time = int(sweep_time.timestamp())
 
+        # Get GMM zone info from the signal or partial (per-sweep data, not stale class attribute)
+        sweep_gmm_zone = None
+        if sweep_entry.is_complete and sweep_entry.signal:
+            sweep_gmm_zone = getattr(sweep_entry.signal, 'gmm_zone_info', None)
+        elif sweep_entry.partial:
+            sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
+
+        # Generate GMM zones if enabled and we have per-sweep zone data
+        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
+
+        # Extract equilibrium data
+        equilibrium_level = None
+        equilibrium_fixed = None
+        equilibrium_extreme = None
+        if sweep_entry.is_complete:
+            equilibrium_level = sweep_entry.signal.equilibrium_level
+            equilibrium_fixed = sweep_entry.signal.equilibrium_fixed_level
+            equilibrium_extreme = sweep_entry.signal.equilibrium_running_extreme
+        elif sweep_entry.partial:
+            equilibrium_level = getattr(sweep_entry.partial, 'equilibrium_level', None)
+            equilibrium_fixed = getattr(sweep_entry.partial, 'equilibrium_fixed_level', None)
+            equilibrium_extreme = getattr(sweep_entry.partial, 'equilibrium_running_extreme', None)
+
+        # Fibonacci levels
+        fibonacci_lines = None
+        if equilibrium_level is not None:
+            fibonacci_lines = []
+            if equilibrium_fixed is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_fixed),
+                    'color': '#f44336',  # Red
+                    'lineWidth': 1,
+                    'label': f'0% ${equilibrium_fixed:.2f}',
+                    'level': '0%'
+                })
+            fibonacci_lines.append({
+                'price': float(equilibrium_level),
+                'color': '#ffeb3b',  # Yellow
+                'lineWidth': 2,
+                'label': f'50% ${equilibrium_level:.2f}',
+                'level': '50%'
+            })
+            if equilibrium_extreme is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_extreme),
+                    'color': '#4caf50',  # Green
+                    'lineWidth': 1,
+                    'label': f'100% ${equilibrium_extreme:.2f}',
+                    'level': '100%'
+                })
+
         return {
             'timeframe': self.tf_labels.get('high', '1H'),
             'tabName': self.tf_labels.get('high', '1H'),
             'candleData': candle_data,
-            'fvgZones': fvg_zones,
-            'obZones': ob_zones,
+            'fvgZones': [],  # 1H tab shows only liquidity and BOS
+            'obZones': [],   # 1H tab shows only liquidity and BOS
             'bosLines': bos_lines,
             'liquidityLines': liquidity_lines,
             'sweepMarker': sweep_marker,
             'markers': [sweep_marker],
-            'fibonacciLines': None,
+            'fibonacciLines': fibonacci_lines,
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
-            'contextCandles': 30  # Show 30 candles on each side of focus
+            'contextCandles': 30,  # Show 30 candles on each side of focus
+            'gmmZones': gmm_zones_data
         }
 
     def _generate_tab_5m_event_b(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -351,6 +409,16 @@ class StrategySweepVisualizer:
         # Focus on Event B time
         focus_time = int(event_b_time.timestamp())
 
+        # Get GMM zone info from the signal or partial (per-sweep data, not stale class attribute)
+        sweep_gmm_zone = None
+        if sweep_entry.is_complete and sweep_entry.signal:
+            sweep_gmm_zone = getattr(sweep_entry.signal, 'gmm_zone_info', None)
+        elif sweep_entry.partial:
+            sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
+
+        # Generate GMM zones if enabled and we have per-sweep zone data
+        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
+
         return {
             'timeframe': self.tf_labels.get('mid', '5M'),
             'tabName': f"{self.tf_labels.get('mid', '5M')} Event B",
@@ -367,7 +435,8 @@ class StrategySweepVisualizer:
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
-            'contextCandles': 40  # Show 40 candles on each side for 5M
+            'contextCandles': 40,  # Show 40 candles on each side for 5M
+            'gmmZones': gmm_zones_data
         }
 
     def _generate_tab_5m_validation(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -433,44 +502,18 @@ class StrategySweepVisualizer:
             'text': f'VAL:{validation_type}'
         }
 
-        # Fibonacci levels (TradingView-inspired colors)
-        # Shows: Fixed level (0%), Equilibrium (50%), Running extreme (100%)
-        # Show Fibonacci lines whenever equilibrium data exists (useful for all validation modes)
-        fibonacci_lines = None
-        if equilibrium_level is not None:
-            fibonacci_lines = []
-
-            # 0% level - Fixed/Swept level (Red - like TradingView's 0 level)
-            if equilibrium_fixed is not None:
-                fibonacci_lines.append({
-                    'price': float(equilibrium_fixed),
-                    'color': '#f44336',  # Red
-                    'lineWidth': 1,
-                    'label': f'0% ${equilibrium_fixed:.2f}',
-                    'level': '0%'
-                })
-
-            # 50% level - Equilibrium (Yellow/Gold - like TradingView's 0.5 level)
-            fibonacci_lines.append({
-                'price': float(equilibrium_level),
-                'color': '#ffeb3b',  # Yellow
-                'lineWidth': 2,
-                'label': f'50% ${equilibrium_level:.2f}',
-                'level': '50%'
-            })
-
-            # 100% level - Running extreme (Green - like TradingView's 1 level)
-            if equilibrium_extreme is not None:
-                fibonacci_lines.append({
-                    'price': float(equilibrium_extreme),
-                    'color': '#4caf50',  # Green
-                    'lineWidth': 1,
-                    'label': f'100% ${equilibrium_extreme:.2f}',
-                    'level': '100%'
-                })
-
         # Focus on validation time
         focus_time = int(validation_time.timestamp())
+
+        # Get GMM zone info from the signal or partial (per-sweep data, not stale class attribute)
+        sweep_gmm_zone = None
+        if sweep_entry.is_complete and sweep_entry.signal:
+            sweep_gmm_zone = getattr(sweep_entry.signal, 'gmm_zone_info', None)
+        elif sweep_entry.partial:
+            sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
+
+        # Generate GMM zones if enabled and we have per-sweep zone data
+        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
 
         return {
             'timeframe': self.tf_labels.get('mid', '5M'),
@@ -483,11 +526,11 @@ class StrategySweepVisualizer:
             'sweepMarker': None,
             'markers': [validation_marker],
             'validationType': validation_type,
-            'fibonacciLines': fibonacci_lines,
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
-            'contextCandles': 40  # Show 40 candles on each side for 5M
+            'contextCandles': 40,  # Show 40 candles on each side for 5M
+            'gmmZones': gmm_zones_data
         }
 
     def _generate_tab_1m(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -559,6 +602,57 @@ class StrategySweepVisualizer:
         # Focus on confirmation/entry time
         focus_time = int(confirmation_time.timestamp())
 
+        # Get GMM zone info from the signal or partial (per-sweep data, not stale class attribute)
+        sweep_gmm_zone = None
+        if sweep_entry.is_complete and sweep_entry.signal:
+            sweep_gmm_zone = getattr(sweep_entry.signal, 'gmm_zone_info', None)
+        elif sweep_entry.partial:
+            sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
+
+        # Generate GMM zones if enabled and we have per-sweep zone data
+        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
+
+        # Extract equilibrium data
+        equilibrium_level = None
+        equilibrium_fixed = None
+        equilibrium_extreme = None
+        if sweep_entry.is_complete:
+            equilibrium_level = sweep_entry.signal.equilibrium_level
+            equilibrium_fixed = sweep_entry.signal.equilibrium_fixed_level
+            equilibrium_extreme = sweep_entry.signal.equilibrium_running_extreme
+        elif sweep_entry.partial:
+            equilibrium_level = getattr(sweep_entry.partial, 'equilibrium_level', None)
+            equilibrium_fixed = getattr(sweep_entry.partial, 'equilibrium_fixed_level', None)
+            equilibrium_extreme = getattr(sweep_entry.partial, 'equilibrium_running_extreme', None)
+
+        # Fibonacci levels
+        fibonacci_lines = None
+        if equilibrium_level is not None:
+            fibonacci_lines = []
+            if equilibrium_fixed is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_fixed),
+                    'color': '#f44336',  # Red
+                    'lineWidth': 1,
+                    'label': f'0% ${equilibrium_fixed:.2f}',
+                    'level': '0%'
+                })
+            fibonacci_lines.append({
+                'price': float(equilibrium_level),
+                'color': '#ffeb3b',  # Yellow
+                'lineWidth': 2,
+                'label': f'50% ${equilibrium_level:.2f}',
+                'level': '50%'
+            })
+            if equilibrium_extreme is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_extreme),
+                    'color': '#4caf50',  # Green
+                    'lineWidth': 1,
+                    'label': f'100% ${equilibrium_extreme:.2f}',
+                    'level': '100%'
+                })
+
         return {
             'timeframe': self.tf_labels.get('low', '1M'),
             'tabName': self.tf_labels.get('low', '1M'),
@@ -569,11 +663,12 @@ class StrategySweepVisualizer:
             'liquidityLines': liquidity_lines,
             'sweepMarker': None,
             'markers': [confirmation_marker],
-            'fibonacciLines': None,
+            'fibonacciLines': fibonacci_lines,
             'tpLine': tp_line,
             'slLine': sl_line,
             'focusTime': focus_time,
-            'contextCandles': 60  # Show 60 candles on each side for 1M (covers more time)
+            'contextCandles': 60,  # Show 60 candles on each side for 1M (covers more time)
+            'gmmZones': gmm_zones_data
         }
 
     def _get_trade_result_for_sweep(self, sweep_entry: SweepEntry) -> Optional[TradeResult]:
@@ -667,6 +762,89 @@ class StrategySweepVisualizer:
             'exitType': trade_result.exit_type.value if trade_result.exit_type else None
         }
 
+    def _generate_tab_gmm_debug(self, sweep_entry: SweepEntry) -> Optional[Dict]:
+        """
+        Generate GMM Debug tab data showing GMM distribution visualization.
+
+        Shows:
+        - Candlestick chart of window candles used for GMM
+        - Histogram + fitted Gaussian curves
+        - Component statistics and BIC scores
+        - Current price position
+
+        Args:
+            sweep_entry: The sweep entry being visualized
+
+        Returns:
+            Dict with GMM debug data, or None if GMM not enabled or no debug data
+        """
+        if not self.gmm_enabled:
+            return None
+
+        # Get GMM zone info from the signal or partial
+        gmm_zone_info = None
+        if sweep_entry.is_complete and sweep_entry.signal:
+            gmm_zone_info = getattr(sweep_entry.signal, 'gmm_zone_info', None)
+        elif sweep_entry.partial:
+            gmm_zone_info = getattr(sweep_entry.partial, 'gmm_zone_info', None)
+
+        if gmm_zone_info is None:
+            return None
+
+        # Check if debug fields are populated
+        if gmm_zone_info.price_levels is None or gmm_zone_info.bic_scores is None:
+            return None
+
+        # Get the GMM window DataFrame
+        # We need to reconstruct the window used for GMM analysis
+        # The window is defined by window_start_idx and window_end_idx
+        gmm_df = self._get_gmm_dataframe()
+        if gmm_df is None:
+            return None
+
+        start_idx = gmm_zone_info.window_start_idx
+        end_idx = gmm_zone_info.window_end_idx
+
+        if start_idx is None or end_idx is None:
+            return None
+
+        # Get window slice
+        df_window = gmm_df.iloc[start_idx:end_idx + 1]
+        if len(df_window) == 0:
+            return None
+
+        # Generate debug data using shared function
+        debug_data = generate_gmm_debug_data(gmm_zone_info, df_window)
+        if debug_data is None:
+            return None
+
+        return {
+            'tabName': 'GMM Debug',
+            **debug_data
+        }
+
+    def _get_gmm_dataframe(self) -> Optional['pd.DataFrame']:
+        """Get the DataFrame used for GMM zone detection (original unfiltered)."""
+        # The GMM timeframe is configurable - check strategy config
+        # Default to mid timeframe (5M)
+        gmm_timeframe = 'mid'
+        if hasattr(self.strategy, '_gmm_config'):
+            tf_config = self.strategy._gmm_config.get('timeframe', '15min').lower()
+            if 'hour' in tf_config or '1h' in tf_config or '60' in tf_config:
+                gmm_timeframe = 'high'
+            elif '15' in tf_config:
+                gmm_timeframe = 'mid'  # 15min often maps to mid
+            elif '5' in tf_config:
+                gmm_timeframe = 'mid'
+            else:
+                gmm_timeframe = 'mid'
+
+        # Use original unfiltered DataFrames - GMM indices reference original data positions
+        if gmm_timeframe == 'high':
+            return self.df_high_original
+        else:
+            return self.df_mid_original
+
     def _generate_sweep_data(self, sweep_entry: SweepEntry, sweep_idx: int) -> Dict:
         """
         Generate all tab data for a single sweep (static snapshots).
@@ -682,6 +860,7 @@ class StrategySweepVisualizer:
         tab_5m_validation = self._generate_tab_5m_validation(sweep_entry, trade_result)
         tab_1m = self._generate_tab_1m(sweep_entry, trade_result)
         tab_pnl = self._generate_tab_pnl(sweep_entry, trade_result)
+        tab_gmm_debug = self._generate_tab_gmm_debug(sweep_entry)
 
         # Determine active tab (first available tab with most progress)
         if tab_1m:
@@ -786,6 +965,7 @@ class StrategySweepVisualizer:
             'tab5MValidation': tab_5m_validation,
             'tab1M': tab_1m,
             'tabPnL': tab_pnl,
+            'tabGMMDebug': tab_gmm_debug,
             'entryPrice': sweep_entry.signal.price_entry if sweep_entry.is_complete else None,
             'tpPrice': sweep_entry.signal.take_profit_price if sweep_entry.is_complete else None,
             'slPrice': sweep_entry.signal.stop_loss_price if sweep_entry.is_complete else None,
@@ -1139,6 +1319,68 @@ class StrategySweepVisualizer:
             border-radius: 2px;
         }}
 
+        /* GMM Zone Indicator */
+        .gmm-zone-indicator {{
+            margin-top: 12px;
+            position: relative;
+        }}
+        .zone-bar {{
+            display: flex;
+            height: 24px;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #1e222d;
+        }}
+        .zone-segment {{
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .zone-segment.premium {{
+            background: rgba(244, 67, 54, 0.3);
+            color: #f44336;
+        }}
+        .zone-segment.middle {{
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }}
+        .zone-segment.discount {{
+            background: rgba(76, 175, 80, 0.3);
+            color: #4caf50;
+        }}
+        .zone-marker {{
+            position: absolute;
+            bottom: -6px;
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 8px solid #ffffff;
+            transform: translateX(-50%);
+            transition: left 0.3s ease;
+        }}
+        .info-value.bias-long {{
+            color: #4caf50;
+            font-weight: 600;
+        }}
+        .info-value.bias-short {{
+            color: #f44336;
+            font-weight: 600;
+        }}
+        .info-value.bias-neutral {{
+            color: #ffc107;
+            font-weight: 600;
+        }}
+        .info-value.bias-skip {{
+            color: #787b86;
+            font-weight: 600;
+        }}
+
         /* Keyboard shortcuts */
         .shortcuts {{
             margin-top: 20px;
@@ -1196,6 +1438,167 @@ class StrategySweepVisualizer:
         }}
         #trend-container.active {{
             display: block;
+        }}
+
+        /* GMM Debug Styles */
+        #gmm-debug-container {{
+            display: none;
+            padding: 24px;
+            overflow-y: auto;
+            height: 100%;
+        }}
+        #gmm-debug-container.active {{
+            display: block;
+        }}
+        .gmm-debug-no-data {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #787b86;
+            font-size: 14px;
+        }}
+        .gmm-debug-header {{
+            margin-bottom: 20px;
+        }}
+        .gmm-debug-header h2 {{
+            margin: 0 0 12px 0;
+            color: #fff;
+            font-size: 20px;
+        }}
+        .gmm-debug-summary {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            align-items: center;
+        }}
+        .summary-item {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: #1e222d;
+            padding: 6px 12px;
+            border-radius: 4px;
+            border: 1px solid #2b2b43;
+        }}
+        .summary-item .label {{
+            color: #787b86;
+            font-size: 12px;
+        }}
+        .summary-item .value {{
+            color: #d1d4dc;
+            font-size: 13px;
+            font-weight: 500;
+        }}
+        .summary-item.bias-item {{
+            padding: 6px 14px;
+        }}
+        .gmm-debug-content {{
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }}
+        .gmm-charts-row {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }}
+        .gmm-charts-row-secondary {{
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }}
+        .gmm-chart-panel {{
+            background: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            padding: 16px;
+        }}
+        .gmm-chart-panel .chart-title {{
+            color: #d1d4dc;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }}
+        #gmm-price-history-chart, #gmm-histogram-chart {{
+            height: 400px;
+        }}
+        #gmm-bic-chart {{
+            height: 250px;
+        }}
+        .gmm-stats-section {{
+            background: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            padding: 16px;
+        }}
+        .gmm-stats-section .chart-title {{
+            color: #d1d4dc;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }}
+        .component-stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }}
+        .component-stat {{
+            background: #131722;
+            border-radius: 6px;
+            padding: 12px;
+        }}
+        .component-stat.current {{
+            background: rgba(33, 150, 243, 0.1);
+            border: 1px solid rgba(33, 150, 243, 0.3);
+        }}
+        .component-header {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+            color: #d1d4dc;
+            margin-bottom: 8px;
+            padding-left: 8px;
+        }}
+        .current-marker {{
+            background: #ffeb3b;
+            color: #000;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 600;
+        }}
+        .component-details {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            font-size: 12px;
+            color: #787b86;
+            padding-left: 11px;
+        }}
+        .gmm-window-info {{
+            background: #1e222d;
+            border: 1px solid #2b2b43;
+            border-radius: 8px;
+            padding: 16px;
+        }}
+        .gmm-window-info .chart-title {{
+            color: #d1d4dc;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }}
+        .window-details {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            font-size: 13px;
+            color: #d1d4dc;
+        }}
+        .window-details strong {{
+            color: #787b86;
         }}
         .trend-header {{
             display: flex;
@@ -1580,6 +1983,7 @@ class StrategySweepVisualizer:
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
             <div class="tab" data-tab="TREND" onclick="switchTab('TREND')">Trend</div>
             <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
+            <div class="tab" data-tab="GMM_DEBUG" onclick="switchTab('GMM_DEBUG')">GMM Debug</div>
         </div>
 
         <div id="main">
@@ -1587,6 +1991,7 @@ class StrategySweepVisualizer:
                 <div id="chart-container"></div>
                 <div id="dashboard-container"></div>
                 <div id="trend-container"></div>
+                <div id="gmm-debug-container"></div>
             </div>
 
             <div id="sidebar">
@@ -1651,6 +2056,34 @@ class StrategySweepVisualizer:
                     <div id="conditions-list"></div>
                 </div>
 
+                <div class="sidebar-section" id="gmm-info" style="display: none;">
+                    <h3>GMM Zone Analysis</h3>
+                    <div class="info-row">
+                        <span class="info-label">Entry Bias</span>
+                        <span class="info-value" id="gmm-entry-bias">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Fib Position</span>
+                        <span class="info-value" id="gmm-fib-position">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Sweep Filter</span>
+                        <span class="info-value" id="gmm-sweep-filter">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Confidence</span>
+                        <span class="info-value" id="gmm-confidence">-</span>
+                    </div>
+                    <div class="gmm-zone-indicator" id="gmm-zone-indicator">
+                        <div class="zone-bar">
+                            <div class="zone-segment premium">PREMIUM</div>
+                            <div class="zone-segment middle">MID</div>
+                            <div class="zone-segment discount">DISCOUNT</div>
+                        </div>
+                        <div class="zone-marker" id="gmm-zone-marker"></div>
+                    </div>
+                </div>
+
                 <div class="sidebar-section">
                     <h3>Legend</h3>
                     <div class="legend-item">
@@ -1685,6 +2118,18 @@ class StrategySweepVisualizer:
                         <div class="legend-color" style="background-color: #ffff00;"></div>
                         <span>Event B Highlight</span>
                     </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: rgba(244, 67, 54, 0.3); border: 1px dashed #f44336;"></div>
+                        <span>Premium Zone</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: rgba(255, 193, 7, 0.2); border: 1px dashed #ffc107;"></div>
+                        <span>Middle Zone</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: rgba(76, 175, 80, 0.3); border: 1px dashed #4caf50;"></div>
+                        <span>Discount Zone</span>
+                    </div>
                 </div>
 
                 <div class="shortcuts">
@@ -1698,7 +2143,7 @@ class StrategySweepVisualizer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1 2 3 4 5 6</span>
+                        <span class="shortcut-key">1 2 3 4 5 6 7 8</span>
                     </div>
                 </div>
             </div>
@@ -1796,7 +2241,9 @@ class StrategySweepVisualizer:
                 if (e.key === '3') switchTab('5M_VALIDATION');
                 if (e.key === '4') switchTab('1M');
                 if (e.key === '5') switchTab('PNL');
-                if (e.key === '6') switchTab('DASHBOARD');
+                if (e.key === '6') switchTab('TREND');
+                if (e.key === '7') switchTab('DASHBOARD');
+                if (e.key === '8') switchTab('GMM_DEBUG');
             }});
 
             // Resize handler
@@ -1941,6 +2388,38 @@ class StrategySweepVisualizer:
                 conditionsList.appendChild(item);
             }});
 
+            // Update GMM Zone Analysis (if available)
+            const gmmInfo = document.getElementById('gmm-info');
+            const gmmData = sweep.tab1H && sweep.tab1H.gmmZones;
+            if (gmmData && gmmData.currentPriceIndicator) {{
+                gmmInfo.style.display = 'block';
+                const indicator = gmmData.currentPriceIndicator;
+
+                // Update entry bias with styling
+                const biasEl = document.getElementById('gmm-entry-bias');
+                biasEl.textContent = indicator.entryBias.toUpperCase();
+                biasEl.className = 'info-value bias-' + indicator.entryBias;
+
+                // Update fib position
+                const fibPos = (indicator.fibPosition * 100).toFixed(1);
+                document.getElementById('gmm-fib-position').textContent = fibPos + '%';
+
+                // Update sweep filter
+                document.getElementById('gmm-sweep-filter').textContent = indicator.sweepTypeFilter || 'None';
+
+                // Update confidence
+                document.getElementById('gmm-confidence').textContent = (indicator.confidence * 100).toFixed(1) + '%';
+
+                // Update zone marker position
+                const zoneMarker = document.getElementById('gmm-zone-marker');
+                // Position: 0% = left (discount), 100% = right (premium)
+                // Fib position: 0 = discount, 1 = premium
+                const markerPos = indicator.fibPosition * 100;
+                zoneMarker.style.left = markerPos + '%';
+            }} else {{
+                gmmInfo.style.display = 'none';
+            }}
+
             // Update tabs
             updateTabs(sweep);
 
@@ -1964,12 +2443,13 @@ class StrategySweepVisualizer:
                 if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
                 if (tabId === 'TREND' && armaData) hasData = true;  // Trend tab enabled only if ARMA data exists
                 if (tabId === 'DASHBOARD') hasData = true;  // Dashboard is always available
+                if (tabId === 'GMM_DEBUG' && sweep.tabGMMDebug) hasData = true;
 
                 if (!hasData) {{
                     tab.classList.add('disabled');
                 }}
 
-                if (tabId === sweep.activeTab || (currentTab === 'DASHBOARD' && tabId === 'DASHBOARD') || (currentTab === 'TREND' && tabId === 'TREND')) {{
+                if (tabId === sweep.activeTab || (currentTab === 'DASHBOARD' && tabId === 'DASHBOARD') || (currentTab === 'TREND' && tabId === 'TREND') || (currentTab === 'GMM_DEBUG' && tabId === 'GMM_DEBUG')) {{
                     tab.classList.add('active');
                 }}
             }});
@@ -1987,6 +2467,7 @@ class StrategySweepVisualizer:
             if (tabId === 'PNL' && sweep.tabPnL) hasData = true;
             if (tabId === 'TREND' && armaData) hasData = true;  // Trend tab enabled only if ARMA data exists
             if (tabId === 'DASHBOARD') hasData = true;  // Dashboard is always available
+            if (tabId === 'GMM_DEBUG' && sweep.tabGMMDebug) hasData = true;
 
             if (!hasData) return;
 
@@ -2001,14 +2482,22 @@ class StrategySweepVisualizer:
             // Handle special tabs separately
             if (tabId === 'TREND') {{
                 hideDashboard();
+                hideGMMDebug();
                 document.getElementById('chart-container').style.display = 'none';
                 showTrendAnalysis();
             }} else if (tabId === 'DASHBOARD') {{
                 hideTrendAnalysis();
+                hideGMMDebug();
                 showDashboard();
+            }} else if (tabId === 'GMM_DEBUG') {{
+                hideDashboard();
+                hideTrendAnalysis();
+                document.getElementById('chart-container').style.display = 'none';
+                showGMMDebug(sweep.tabGMMDebug);
             }} else {{
                 hideDashboard();
                 hideTrendAnalysis();
+                hideGMMDebug();
                 document.getElementById('chart-container').style.display = 'block';
                 showChart(sweep);
             }}
@@ -2146,6 +2635,32 @@ class StrategySweepVisualizer:
                 activeLineSeries.push(slSeries);
             }}
 
+            // Draw GMM Zone Fibonacci levels (if available)
+            if (tabData.gmmZones && tabData.gmmZones.fibLevels && tabData.gmmZones.fibLevels.length > 0) {{
+                const firstTime = tabData.candleData[0].time;
+                const lastTime = tabData.candleData[tabData.candleData.length - 1].time;
+
+                tabData.gmmZones.fibLevels.forEach(fib => {{
+                    const lineStyle = fib.lineStyle === 'Dashed' ?
+                        LightweightCharts.LineStyle.Dashed :
+                        LightweightCharts.LineStyle.Dotted;
+
+                    const fibSeries = chart.addLineSeries({{
+                        color: fib.color,
+                        lineWidth: fib.lineWidth || 1,
+                        lineStyle: lineStyle,
+                        priceLineVisible: false,
+                        lastValueVisible: true,
+                        title: (fib.level * 100).toFixed(1) + '%',
+                    }});
+                    fibSeries.setData([
+                        {{ time: firstTime, value: fib.price }},
+                        {{ time: lastTime, value: fib.price }}
+                    ]);
+                    activeLineSeries.push(fibSeries);
+                }});
+            }}
+
             // Apply context window - focus on key event instead of fitting all content
             applyContextWindow(tabData);
 
@@ -2281,6 +2796,54 @@ class StrategySweepVisualizer:
                             .attr('fill', fillColor)
                             .attr('stroke', strokeColor)
                             .attr('stroke-width', 1);
+                    }}
+                }});
+            }}
+
+            // Draw GMM Zone bands (if available)
+            if (tabData.gmmZones && tabData.gmmZones.zoneBands) {{
+                tabData.gmmZones.zoneBands.forEach(zone => {{
+                    const x1 = timeScale.timeToCoordinate(zone.startTime);
+                    const x2 = timeScale.timeToCoordinate(zone.endTime);
+                    const y1 = candlestickSeries.priceToCoordinate(zone.topPrice);
+                    const y2 = candlestickSeries.priceToCoordinate(zone.bottomPrice);
+
+                    if (x1 !== null && x2 !== null && y1 !== null && y2 !== null) {{
+                        const x = Math.min(x1, x2);
+                        const y = Math.min(y1, y2);
+                        const width = Math.abs(x2 - x1);
+                        const height = Math.abs(y2 - y1);
+
+                        svg.append('rect')
+                            .attr('class', 'gmm-zone gmm-zone-' + zone.zoneType)
+                            .attr('x', x)
+                            .attr('y', y)
+                            .attr('width', width)
+                            .attr('height', height)
+                            .attr('fill', zone.fillColor)
+                            .attr('stroke', zone.borderColor)
+                            .attr('stroke-width', 1)
+                            .attr('stroke-dasharray', '5,5');
+                    }}
+                }});
+
+                // Draw GMM Zone labels
+                tabData.gmmZones.zoneLabels.forEach(label => {{
+                    const x = timeScale.timeToCoordinate(label.time);
+                    const y = candlestickSeries.priceToCoordinate(label.price);
+
+                    if (x !== null && y !== null) {{
+                        svg.append('text')
+                            .attr('class', 'gmm-zone-label')
+                            .attr('x', x)
+                            .attr('y', y)
+                            .attr('text-anchor', 'middle')
+                            .attr('dominant-baseline', 'middle')
+                            .attr('fill', label.color)
+                            .attr('font-size', '10px')
+                            .attr('font-weight', 'bold')
+                            .attr('opacity', 0.7)
+                            .text(label.text);
                     }}
                 }});
             }}
@@ -2973,6 +3536,440 @@ class StrategySweepVisualizer:
             if (initialHeader) {{
                 initialHeader.classList.add('sort-asc');
             }}
+        }}
+
+        // GMM Debug Functions
+        let gmmDebugRendered = false;
+        let currentGMMDebugData = null;
+
+        function showGMMDebug(gmmData) {{
+            const container = document.getElementById('gmm-debug-container');
+            container.classList.add('active');
+
+            // Always re-render when sweep changes
+            if (gmmData) {{
+                currentGMMDebugData = gmmData;
+                renderGMMDebug(gmmData);
+            }}
+        }}
+
+        function hideGMMDebug() {{
+            document.getElementById('gmm-debug-container').classList.remove('active');
+        }}
+
+        function renderGMMDebug(data) {{
+            const container = document.getElementById('gmm-debug-container');
+
+            if (!data) {{
+                container.innerHTML = '<div class="gmm-debug-no-data">No GMM debug data available. GMM zone detection may be disabled or data not captured for this sweep.</div>';
+                return;
+            }}
+
+            // Create component colors
+            const componentColors = ['#2196f3', '#ff9800', '#4caf50', '#e91e63', '#9c27b0'];
+
+            // Build stats HTML
+            let componentStatsHtml = '';
+            data.componentStats.forEach((comp, i) => {{
+                const color = componentColors[i % componentColors.length];
+                const currentMarker = comp.isCurrent ? '<span class="current-marker">CURRENT</span>' : '';
+                componentStatsHtml += `
+                    <div class="component-stat ${{comp.isCurrent ? 'current' : ''}}">
+                        <div class="component-header" style="border-left: 3px solid ${{color}}">
+                            Zone ${{i + 1}} ${{currentMarker}}
+                        </div>
+                        <div class="component-details">
+                            <span>Mean: $${{comp.mean.toFixed(2)}}</span>
+                            <span>Std: $${{comp.std.toFixed(2)}}</span>
+                            <span>Weight: ${{(comp.weight * 100).toFixed(1)}}%</span>
+                        </div>
+                    </div>
+                `;
+            }});
+
+            // Current price info
+            const biasColor = data.currentPriceInfo.entryBias === 'short' ? '#f23645' :
+                              data.currentPriceInfo.entryBias === 'long' ? '#089981' : '#787b86';
+            const biasText = data.currentPriceInfo.entryBias.toUpperCase();
+            const fibPct = (data.currentPriceInfo.fibPosition * 100).toFixed(1);
+
+            container.innerHTML = `
+                <div class="gmm-debug-header">
+                    <h2>GMM Zone Debug</h2>
+                    <div class="gmm-debug-summary">
+                        <span class="summary-item">
+                            <span class="label">Window:</span>
+                            <span class="value">${{data.windowInfo.candleCount}} candles</span>
+                        </span>
+                        <span class="summary-item">
+                            <span class="label">Price Points:</span>
+                            <span class="value">${{data.windowInfo.pricePointCount.toLocaleString()}}</span>
+                        </span>
+                        <span class="summary-item">
+                            <span class="label">Components:</span>
+                            <span class="value">${{data.componentStats.length}} (${{data.currentPriceInfo.selectionMethod || 'auto'}})</span>
+                        </span>
+                        <span class="summary-item">
+                            <span class="label">Current Price:</span>
+                            <span class="value">$${{data.currentPriceInfo.price ? data.currentPriceInfo.price.toFixed(2) : 'N/A'}}</span>
+                        </span>
+                        <span class="summary-item">
+                            <span class="label">Fib Position:</span>
+                            <span class="value">${{fibPct}}%</span>
+                        </span>
+                        <span class="summary-item bias-item" style="background-color: ${{biasColor}}15; border: 1px solid ${{biasColor}}">
+                            <span class="label">Bias:</span>
+                            <span class="value" style="color: ${{biasColor}}">${{biasText}}</span>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="gmm-debug-content">
+                    <div class="gmm-charts-row">
+                        <div class="gmm-chart-panel">
+                            <div class="chart-title">Price History + Zones</div>
+                            <div id="gmm-price-history-chart"></div>
+                        </div>
+                        <div class="gmm-chart-panel">
+                            <div class="chart-title">Price Distribution + GMM Fit</div>
+                            <div id="gmm-histogram-chart"></div>
+                        </div>
+                    </div>
+                    <div class="gmm-charts-row-secondary">
+                        <div class="gmm-chart-panel">
+                            <div class="chart-title">BIC Score by Components</div>
+                            <div id="gmm-bic-chart"></div>
+                        </div>
+                    </div>
+
+                    <div class="gmm-stats-section">
+                        <div class="chart-title">Component Statistics</div>
+                        <div class="component-stats-grid">
+                            ${{componentStatsHtml}}
+                        </div>
+                    </div>
+
+                    <div class="gmm-window-info">
+                        <div class="chart-title">Window Information</div>
+                        <div class="window-details">
+                            <span><strong>Start:</strong> ${{data.windowInfo.startTime || 'N/A'}}</span>
+                            <span><strong>End:</strong> ${{data.windowInfo.endTime || 'N/A'}}</span>
+                            <span><strong>Index Range:</strong> [${{data.windowInfo.startIdx}}, ${{data.windowInfo.endIdx}}]</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Render charts using Plotly
+            renderGMMPriceHistoryChart(data, componentColors);
+            renderGMMHistogramChart(data, componentColors);
+            renderGMMBICChart(data);
+        }}
+
+        function renderGMMPriceHistoryChart(data, componentColors) {{
+            const candles = data.candleData;
+            const curves = data.gaussianCurves;
+
+            if (!candles || candles.length === 0) {{
+                document.getElementById('gmm-price-history-chart').innerHTML =
+                    '<div style="color: #787b86; text-align: center; padding: 50px;">No candle data available</div>';
+                return;
+            }}
+
+            // Create price line trace (using close prices)
+            const times = candles.map(c => c.time);
+            const closePrices = candles.map(c => c.close);
+
+            const priceTrace = {{
+                x: times,
+                y: closePrices,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Price',
+                line: {{
+                    color: '#d1d4dc',
+                    width: 1.5
+                }},
+                hovertemplate: '%{{x}}<br>Price: $%{{y:.2f}}<extra></extra>'
+            }};
+
+            // Create zone band shapes
+            const shapes = [];
+
+            // Add zone bands for each GMM component
+            curves.forEach((curve, i) => {{
+                const color = componentColors[i % componentColors.length];
+                const mean = curve.mean;
+                const std = curve.std;
+
+                // Zone band: mean ± 1 std
+                const zoneTop = mean + std;
+                const zoneBottom = mean - std;
+
+                shapes.push({{
+                    type: 'rect',
+                    xref: 'paper',
+                    yref: 'y',
+                    x0: 0,
+                    x1: 1,
+                    y0: zoneBottom,
+                    y1: zoneTop,
+                    fillcolor: color,
+                    opacity: 0.15,
+                    line: {{ width: 0 }}
+                }});
+
+                // Zone center line (dashed)
+                shapes.push({{
+                    type: 'line',
+                    xref: 'paper',
+                    yref: 'y',
+                    x0: 0,
+                    x1: 1,
+                    y0: mean,
+                    y1: mean,
+                    line: {{
+                        color: color,
+                        width: 2,
+                        dash: 'dash'
+                    }}
+                }});
+            }});
+
+            // Current price horizontal line
+            if (data.currentPriceInfo && data.currentPriceInfo.price) {{
+                shapes.push({{
+                    type: 'line',
+                    xref: 'paper',
+                    yref: 'y',
+                    x0: 0,
+                    x1: 1,
+                    y0: data.currentPriceInfo.price,
+                    y1: data.currentPriceInfo.price,
+                    line: {{
+                        color: '#ffeb3b',
+                        width: 1,
+                        dash: 'dot'
+                    }}
+                }});
+            }}
+
+            // Create legend annotations for zones
+            const annotations = curves.map((curve, i) => ({{
+                x: 0.02,
+                y: curve.mean,
+                xref: 'paper',
+                yref: 'y',
+                text: `Zone ${{i + 1}}: $${{curve.mean.toFixed(0)}}±${{curve.std.toFixed(0)}}`,
+                showarrow: false,
+                font: {{
+                    color: componentColors[i % componentColors.length],
+                    size: 10
+                }},
+                bgcolor: 'rgba(30, 34, 45, 0.8)',
+                borderpad: 3
+            }}));
+
+            // Add current price annotation
+            if (data.currentPriceInfo && data.currentPriceInfo.price) {{
+                annotations.push({{
+                    x: 0.98,
+                    y: data.currentPriceInfo.price,
+                    xref: 'paper',
+                    yref: 'y',
+                    text: `Current: $${{data.currentPriceInfo.price.toFixed(2)}}`,
+                    showarrow: false,
+                    font: {{
+                        color: '#ffeb3b',
+                        size: 10
+                    }},
+                    bgcolor: 'rgba(30, 34, 45, 0.8)',
+                    borderpad: 3,
+                    xanchor: 'right'
+                }});
+            }}
+
+            const layout = {{
+                paper_bgcolor: '#1e222d',
+                plot_bgcolor: '#1e222d',
+                font: {{ color: '#d1d4dc', size: 11 }},
+                xaxis: {{
+                    title: 'Time',
+                    gridcolor: '#2b2b43',
+                    zerolinecolor: '#2b2b43',
+                    tickangle: -45,
+                    tickfont: {{ size: 9 }}
+                }},
+                yaxis: {{
+                    title: 'Price ($)',
+                    gridcolor: '#2b2b43',
+                    zerolinecolor: '#2b2b43'
+                }},
+                margin: {{ t: 20, r: 30, b: 70, l: 70 }},
+                shapes: shapes,
+                annotations: annotations,
+                showlegend: false
+            }};
+
+            Plotly.newPlot('gmm-price-history-chart', [priceTrace], layout, {{ responsive: true }});
+        }}
+
+        function renderGMMHistogramChart(data, componentColors) {{
+            const histData = data.histogramData;
+            const curves = data.gaussianCurves;
+
+            // Histogram trace (horizontal)
+            const histogramTrace = {{
+                y: histData.binCenters,
+                x: histData.counts,
+                type: 'bar',
+                orientation: 'h',
+                name: 'Price Distribution',
+                marker: {{
+                    color: 'rgba(100, 149, 237, 0.5)',
+                    line: {{ color: 'rgba(100, 149, 237, 0.8)', width: 1 }}
+                }},
+                hovertemplate: 'Price: $%{{y:.2f}}<br>Count: %{{x}}<extra></extra>'
+            }};
+
+            // Gaussian curve traces
+            const gaussianTraces = curves.map((curve, i) => ({{
+                y: curve.priceRange,
+                x: curve.pdfValues,
+                type: 'scatter',
+                mode: 'lines',
+                name: `Zone ${{i + 1}}: $${{curve.mean.toFixed(0)}}±$${{curve.std.toFixed(0)}}`,
+                line: {{
+                    color: componentColors[i % componentColors.length],
+                    width: curve.isCurrent ? 3 : 2,
+                    dash: curve.isCurrent ? 'solid' : 'dot'
+                }},
+                hovertemplate: `Zone ${{i + 1}}<br>Price: $%{{y:.2f}}<br>Density: %{{x:.2f}}<extra></extra>`
+            }}));
+
+            // Current price marker
+            const currentPriceTrace = {{
+                y: [data.currentPriceInfo.price],
+                x: [0],
+                type: 'scatter',
+                mode: 'markers',
+                name: 'Current Price',
+                marker: {{
+                    color: '#ffeb3b',
+                    size: 12,
+                    symbol: 'diamond',
+                    line: {{ color: '#fff', width: 2 }}
+                }},
+                hovertemplate: `Current: $${{data.currentPriceInfo.price ? data.currentPriceInfo.price.toFixed(2) : 'N/A'}}<extra></extra>`
+            }};
+
+            // Fib level lines
+            const fibLines = data.fibLevels.map(fib => ({{
+                type: 'line',
+                y0: fib.price,
+                y1: fib.price,
+                x0: 0,
+                x1: Math.max(...histData.counts) * 1.1,
+                line: {{
+                    color: fib.level === 0.5 ? '#ffeb3b' :
+                           fib.level >= 0.786 ? '#f44336' :
+                           fib.level <= 0.236 ? '#4caf50' : '#787b86',
+                    width: fib.level === 0.5 ? 2 : 1,
+                    dash: 'dash'
+                }}
+            }}));
+
+            const layout = {{
+                paper_bgcolor: '#1e222d',
+                plot_bgcolor: '#1e222d',
+                font: {{ color: '#d1d4dc', size: 11 }},
+                xaxis: {{
+                    title: 'Frequency',
+                    gridcolor: '#2b2b43',
+                    zerolinecolor: '#2b2b43'
+                }},
+                yaxis: {{
+                    title: 'Price ($)',
+                    gridcolor: '#2b2b43',
+                    zerolinecolor: '#2b2b43'
+                }},
+                margin: {{ t: 20, r: 30, b: 50, l: 70 }},
+                legend: {{
+                    x: 1,
+                    y: 1,
+                    xanchor: 'right',
+                    bgcolor: 'rgba(30, 34, 45, 0.8)',
+                    font: {{ size: 10 }}
+                }},
+                shapes: fibLines,
+                showlegend: true
+            }};
+
+            Plotly.newPlot('gmm-histogram-chart',
+                [histogramTrace, ...gaussianTraces, currentPriceTrace],
+                layout,
+                {{ responsive: true }}
+            );
+        }}
+
+        function renderGMMBICChart(data) {{
+            const bicData = data.bicData;
+
+            const trace = {{
+                x: bicData.components,
+                y: bicData.scores,
+                type: 'scatter',
+                mode: 'lines+markers',
+                name: 'BIC Score',
+                line: {{ color: '#2196f3', width: 2 }},
+                marker: {{
+                    size: bicData.components.map(c =>
+                        c === bicData.selectedComponents ? 16 : 8
+                    ),
+                    color: bicData.components.map(c =>
+                        c === bicData.selectedComponents ? '#ffeb3b' : '#2196f3'
+                    ),
+                    line: {{
+                        color: bicData.components.map(c =>
+                            c === bicData.selectedComponents ? '#fff' : '#2196f3'
+                        ),
+                        width: 2
+                    }}
+                }},
+                hovertemplate: '%{{x}} components<br>BIC: %{{y:.2f}}<extra></extra>'
+            }};
+
+            const layout = {{
+                paper_bgcolor: '#1e222d',
+                plot_bgcolor: '#1e222d',
+                font: {{ color: '#d1d4dc', size: 11 }},
+                xaxis: {{
+                    title: 'Number of Components',
+                    gridcolor: '#2b2b43',
+                    zerolinecolor: '#2b2b43',
+                    dtick: 1
+                }},
+                yaxis: {{
+                    title: 'BIC Score',
+                    gridcolor: '#2b2b43',
+                    zerolinecolor: '#2b2b43'
+                }},
+                margin: {{ t: 20, r: 30, b: 50, l: 70 }},
+                annotations: [{{
+                    x: bicData.selectedComponents,
+                    y: bicData.scores[bicData.selectedComponents - 1],
+                    text: 'Selected',
+                    showarrow: true,
+                    arrowhead: 2,
+                    arrowcolor: '#ffeb3b',
+                    font: {{ color: '#ffeb3b', size: 11 }},
+                    ax: 30,
+                    ay: -30
+                }}],
+                showlegend: false
+            }};
+
+            Plotly.newPlot('gmm-bic-chart', [trace], layout, {{ responsive: true }});
         }}
 
         function prevSweep() {{

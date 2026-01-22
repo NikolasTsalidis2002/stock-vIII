@@ -9,6 +9,7 @@ Main strategy orchestrator implementing:
 """
 
 import numpy as np
+import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -315,39 +316,45 @@ class StrategyEngine:
         # Get the high TF duration for time calculations
         high_duration = self._tm.high_duration
 
-        # GMM Zone Detection (if enabled)
-        sweep_type_filter = None
+        # GMM Zone Detection Setup (if enabled)
+        # Use ORIGINAL (unfiltered) data to access historical candles for lookback
+        # Select dataframe based on gmm_zones.timeframe config
+        # Use case-insensitive comparison since config may have different casing
+        gmm_timeframe = self._gmm_config.get('timeframe', '15min').lower()
+        tf_high = self._tm.timeframe_config.get('high', '').lower()
+        tf_mid = self._tm.timeframe_config.get('mid', '').lower()
+        if gmm_timeframe == tf_high:
+            gmm_df = self._tm.df_high_original
+        elif gmm_timeframe == tf_mid:
+            gmm_df = self._tm.df_mid_original
+        else:
+            # Fallback to mid if timeframe doesn't match
+            gmm_df = self._tm.df_mid_original
+            print(f"[GMM] Warning: timeframe '{gmm_timeframe}' doesn't match high ({tf_high}) or mid ({tf_mid}), using mid")
+
         if self._gmm_enabled and self._gmm_detector:
-            # Get current price (last close)
-            current_price = self._tm.df_high['close'].iloc[-1]
-            current_index = len(self._tm.df_high) - 1
+            # Calculate fixed start index for growing window
+            # first_overlap_index = index of tradable_start in GMM timeframe
+            tradable_start = self._tm.tradable_start
+            gmm_indices = gmm_df.index.get_indexer([tradable_start], method='bfill')
+            first_overlap_index = gmm_indices[0] if gmm_indices[0] != -1 else 0
 
-            # Detect GMM zones
-            self._current_gmm_zone = self._gmm_detector.detect_zones(
-                self._tm.df_high,
-                current_price,
-                current_index
-            )
+            # Fixed start = first_overlap_index - lookback_candles
+            fixed_start_index = max(0, first_overlap_index - self._gmm_detector.lookback_candles)
+            self._gmm_detector.set_fixed_start_index(fixed_start_index)
 
-            if self._current_gmm_zone:
-                # Get sweep type filter based on entry bias
-                sweep_type_filter = self._current_gmm_zone.sweep_type_filter
-                entry_bias = self._current_gmm_zone.entry_bias
+            print(f"[GMM] Tradable start: {tradable_start}")
+            print(f"[GMM] First overlap index in GMM TF: {first_overlap_index}")
+            print(f"[GMM] Fixed start index: {fixed_start_index}")
+            print(f"[GMM] Initial window: {first_overlap_index - fixed_start_index} candles")
 
-                if entry_bias == 'skip':
-                    print(f"  [GMM] Price in middle zone - skipping trades (allow_middle=False)")
-                    print(f"✅ Found 0 complete Strategy trade signals (GMM filter)")
-                    return signals
-
-                # Set fib prices for ExitTargetFinder
-                use_fib_tp = self._gmm_config.get('take_profit_method', 'fib') == 'fib'
-                self._exit_target_finder.set_fib_prices(
-                    self._current_gmm_zone.fib_prices,
-                    use_fib_tp=use_fib_tp
-                )
-
-        # Step 1: Detect all liquidity sweeps upfront (with optional filtering)
-        all_sweeps = self._liquidity_detector.detect_all_sweeps(sweep_type_filter=sweep_type_filter)
+        # Step 1: Detect all liquidity sweeps upfront (no GMM filter - we filter per sweep)
+        # Get tradable_start from timeframe manager - only trade sweeps within overlap period
+        tradable_start = self._tm.tradable_start
+        all_sweeps = self._liquidity_detector.detect_all_sweeps(
+            sweep_type_filter=None,  # No pre-filtering - GMM filter applied per sweep
+            tradable_start=tradable_start
+        )
 
         # Step 2: Process each sweep in order
         for sweep in all_sweeps:
@@ -359,6 +366,9 @@ class StrategyEngine:
             swept_level = sweep.swept_level
             inflexion_idx = sweep.inflexion_idx
             time_high_sweep = sweep.timestamp
+
+            # Initialize GMM zone for this sweep (will be set if GMM enabled)
+            sweep_gmm_zone = None
 
             # Skip if we've already analyzed a sweep at this timestamp
             if time_high_sweep in analyzed_sweep_times:
@@ -398,12 +408,63 @@ class StrategyEngine:
                 else:
                     entry_direction = 'short'
 
-            # GMM Zone Validation: Ensure entry direction matches zone bias
-            if self._gmm_enabled and self._current_gmm_zone:
-                gmm_bias = self._current_gmm_zone.entry_bias
+            # GMM Zone Detection: Calculate zones AT THIS SWEEP's position (growing window)
+            if self._gmm_enabled and self._gmm_detector:
+                # Find the sweep's index in the GMM timeframe (mid TF)
+                # Use the high TF sweep time to find the corresponding GMM TF candle
+                gmm_indices = gmm_df.index.get_indexer([time_high_sweep], method='ffill')
+                gmm_sweep_idx = gmm_indices[0] if gmm_indices[0] != -1 else len(gmm_df) - 1
+
+                # Calculate GMM zones at this sweep's position
+                sweep_gmm_zone = self._gmm_detector.detect_zones(
+                    gmm_df,
+                    gmm_sweep_idx,
+                    swept_level  # Use the swept price level
+                )
+
+                if sweep_gmm_zone is None:
+                    print(f"    ⚠️  GMM zone detection failed at sweep - skipping")
+                    continue
+
+                # Store current GMM zone for this sweep (for visualization)
+                self._current_gmm_zone = sweep_gmm_zone
+
+                # Set fib prices for ExitTargetFinder
+                use_fib_tp = self._gmm_config.get('take_profit_method', 'fib') == 'fib'
+                self._exit_target_finder.set_fib_prices(
+                    sweep_gmm_zone.fib_prices,
+                    use_fib_tp=use_fib_tp
+                )
+
+                gmm_bias = sweep_gmm_zone.entry_bias
+
+                # Check: Is price in middle zone?
+                if gmm_bias == 'skip':
+                    print(f"\n    [GMM DEBUG] === Skipping Sweep (Middle Zone) ===")
+                    print(f"      Sweep at index {gmm_sweep_idx}, price ${swept_level:.2f}")
+                    print(f"      Fib position: {sweep_gmm_zone.current_fib_position:.3f} ({sweep_gmm_zone.current_fib_position * 100:.1f}%)")
+                    print(f"      Zone range: ${sweep_gmm_zone.zone_bottom:.2f} - ${sweep_gmm_zone.zone_top:.2f}")
+                    print(f"      Price in middle zone - skipping (allow_middle=False)")
+                    continue
+
+                # Check: Does entry direction match zone bias?
                 if gmm_bias not in ['neutral', 'skip'] and entry_direction != gmm_bias:
+                    print(f"\n    [GMM DEBUG] === Skipping Sweep (Direction Mismatch) ===")
+                    print(f"      Sweep type: {sweep_type}")
+                    print(f"      Swept level: ${swept_level:.2f}")
+                    print(f"      Entry direction from sweep: {entry_direction}")
+                    print(f"      GMM entry bias: {gmm_bias}")
+                    print(f"      Fib position: {sweep_gmm_zone.current_fib_position:.3f} ({sweep_gmm_zone.current_fib_position * 100:.1f}%)")
+                    print(f"      Zone range: ${sweep_gmm_zone.zone_bottom:.2f} - ${sweep_gmm_zone.zone_top:.2f}")
+                    if gmm_bias == 'short':
+                        print(f"      Reason: Price in PREMIUM zone (fib >= {self._gmm_config.get('premium_zone', [0.786, 1.0])[0] * 100:.1f}%), only SHORT entries allowed")
+                    elif gmm_bias == 'long':
+                        print(f"      Reason: Price in DISCOUNT zone (fib <= {self._gmm_config.get('discount_zone', [0.0, 0.236])[1] * 100:.1f}%), only LONG entries allowed")
                     print(f"    ⚠️  Entry direction {entry_direction} doesn't match GMM bias {gmm_bias} - skipping")
                     continue
+
+                # GMM filter passed
+                print(f"    ✓ GMM filter passed: {entry_direction.upper()} in {gmm_bias.upper()} zone")
 
             # Get market close time for this trading day
             market_close = self._tm.get_market_close_for_day(time_high_sweep)
@@ -575,7 +636,8 @@ class StrategyEngine:
                     exit_ob_start_time=exit_target.ob_start_time if exit_target else None,
                     exit_ob_end_time=exit_target.ob_end_time if exit_target else None,
                     exit_ob_top=exit_target.ob_top if exit_target else None,
-                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None
+                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None,
+                    gmm_zone_info=sweep_gmm_zone
                 ))
                 last_analysis_end_time = end_mid
                 continue
@@ -610,7 +672,8 @@ class StrategyEngine:
                     exit_ob_start_time=None,
                     exit_ob_end_time=None,
                     exit_ob_top=None,
-                    exit_ob_bottom=None
+                    exit_ob_bottom=None,
+                    gmm_zone_info=sweep_gmm_zone
                 ))
                 last_analysis_end_time = end_mid
                 continue
@@ -651,7 +714,8 @@ class StrategyEngine:
                     exit_ob_start_time=exit_target.ob_start_time if exit_target else None,
                     exit_ob_end_time=exit_target.ob_end_time if exit_target else None,
                     exit_ob_top=exit_target.ob_top if exit_target else None,
-                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None
+                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None,
+                    gmm_zone_info=sweep_gmm_zone
                 ))
                 last_analysis_end_time = end_mid
                 continue
@@ -804,7 +868,8 @@ class StrategyEngine:
                     exit_ob_start_time=exit_target.ob_start_time if exit_target else None,
                     exit_ob_end_time=exit_target.ob_end_time if exit_target else None,
                     exit_ob_top=exit_target.ob_top if exit_target else None,
-                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None
+                    exit_ob_bottom=exit_target.ob_bottom if exit_target else None,
+                    gmm_zone_info=sweep_gmm_zone
                 ))
                 last_analysis_end_time = last_time_scanned
                 continue
@@ -845,7 +910,9 @@ class StrategyEngine:
                 exit_ob_end_idx=exit_target.ob_end_idx,
                 equilibrium_level=equilibrium_state.equilibrium if equilibrium_state else None,
                 equilibrium_fixed_level=equilibrium_state.fixed_level if equilibrium_state else None,
-                equilibrium_running_extreme=equilibrium_state.running_extreme if equilibrium_state else None
+                equilibrium_running_extreme=equilibrium_state.running_extreme if equilibrium_state else None,
+                # GMM zone info for debug visualization
+                gmm_zone_info=sweep_gmm_zone
             )
 
             # Calculate stop loss based on 2:1 R/R
@@ -884,3 +951,13 @@ class StrategyEngine:
     def gmm_enabled(self) -> bool:
         """Whether GMM zone detection is enabled."""
         return self._gmm_enabled
+
+    @property
+    def df_high_original(self) -> pd.DataFrame:
+        """Original unfiltered high timeframe DataFrame."""
+        return self._tm.df_high_original
+
+    @property
+    def df_mid_original(self) -> pd.DataFrame:
+        """Original unfiltered mid timeframe DataFrame."""
+        return self._tm.df_mid_original

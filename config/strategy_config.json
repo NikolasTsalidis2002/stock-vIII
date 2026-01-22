@@ -1,17 +1,22 @@
 {
-  "symbol": "TSLA",
+  "symbol": "MSFT",
+  "timeframes_copy": {
+    "high": "1h",
+    "mid": "5min",
+    "low": "1min"
+  },
   "timeframes": {
     "high": "1h",
     "mid": "15min",
     "low": "5min"
-  },
+  },  
   "gmm_zones": {
     "enabled": true,
     "lookback_candles": 300,
-    "timeframe": "1h",
+    "timeframe": "15min",
     "step": 0.1,
-    "max_components": 3,
-    "recalc_interval": 50,
+    "max_components": 5,
+    "selection_method": "elbow",
     "fib_levels": [
       1.0,
       0.786,
@@ -29,26 +34,21 @@
       0.0,
       0.236
     ],
-    "allow_middle_zone_trades": false,
+    "allow_middle_zone_trades": true,
     "take_profit_method": "fib",
     "_descriptions": {
       "enabled": "When true, uses GMM-based zone detection to filter trades by fib zones",
-      "lookback_candles": "Number of candles used for GMM zone analysis",
-      "timeframe": "Timeframe for GMM zone detection (should match high TF)",
+      "lookback_candles": "Number of candles to look back from first_overlap_index for initial GMM window (window grows at each sweep)",
+      "timeframe": "Timeframe for GMM zone detection (should match mid TF)",
       "step": "Price level granularity for GMM analysis",
       "max_components": "Maximum number of GMM components to detect",
-      "recalc_interval": "Recalculate GMM zones every N candles",
+      "selection_method": "'elbow' uses elbow/knee method (finds diminishing returns point), 'min_bic' selects lowest BIC (may overfit)",
       "fib_levels": "Fibonacci levels to calculate within each zone",
       "premium_zone": "Fib range for premium zone (SHORT bias when price is here)",
       "discount_zone": "Fib range for discount zone (LONG bias when price is here)",
       "allow_middle_zone_trades": "When true, allows trades in middle zone (0.236-0.786)",
       "take_profit_method": "'fib' uses 0.5 fib level as TP, 'order_block' uses existing OB-based TP"
     }
-  },
-  "timeframes_copy": {
-    "high": "1day",
-    "mid": "1h",
-    "low": "15min"
   },
   "_general_descriptions": {
     "symbol": "The asset symbol to analyze. Choose from asset_options below or use any valid Twelve Data symbol.",
@@ -60,8 +60,10 @@
   },
   "liquidity": {
     "sweep_proximity_threshold_percent": 0.01,
+    "high_tf_lookback_candles": 300,
     "_descriptions": {
-      "sweep_proximity_threshold_percent": "Percentage threshold for near-sweep detection. If price comes within this % of an inflection level, it counts as a sweep. 0 = exact touch required (default). Example: 0.5 means price within 0.5% of level counts as swept."
+      "sweep_proximity_threshold_percent": "Percentage threshold for near-sweep detection. If price comes within this % of an inflection level, it counts as a sweep. 0 = exact touch required (default). Example: 0.5 means price within 0.5% of level counts as swept.",
+      "high_tf_lookback_candles": "Number of high TF candles to include BEFORE the overlap period for better inflection point detection. These historical candles help identify price levels that may be swept during the tradable period. Default 300. Set to 0 to disable extended lookback."
     }
   },
   "validation": {

@@ -43,7 +43,8 @@ class MultiTimeframeStrategy:
         require_fvg_in_equilibrium: bool = False,
         sweep_proximity_threshold: float = 0.0,
         abandon_on_new_sweep: bool = True,
-        gmm_config: Optional[Dict] = None
+        gmm_config: Optional[Dict] = None,
+        high_tf_lookback: int = 300
     ):
         """
         Initialize strategy with multi-timeframe data.
@@ -78,9 +79,14 @@ class MultiTimeframeStrategy:
                         - discount_zone: list (default [0.0, 0.236])
                         - allow_middle_zone_trades: bool (default False)
                         - take_profit_method: str ('fib' or 'order_block', default 'fib')
+            high_tf_lookback: Number of high TF candles to include before the overlap
+                             period for better inflection point detection. Default 300.
         """
         # Initialize timeframe manager
-        self._tm = TimeframeManager(df_high, df_mid, df_low, timeframe_config)
+        self._tm = TimeframeManager(
+            df_high, df_mid, df_low, timeframe_config,
+            high_tf_lookback=high_tf_lookback
+        )
 
         # Initialize strategy engine
         self._engine = StrategyEngine(
@@ -104,6 +110,7 @@ class MultiTimeframeStrategy:
         # Expose overlap period
         self.overlap_start = self._tm.overlap_start
         self.overlap_end = self._tm.overlap_end
+        self.tradable_start = self._tm.tradable_start
 
         # Expose mappings
         self.map_high_to_mid = self._tm.map_high_to_mid
