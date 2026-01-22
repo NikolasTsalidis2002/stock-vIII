@@ -20,6 +20,7 @@ from .event_b_detector import EventBDetector
 from .confirmation_detector import ConfirmationDetector
 from .equilibrium_validator import EquilibriumValidator
 from .exit_target_finder import ExitTargetFinder
+from .gmm_zone_detector import GMMZoneDetector, GMMZoneInfo
 from .strategy_engine import StrategyEngine
 
 
@@ -41,7 +42,8 @@ class MultiTimeframeStrategy:
         use_equilibrium_validation: bool = True,
         require_fvg_in_equilibrium: bool = False,
         sweep_proximity_threshold: float = 0.0,
-        abandon_on_new_sweep: bool = True
+        abandon_on_new_sweep: bool = True,
+        gmm_config: Optional[Dict] = None
     ):
         """
         Initialize strategy with multi-timeframe data.
@@ -65,6 +67,17 @@ class MultiTimeframeStrategy:
             abandon_on_new_sweep: If True (default), abandons current setup if a new liquidity
                                  sweep occurs during mid/low TF scanning. If False, continues
                                  building the current setup regardless of new sweeps.
+            gmm_config: Optional dictionary with GMM zone configuration:
+                        - enabled: bool (default False)
+                        - lookback_candles: int (default 300)
+                        - step: float (default 0.1)
+                        - max_components: int (default 3)
+                        - recalc_interval: int (default 50)
+                        - fib_levels: list (default [1.0, 0.786, ...])
+                        - premium_zone: list (default [0.786, 1.0])
+                        - discount_zone: list (default [0.0, 0.236])
+                        - allow_middle_zone_trades: bool (default False)
+                        - take_profit_method: str ('fib' or 'order_block', default 'fib')
         """
         # Initialize timeframe manager
         self._tm = TimeframeManager(df_high, df_mid, df_low, timeframe_config)
@@ -76,7 +89,8 @@ class MultiTimeframeStrategy:
             use_equilibrium_validation=use_equilibrium_validation,
             require_fvg_in_equilibrium=require_fvg_in_equilibrium,
             sweep_proximity_threshold=sweep_proximity_threshold,
-            abandon_on_new_sweep=abandon_on_new_sweep
+            abandon_on_new_sweep=abandon_on_new_sweep,
+            gmm_config=gmm_config
         )
 
         # Expose attributes for convenience
@@ -179,6 +193,16 @@ class MultiTimeframeStrategy:
         """All partial setups (incomplete trades)."""
         return self._engine.partial_setups
 
+    @property
+    def gmm_zone(self):
+        """Current GMM zone detection result (if enabled)."""
+        return self._engine.gmm_zone
+
+    @property
+    def gmm_enabled(self) -> bool:
+        """Whether GMM zone detection is enabled."""
+        return self._engine.gmm_enabled
+
 
 __all__ = [
     # Models
@@ -196,6 +220,8 @@ __all__ = [
     'ConfirmationDetector',
     'EquilibriumValidator',
     'ExitTargetFinder',
+    'GMMZoneDetector',
+    'GMMZoneInfo',
     # Engine
     'StrategyEngine',
     # Convenience wrapper

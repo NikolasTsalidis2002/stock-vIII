@@ -2,11 +2,12 @@
 Exit target detection for Strategy II.
 
 Finds the Order Block at the origin of the liquidity move for take profit calculation.
+Supports both Order Block-based and Fibonacci-based take profit methods.
 """
 
 import pandas as pd
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 from .models import ExitTarget
 
@@ -27,7 +28,9 @@ class ExitTargetFinder:
         df_mid: pd.DataFrame,
         bos_mid: pd.DataFrame,
         inflexions_mid: pd.DataFrame,
-        ob_mid: pd.DataFrame = None
+        ob_mid: pd.DataFrame = None,
+        use_fib_tp: bool = False,
+        fib_prices: Dict[float, float] = None
     ) -> None:
         """
         Initialize exit target finder.
@@ -37,16 +40,46 @@ class ExitTargetFinder:
             bos_mid: Pre-calculated BOS data with TrendStartIndex and Level
             inflexions_mid: Pre-calculated inflexion points
             ob_mid: Pre-calculated Order Block data with Top/Bottom bounds
+            use_fib_tp: If True, use fib-based TP instead of OB-based
+            fib_prices: Dictionary of fib levels to prices (required if use_fib_tp=True)
         """
         self.df_mid = df_mid
         self.bos_mid = bos_mid
         self.inflexions_mid = inflexions_mid
         self.ob_mid = ob_mid
+        self.use_fib_tp = use_fib_tp
+        self.fib_prices = fib_prices or {}
+
+    def set_fib_prices(self, fib_prices: Dict[float, float], use_fib_tp: bool = True) -> None:
+        """
+        Set Fibonacci prices for fib-based take profit.
+
+        Args:
+            fib_prices: Dictionary of fib level to price (e.g., {1.0: 440, 0.5: 410, 0.0: 380})
+            use_fib_tp: Whether to use fib-based TP
+        """
+        self.fib_prices = fib_prices
+        self.use_fib_tp = use_fib_tp
+
+    def get_fib_take_profit(self, entry_direction: str) -> Optional[float]:
+        """
+        Get take profit based on 0.5 Fibonacci level.
+
+        Args:
+            entry_direction: 'long' or 'short'
+
+        Returns:
+            0.5 fib level price, or None if fib_prices not set
+        """
+        if not self.fib_prices:
+            return None
+        return self.fib_prices.get(0.5)
 
     def find_exit_order_block(
         self,
         sweep_time: datetime,
-        entry_direction: str
+        entry_direction: str,
+        override_fib_tp: bool = None
     ) -> Optional[ExitTarget]:
         """
         Find Order Block at origin of liquidity move.
@@ -68,6 +101,7 @@ class ExitTargetFinder:
         Args:
             sweep_time: Time of liquidity sweep
             entry_direction: 'long' or 'short'
+            override_fib_tp: If True, use fib TP; if False, use OB TP; if None, use self.use_fib_tp
 
         Returns:
             ExitTarget with OB levels and take profit, or None
@@ -85,11 +119,21 @@ class ExitTargetFinder:
         if entry_direction == 'short':
             # For SHORT: swept a HIGH, meaning there was an upward trend
             # Find the BOS that started the upward trend (bullish BOS)
-            return self._find_exit_ob_for_short(sweep_idx)
+            exit_target = self._find_exit_ob_for_short(sweep_idx)
         else:
             # For LONG: swept a LOW, meaning there was a downward trend
             # Find the BOS that started the downward trend (bearish BOS)
-            return self._find_exit_ob_for_long(sweep_idx)
+            exit_target = self._find_exit_ob_for_long(sweep_idx)
+
+        # Override TP with fib-based TP if configured
+        use_fib = override_fib_tp if override_fib_tp is not None else self.use_fib_tp
+        if exit_target and use_fib and self.fib_prices:
+            fib_tp = self.get_fib_take_profit(entry_direction)
+            if fib_tp is not None:
+                exit_target.take_profit = fib_tp
+                print(f"    [FIB TP] Using 0.5 fib level: ${fib_tp:.2f}")
+
+        return exit_target
 
     def _find_exit_ob_for_short(self, sweep_idx: int) -> Optional[ExitTarget]:
         """

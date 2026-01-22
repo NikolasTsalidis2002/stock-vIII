@@ -91,7 +91,11 @@ def generate_summary_csv(results, output_path):
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
-        'symbol', 'status', 'num_trades', 'long_trades', 'short_trades',
+        'symbol',
+        'high_tf_start', 'high_tf_end',
+        'mid_tf_start', 'mid_tf_end',
+        'low_tf_start', 'low_tf_end',
+        'status', 'num_trades', 'long_trades', 'short_trades',
         'total_pnl_dollars', 'total_pnl_percent', 'win_rate',
         'avg_pnl_per_trade', 'best_trade_pnl', 'worst_trade_pnl', 'error'
     ]
@@ -139,6 +143,9 @@ def run_single_symbol(symbol, config, args):
     liquidity_cfg = config.get('liquidity', {})
     sweep_proximity_threshold = liquidity_cfg.get('sweep_proximity_threshold_percent', 0.0) / 100.0
 
+    # Get GMM zone settings
+    gmm_config = config.get('gmm_zones', {})
+
     # Get backtest settings
     backtest_cfg = config.get('backtest', {})
     initial_capital = backtest_cfg.get('initial_capital', 10000.0)
@@ -162,6 +169,14 @@ def run_single_symbol(symbol, config, args):
 
     print(f"  {high_tf.upper()}: {len(df_high)} candles | {mid_tf.upper()}: {len(df_mid)} candles | {low_tf.upper()}: {len(df_low)} candles")
 
+    # Extract date range from all timeframes
+    high_tf_start = df_high['time'].min().strftime('%Y-%m-%d')
+    high_tf_end = df_high['time'].max().strftime('%Y-%m-%d')
+    mid_tf_start = df_mid['time'].min().strftime('%Y-%m-%d')
+    mid_tf_end = df_mid['time'].max().strftime('%Y-%m-%d')
+    low_tf_start = df_low['time'].min().strftime('%Y-%m-%d')
+    low_tf_end = df_low['time'].max().strftime('%Y-%m-%d')
+
     # Initialize strategy
     strategy = MultiTimeframeStrategy(
         df_high, df_mid, df_low, timeframe_config,
@@ -169,7 +184,8 @@ def run_single_symbol(symbol, config, args):
         use_equilibrium_validation=use_equilibrium_validation,
         require_fvg_in_equilibrium=require_fvg_in_equilibrium,
         sweep_proximity_threshold=sweep_proximity_threshold,
-        abandon_on_new_sweep=abandon_on_new_sweep
+        abandon_on_new_sweep=abandon_on_new_sweep,
+        gmm_config=gmm_config
     )
 
     # Scan for signals
@@ -179,6 +195,12 @@ def run_single_symbol(symbol, config, args):
         print(f"  No signals found for {symbol}")
         return {
             'symbol': symbol,
+            'high_tf_start': high_tf_start,
+            'high_tf_end': high_tf_end,
+            'mid_tf_start': mid_tf_start,
+            'mid_tf_end': mid_tf_end,
+            'low_tf_start': low_tf_start,
+            'low_tf_end': low_tf_end,
             'status': 'success',
             'num_trades': 0,
             'long_trades': 0,
@@ -243,6 +265,12 @@ def run_single_symbol(symbol, config, args):
 
     return {
         'symbol': symbol,
+        'high_tf_start': high_tf_start,
+        'high_tf_end': high_tf_end,
+        'mid_tf_start': mid_tf_start,
+        'mid_tf_end': mid_tf_end,
+        'low_tf_start': low_tf_start,
+        'low_tf_end': low_tf_end,
         'status': 'success',
         'num_trades': num_trades,
         'long_trades': long_trades,
@@ -297,6 +325,12 @@ def run_batch_analysis(config, args):
             print(f"  - {s}")
             results.append({
                 'symbol': s,
+                'high_tf_start': '',
+                'high_tf_end': '',
+                'mid_tf_start': '',
+                'mid_tf_end': '',
+                'low_tf_start': '',
+                'low_tf_end': '',
                 'status': 'skipped',
                 'num_trades': 0,
                 'long_trades': 0,
@@ -319,6 +353,12 @@ def run_batch_analysis(config, args):
             print(f"  Failed to process {symbol}: {e}")
             results.append({
                 'symbol': symbol,
+                'high_tf_start': '',
+                'high_tf_end': '',
+                'mid_tf_start': '',
+                'mid_tf_end': '',
+                'low_tf_start': '',
+                'low_tf_end': '',
                 'status': 'failed',
                 'num_trades': 0,
                 'long_trades': 0,
@@ -791,6 +831,18 @@ def main():
         print(f"  Sweep Proximity:  {sweep_proximity_threshold_percent}% (price within {sweep_proximity_threshold_percent}% of level counts as swept)")
     else:
         print(f"  Sweep Proximity:  Exact touch required (0%)")
+    # Display GMM zone settings
+    gmm_enabled = config.get('gmm_zones', {}).get('enabled', False)
+    if gmm_enabled:
+        gmm_cfg = config.get('gmm_zones', {})
+        print(f"  GMM Zones:        Enabled")
+        print(f"    - Lookback:     {gmm_cfg.get('lookback_candles', 300)} candles")
+        print(f"    - Premium zone: >= {gmm_cfg.get('premium_zone', [0.786, 1.0])[0]} fib (SHORT bias)")
+        print(f"    - Discount zone: <= {gmm_cfg.get('discount_zone', [0.0, 0.236])[1]} fib (LONG bias)")
+        print(f"    - Middle zone:  {'Allow trades' if gmm_cfg.get('allow_middle_zone_trades', False) else 'Skip trades'}")
+        print(f"    - TP method:    {gmm_cfg.get('take_profit_method', 'fib')}")
+    else:
+        print(f"  GMM Zones:        Disabled")
     print(f"  Visualization:    {'Enabled' if args.visualize else 'Disabled'}")
     print(f"  Export Journal:   {args.export_journal if args.export_journal else 'Disabled'}")
     print("")
@@ -807,6 +859,9 @@ def main():
     print(f"  ✓ {mid_tf.upper()}:  {len(df_mid)} candles")
     print(f"  ✓ {low_tf.upper()}:  {len(df_low)} candles")
 
+    # Get GMM zone settings
+    gmm_config = config.get('gmm_zones', {})
+
     # Step 2: Initialize strategy
     print("\n🔧 Initializing strategy engine...")
     strategy = MultiTimeframeStrategy(
@@ -815,7 +870,8 @@ def main():
         use_equilibrium_validation=use_equilibrium_validation,
         require_fvg_in_equilibrium=require_fvg_in_equilibrium,
         sweep_proximity_threshold=sweep_proximity_threshold,
-        abandon_on_new_sweep=abandon_on_new_sweep
+        abandon_on_new_sweep=abandon_on_new_sweep,
+        gmm_config=gmm_config
     )
 
     # Step 3: Scan for signals

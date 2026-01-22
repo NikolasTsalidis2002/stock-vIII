@@ -2,6 +2,7 @@
 Strategy Engine - Equilibrium Premium/Discount Strategy.
 
 Main strategy orchestrator implementing:
+- GMM-based zone detection with Fibonacci levels (optional)
 - Equilibrium-based validation (Stage 3)
 - Exit target calculation
 - Stop loss calculation with 2:1 R/R
@@ -9,7 +10,7 @@ Main strategy orchestrator implementing:
 
 import numpy as np
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .models import StrategyState, PartialSetup, TradeSignal, SweepInfo, EquilibriumState, ExitTarget
 from .timeframe_manager import TimeframeManager
@@ -18,6 +19,7 @@ from .event_b_detector import EventBDetector
 from .equilibrium_validator import EquilibriumValidator
 from .exit_target_finder import ExitTargetFinder
 from .confirmation_detector import ConfirmationDetector
+from .gmm_zone_detector import GMMZoneDetector, GMMZoneInfo
 
 
 class StrategyEngine:
@@ -39,7 +41,8 @@ class StrategyEngine:
         use_equilibrium_validation: bool = True,
         require_fvg_in_equilibrium: bool = False,
         sweep_proximity_threshold: float = 0.0,
-        abandon_on_new_sweep: bool = True
+        abandon_on_new_sweep: bool = True,
+        gmm_config: Dict = None
     ) -> None:
         """
         Initialize with pre-configured timeframe manager.
@@ -59,12 +62,29 @@ class StrategyEngine:
             abandon_on_new_sweep: If True (default), abandons current setup if a new liquidity
                                  sweep occurs during mid/low TF scanning. If False, continues
                                  building the current setup regardless of new sweeps.
+            gmm_config: Optional dictionary with GMM zone configuration:
+                        - enabled: bool (default True)
+                        - lookback_candles: int (default 300)
+                        - step: float (default 0.1)
+                        - max_components: int (default 3)
+                        - recalc_interval: int (default 50)
+                        - fib_levels: list (default [1.0, 0.786, ...])
+                        - premium_zone: list (default [0.786, 1.0])
+                        - discount_zone: list (default [0.0, 0.236])
+                        - allow_middle_zone_trades: bool (default False)
+                        - take_profit_method: str ('fib' or 'order_block', default 'fib')
         """
         self._tm = timeframe_manager
         self._use_fvg_validation = use_fvg_validation
         self._use_equilibrium_validation = use_equilibrium_validation
         self._require_fvg_in_equilibrium = require_fvg_in_equilibrium
         self._abandon_on_new_sweep = abandon_on_new_sweep
+
+        # GMM Zone Detector (optional)
+        self._gmm_config = gmm_config or {}
+        self._gmm_enabled = self._gmm_config.get('enabled', False)
+        self._gmm_detector = GMMZoneDetector(self._gmm_config) if self._gmm_enabled else None
+        self._current_gmm_zone: Optional[GMMZoneInfo] = None
 
         # Reuse existing detectors from base strategy
         self._liquidity_detector = LiquidityDetector(
@@ -262,6 +282,7 @@ class StrategyEngine:
         Scan historical data for complete trade setups using Strategy logic.
 
         Key differences from base strategy:
+        - GMM-based zone detection with Fibonacci levels (optional)
         - Stage 3: Use EquilibriumValidator instead of ValidationDetector
         - After confirmation: Calculate exit target and stop loss
         - Additional invalidation: Check if price breaks exit OB
@@ -275,6 +296,12 @@ class StrategyEngine:
         """
         print("🔍 Scanning for Strategy trade signals...")
         print(f"  Using Equilibrium Premium/Discount zones")
+        if self._gmm_enabled:
+            print(f"  GMM Zone Detection: ENABLED")
+            print(f"    - Lookback: {self._gmm_config.get('lookback_candles', 300)} candles")
+            print(f"    - Premium zone: >= {self._gmm_config.get('premium_zone', [0.786, 1.0])[0]} fib")
+            print(f"    - Discount zone: <= {self._gmm_config.get('discount_zone', [0.0, 0.236])[1]} fib")
+            print(f"    - TP method: {self._gmm_config.get('take_profit_method', 'fib')}")
         print(f"  Looking for up to {max_signals} complete setups\n")
 
         signals = []
@@ -288,8 +315,39 @@ class StrategyEngine:
         # Get the high TF duration for time calculations
         high_duration = self._tm.high_duration
 
-        # Step 1: Detect all liquidity sweeps upfront
-        all_sweeps = self._liquidity_detector.detect_all_sweeps()
+        # GMM Zone Detection (if enabled)
+        sweep_type_filter = None
+        if self._gmm_enabled and self._gmm_detector:
+            # Get current price (last close)
+            current_price = self._tm.df_high['close'].iloc[-1]
+            current_index = len(self._tm.df_high) - 1
+
+            # Detect GMM zones
+            self._current_gmm_zone = self._gmm_detector.detect_zones(
+                self._tm.df_high,
+                current_price,
+                current_index
+            )
+
+            if self._current_gmm_zone:
+                # Get sweep type filter based on entry bias
+                sweep_type_filter = self._current_gmm_zone.sweep_type_filter
+                entry_bias = self._current_gmm_zone.entry_bias
+
+                if entry_bias == 'skip':
+                    print(f"  [GMM] Price in middle zone - skipping trades (allow_middle=False)")
+                    print(f"✅ Found 0 complete Strategy trade signals (GMM filter)")
+                    return signals
+
+                # Set fib prices for ExitTargetFinder
+                use_fib_tp = self._gmm_config.get('take_profit_method', 'fib') == 'fib'
+                self._exit_target_finder.set_fib_prices(
+                    self._current_gmm_zone.fib_prices,
+                    use_fib_tp=use_fib_tp
+                )
+
+        # Step 1: Detect all liquidity sweeps upfront (with optional filtering)
+        all_sweeps = self._liquidity_detector.detect_all_sweeps(sweep_type_filter=sweep_type_filter)
 
         # Step 2: Process each sweep in order
         for sweep in all_sweeps:
@@ -339,6 +397,13 @@ class StrategyEngine:
                     entry_direction = 'long'
                 else:
                     entry_direction = 'short'
+
+            # GMM Zone Validation: Ensure entry direction matches zone bias
+            if self._gmm_enabled and self._current_gmm_zone:
+                gmm_bias = self._current_gmm_zone.entry_bias
+                if gmm_bias not in ['neutral', 'skip'] and entry_direction != gmm_bias:
+                    print(f"    ⚠️  Entry direction {entry_direction} doesn't match GMM bias {gmm_bias} - skipping")
+                    continue
 
             # Get market close time for this trading day
             market_close = self._tm.get_market_close_for_day(time_high_sweep)
@@ -809,3 +874,13 @@ class StrategyEngine:
     def partial_setups(self) -> List[PartialSetup]:
         """All partial setups (incomplete trades)."""
         return self._partial_setups
+
+    @property
+    def gmm_zone(self) -> Optional[GMMZoneInfo]:
+        """Current GMM zone detection result (if enabled)."""
+        return self._current_gmm_zone
+
+    @property
+    def gmm_enabled(self) -> bool:
+        """Whether GMM zone detection is enabled."""
+        return self._gmm_enabled

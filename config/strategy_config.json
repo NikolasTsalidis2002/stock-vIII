@@ -5,6 +5,46 @@
     "mid": "15min",
     "low": "5min"
   },
+  "gmm_zones": {
+    "enabled": true,
+    "lookback_candles": 300,
+    "timeframe": "1h",
+    "step": 0.1,
+    "max_components": 3,
+    "recalc_interval": 50,
+    "fib_levels": [
+      1.0,
+      0.786,
+      0.618,
+      0.5,
+      0.382,
+      0.236,
+      0.0
+    ],
+    "premium_zone": [
+      0.786,
+      1.0
+    ],
+    "discount_zone": [
+      0.0,
+      0.236
+    ],
+    "allow_middle_zone_trades": false,
+    "take_profit_method": "fib",
+    "_descriptions": {
+      "enabled": "When true, uses GMM-based zone detection to filter trades by fib zones",
+      "lookback_candles": "Number of candles used for GMM zone analysis",
+      "timeframe": "Timeframe for GMM zone detection (should match high TF)",
+      "step": "Price level granularity for GMM analysis",
+      "max_components": "Maximum number of GMM components to detect",
+      "recalc_interval": "Recalculate GMM zones every N candles",
+      "fib_levels": "Fibonacci levels to calculate within each zone",
+      "premium_zone": "Fib range for premium zone (SHORT bias when price is here)",
+      "discount_zone": "Fib range for discount zone (LONG bias when price is here)",
+      "allow_middle_zone_trades": "When true, allows trades in middle zone (0.236-0.786)",
+      "take_profit_method": "'fib' uses 0.5 fib level as TP, 'order_block' uses existing OB-based TP"
+    }
+  },
   "timeframes_copy": {
     "high": "1day",
     "mid": "1h",

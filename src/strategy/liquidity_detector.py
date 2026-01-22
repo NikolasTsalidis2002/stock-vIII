@@ -46,7 +46,7 @@ class LiquidityDetector:
         self.bos_high = bos_high
         self.proximity_threshold = proximity_threshold
 
-    def detect_all_sweeps(self) -> List[SweepInfo]:
+    def detect_all_sweeps(self, sweep_type_filter: str = None) -> List[SweepInfo]:
         """
         Detect ALL liquidity sweeps progressively (EXACT same logic as walkthrough).
 
@@ -55,6 +55,12 @@ class LiquidityDetector:
         - Count ALL sweeps where Respected == True at each candle
         - Track when sweeps first appear
         - DUAL SWEEP: If same candle sweeps both high AND low, use candle color for direction
+
+        Args:
+            sweep_type_filter: Optional filter for sweep types:
+                - 'high': Only return sweeps of HIGHS (buy-side liquidity)
+                - 'low': Only return sweeps of LOWS (sell-side liquidity)
+                - 'both' or None: Return all sweeps (default)
 
         Returns:
             List of SweepInfo objects for ALL sweeps found
@@ -162,7 +168,30 @@ class LiquidityDetector:
                         timestamp=timestamp
                     ))
 
-        print(f"  Total sweeps found: {len(all_sweeps)}\n")
+        print(f"  Total sweeps found: {len(all_sweeps)}")
+
+        # Apply sweep type filter if specified
+        if sweep_type_filter and sweep_type_filter != 'both':
+            filtered_sweeps = []
+            for sweep in all_sweeps:
+                # Handle dual sweeps
+                if sweep.is_dual_sweep:
+                    # Dual sweeps have direction already determined by candle color
+                    # dual_short or dual_long
+                    if sweep_type_filter == 'high' and sweep.sweep_type == 'dual_short':
+                        # SHORT bias looks for HIGH sweeps, dual_short qualifies
+                        filtered_sweeps.append(sweep)
+                    elif sweep_type_filter == 'low' and sweep.sweep_type == 'dual_long':
+                        # LONG bias looks for LOW sweeps, dual_long qualifies
+                        filtered_sweeps.append(sweep)
+                # Handle single sweeps
+                elif sweep.sweep_type == sweep_type_filter:
+                    filtered_sweeps.append(sweep)
+
+            print(f"  After {sweep_type_filter} filter: {len(filtered_sweeps)} sweeps\n")
+            return filtered_sweeps
+
+        print()
         return all_sweeps
 
     def is_sweep_broken_at_time(
