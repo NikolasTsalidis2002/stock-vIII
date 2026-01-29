@@ -150,11 +150,11 @@ class ExitTargetFinder:
                 trend_start = int(self.bos_mid['TrendStartIndex'].iloc[i])
                 level = self.bos_mid['Level'].iloc[i]
 
-                # Find OB where EndIndex matches this BOS index
+                # Find OB disrespected at this BOS index
                 ob_top = level
                 ob_bottom = level
                 if self.ob_mid is not None:
-                    ob_match = self.ob_mid[self.ob_mid['EndIndex'] == i]
+                    ob_match = self.ob_mid[(self.ob_mid['StatusIndex'] == i) & (self.ob_mid['Respected'] == False)]
                     if len(ob_match) > 0:
                         ob_top = ob_match['Top'].iloc[0]
                         ob_bottom = ob_match['Bottom'].iloc[0]
@@ -189,11 +189,11 @@ class ExitTargetFinder:
                 trend_start = int(self.bos_mid['TrendStartIndex'].iloc[i])
                 level = self.bos_mid['Level'].iloc[i]
 
-                # Find OB where EndIndex matches this BOS index
+                # Find OB disrespected at this BOS index
                 ob_top = level
                 ob_bottom = level
                 if self.ob_mid is not None:
-                    ob_match = self.ob_mid[self.ob_mid['EndIndex'] == i]
+                    ob_match = self.ob_mid[(self.ob_mid['StatusIndex'] == i) & (self.ob_mid['Respected'] == False)]
                     if len(ob_match) > 0:
                         ob_top = ob_match['Top'].iloc[0]
                         ob_bottom = ob_match['Bottom'].iloc[0]

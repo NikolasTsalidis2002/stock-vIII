@@ -3,14 +3,15 @@
 
 State machine:
   State 0: Detect OB A touch & leave + find opposite OB C with >min_dist_pct distance
-  State 1: Wait for new OB B (same direction as A) formed after confirmation, price touches it
-  State 2: Wait for close past OB B boundary → entry signal
+  State 1: Wait for new OB B (same direction as A) formed after confirmation
+  State 2: OB-B found, waiting for price to leave and retouch
+  State 3: OB-B retouched, waiting for close break → entry signal
 
-OB creation is dynamic: OBs are built inline at each BOS event, matching Pine Script behavior.
+OBs are precomputed via smc_custom.ob() and looked up by StartIndex (stable keys).
 """
 
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
@@ -18,21 +19,23 @@ from .models import TradeSignal
 
 
 @dataclass
-class OrderBlock:
-    """A single order block derived from BOS."""
+class OBRecord:
+    """A single order block record from the precomputed OB table."""
     direction: int         # 1 = bullish, -1 = bearish
     top: float
     bottom: float
     start_idx: int         # bar index where OB starts (inflexion)
     bos_idx: int           # bar index of the BOS candle
+    status_idx: int        # bar where OB is invalidated (0 = still alive)
+    respected: Optional[bool]  # False = invalidated, True = respected, None = pending
 
 
 class ThreeOBEngine:
     """
     Scans OHLCV data for 3-OB strategy signals.
 
-    Reuses smc_custom.inflexion_points and smc_custom.bos for detection,
-    then builds OBs dynamically during the bar loop (matching Pine Script).
+    Uses precomputed OB table from smc_custom.ob() keyed by StartIndex,
+    eliminating fragile list-index juggling.
     """
 
     def __init__(
@@ -44,15 +47,57 @@ class ThreeOBEngine:
         self.df = df.copy().reset_index(drop=True)
         self.close_break = close_break
         self.min_dist_pct = min_dist_pct
+        self.enable_shorts = False
 
         from src.indicators.smc_custom import smc_custom
         self.inflexions = smc_custom.inflexion_points(self.df)
         self.bos_data = smc_custom.bos(self.df, self.inflexions, close_break=close_break)
+        self.ob_table = smc_custom.ob(self.df, self.bos_data)
+
+        # Build OB records dict keyed by (start_idx, bos_idx) — composite key
+        # avoids silent overwrites when multiple OBs share the same StartIndex.
+        self.ob_records: Dict[tuple, OBRecord] = {}
+        # Map bos_idx → list of (start_idx, bos_idx) keys for O(1) activation lookup
+        self.bos_to_obs: Dict[int, List[tuple]] = {}
+
+        ob_rows = self.ob_table[self.ob_table['OB'].notna()]
+        for _, row in ob_rows.iterrows():
+            start = int(row['StartIndex'])
+            bos = int(row['BOSIndex'])
+            key = (start, bos)
+            raw_respected = row.get('Respected', None)
+            respected = None if raw_respected is None or (isinstance(raw_respected, float) and np.isnan(raw_respected)) else bool(raw_respected)
+            rec = OBRecord(
+                direction=int(row['OB']),
+                top=float(row['Top']),
+                bottom=float(row['Bottom']),
+                start_idx=start,
+                bos_idx=bos,
+                status_idx=int(row.get('StatusIndex', 0)),
+                respected=respected,
+            )
+            self.ob_records[key] = rec
+            self.bos_to_obs.setdefault(bos, []).append(key)
 
     def scan_for_signals(self, max_signals: int = 10) -> List[TradeSignal]:
         """
-        Run the 3-state machine across all bars, mirroring Pine Script logic.
-        OBs are created dynamically at each BOS event and removed on invalidation.
+        Run the 3-state machine across all bars.
+        OBs are activated at their BOS bar and removed on invalidation.
+        Keys are StartIndex values (stable, never shift).
+        """
+        signals: List[TradeSignal] = []
+        for _bar, snapshot in self.scan_with_snapshots(max_signals=max_signals):
+            if snapshot['signal'] is not None:
+                signals.append(snapshot['signal'])
+        return signals
+
+    def scan_with_snapshots(self, max_signals: int = 10):
+        """
+        Yield (bar_index, snapshot_dict) for each bar.
+
+        The snapshot contains the current state machine status and any signal
+        fired on that bar.  Used by the walkthrough visualizer to show
+        per-bar state progression.
         """
         df = self.df
         n = len(df)
@@ -62,41 +107,33 @@ class ThreeOBEngine:
         open_ = df['open'].values
         times = df['time'].values
 
-        # BOS arrays for fast access
-        bos_values = self.bos_data['BOS'].values
-        bos_levels = self.bos_data['Level'].values
-        bos_inflx = self.bos_data['BrokenInflexionIndex'].values
-
         signals: List[TradeSignal] = []
-        ob_list: List[OrderBlock] = []
+        # Active OBs keyed by (start_idx, bos_idx)
+        active_obs: Dict[tuple, OBRecord] = {}
+        # Track which OBs have had price move away since activation
+        ob_has_left: set = set()
+        # Accumulated invalidated OB keys (for visualization)
+        dead_obs: List[tuple] = []
 
         # --- state variables (long) ---
         long_state = 0
-        long_ob_a_idx: Optional[int] = None
+        long_ob_a_key: Optional[int] = None
         long_ob_a_bottom: Optional[float] = None
         long_ob_a_confirmed_bar: Optional[int] = None
-        long_ob_b_idx: Optional[int] = None
-        long_ob_c_idx: Optional[int] = None
+        long_ob_b_key: Optional[int] = None
+        long_ob_b_retouched: bool = False
+        long_ob_c_key: Optional[int] = None
         long_ob_c_bottom: Optional[float] = None
 
         # --- state variables (short) ---
         short_state = 0
-        short_ob_a_idx: Optional[int] = None
+        short_ob_a_key: Optional[int] = None
         short_ob_a_top: Optional[float] = None
         short_ob_a_confirmed_bar: Optional[int] = None
-        short_ob_b_idx: Optional[int] = None
-        short_ob_c_idx: Optional[int] = None
+        short_ob_b_key: Optional[int] = None
+        short_ob_b_retouched: bool = False
+        short_ob_c_key: Optional[int] = None
         short_ob_c_top: Optional[float] = None
-
-        def _adjust_idx_after_remove(idx, removed):
-            """Adjust a saved ob_list index after an element was removed."""
-            if idx is None:
-                return None
-            if idx == removed:
-                return None  # the referenced OB was removed
-            if idx > removed:
-                return idx - 1
-            return idx
 
         for bar in range(n):
             if len(signals) >= max_signals:
@@ -109,87 +146,70 @@ class ThreeOBEngine:
             break_low = min(bar_close, bar_open)
             break_high = max(bar_close, bar_open)
 
-            # --- Step 1: Create new OB if BOS at this bar ---
-            if not np.isnan(bos_values[bar]):
-                bos_type = int(bos_values[bar])
-                inflexion_idx = int(bos_inflx[bar]) if not np.isnan(bos_inflx[bar]) else bar
-                if bos_type == 1:  # Bullish BOS → Bullish OB
-                    zone_bottom = float(np.min(low[inflexion_idx:bar + 1]))
-                    ob_list.append(OrderBlock(
-                        direction=1,
-                        top=float(bos_levels[bar]),
-                        bottom=zone_bottom,
-                        start_idx=inflexion_idx,
-                        bos_idx=bar,
-                    ))
-                elif bos_type == -1:  # Bearish BOS → Bearish OB
-                    zone_top = float(np.max(high[inflexion_idx:bar + 1]))
-                    ob_list.append(OrderBlock(
-                        direction=-1,
-                        top=zone_top,
-                        bottom=float(bos_levels[bar]),
-                        start_idx=inflexion_idx,
-                        bos_idx=bar,
-                    ))
+            # --- Step 1: Activate new OBs at their BOS bar ---
+            if bar in self.bos_to_obs:
+                for start_key in self.bos_to_obs[bar]:
+                    if start_key in self.ob_records:
+                        active_obs[start_key] = self.ob_records[start_key]
 
-            # --- Step 2: Iterate OBs in reverse, check invalidation & state machine ---
+            # --- Step 2: Check invalidation & state machine ---
             long_signal = False
             short_signal = False
             long_sl = None
             short_sl = None
 
-            to_remove: List[int] = []
+            to_remove: List[tuple] = []
 
-            for ob_i in range(len(ob_list) - 1, -1, -1):
-                ob = ob_list[ob_i]
-
-                # Check invalidation with <= / >= (match Pine)
-                invalidated = False
-                if ob.direction == 1 and break_low <= ob.bottom:
-                    invalidated = True
-                elif ob.direction == -1 and break_high >= ob.top:
-                    invalidated = True
+            for key, ob in active_obs.items():
+                # Use precomputed invalidation from OB table
+                invalidated = (ob.status_idx != 0 and not ob.respected and bar >= ob.status_idx)
 
                 if invalidated:
                     # Reset state if relevant OB was invalidated
                     if ob.direction == 1:
-                        if long_state in (1, 2) and ob_i == long_ob_a_idx:
+                        if long_state in (1, 2, 3) and key == long_ob_a_key:
                             long_state = 0
-                            long_ob_a_idx = None
+                            long_ob_a_key = None
                             long_ob_a_bottom = None
                             long_ob_a_confirmed_bar = None
-                            long_ob_b_idx = None
-                        if long_state == 2 and ob_i == long_ob_b_idx:
+                            long_ob_b_key = None
+                            long_ob_b_retouched = False
+                        if long_state in (2, 3) and key == long_ob_b_key:
                             long_state = 1
-                            long_ob_b_idx = None
+                            long_ob_b_key = None
+                            long_ob_b_retouched = False
                     if ob.direction == -1:
-                        if short_state in (1, 2) and ob_i == short_ob_a_idx:
+                        if short_state in (1, 2) and key == short_ob_a_key:
                             short_state = 0
-                            short_ob_a_idx = None
+                            short_ob_a_key = None
                             short_ob_a_top = None
                             short_ob_a_confirmed_bar = None
-                            short_ob_b_idx = None
-                        if short_state == 2 and ob_i == short_ob_b_idx:
+                            short_ob_b_key = None
+                            short_ob_b_retouched = False
+                        if short_state == 2 and key == short_ob_b_key:
                             short_state = 1
-                            short_ob_b_idx = None
-                    if ob_i == long_ob_c_idx:
-                        long_ob_c_idx = None
+                            short_ob_b_key = None
+                            short_ob_b_retouched = False
+                    if key == long_ob_c_key:
+                        long_ob_c_key = None
                         long_ob_c_bottom = None
                         long_state = 0
-                        long_ob_a_idx = None
+                        long_ob_a_key = None
                         long_ob_a_bottom = None
                         long_ob_a_confirmed_bar = None
-                        long_ob_b_idx = None
-                    if ob_i == short_ob_c_idx:
-                        short_ob_c_idx = None
+                        long_ob_b_key = None
+                        long_ob_b_retouched = False
+                    if key == short_ob_c_key:
+                        short_ob_c_key = None
                         short_ob_c_top = None
                         short_state = 0
-                        short_ob_a_idx = None
+                        short_ob_a_key = None
                         short_ob_a_top = None
                         short_ob_a_confirmed_bar = None
-                        short_ob_b_idx = None
+                        short_ob_b_key = None
+                        short_ob_b_retouched = False
 
-                    to_remove.append(ob_i)
+                    to_remove.append(key)
                     continue
 
                 # OB still alive — check touch
@@ -199,94 +219,122 @@ class ThreeOBEngine:
                 else:
                     was_touching_prev = False
 
+                # Track whether price has moved away from OB since activation.
+                # OB only qualifies for touch-and-leave once it has been "away"
+                # on a PRIOR bar (not the current one).
+                was_away = key in ob_has_left
+                if not was_away and not touching:
+                    ob_has_left.add(key)
+
                 # --- LONG strategy (bullish OBs) ---
                 if ob.direction == 1:
                     if long_state == 0:
-                        left_now = not touching and was_touching_prev
-                        if left_now:
+                        retouched = was_away and touching
+                        if retouched:
                             best_dist = float('inf')
-                            best_bear_idx = None
+                            best_bear_key = None
                             best_bear_bot = None
-                            for j, ob_j in enumerate(ob_list):
+                            for j_key, ob_j in active_obs.items():
                                 if ob_j.direction != -1:
                                     continue
-                                if j in to_remove:
+                                if j_key in to_remove:
                                     continue
                                 if ob_j.bottom > bar_close:
                                     dist = ob_j.bottom - bar_close
                                     if dist < best_dist:
                                         best_dist = dist
-                                        best_bear_idx = j
+                                        best_bear_key = j_key
                                         best_bear_bot = ob_j.bottom
                             if best_bear_bot is not None and (best_bear_bot - bar_close) / bar_close > self.min_dist_pct:
                                 long_state = 1
                                 long_ob_a_bottom = ob.bottom
-                                long_ob_a_idx = ob_i
+                                long_ob_a_key = key
                                 long_ob_a_confirmed_bar = bar
-                                long_ob_c_idx = best_bear_idx
+                                long_ob_c_key = best_bear_key
                                 long_ob_c_bottom = best_bear_bot
 
-                    elif long_state == 1 and ob_i != long_ob_a_idx:
-                        if ob.start_idx > long_ob_a_confirmed_bar and touching:
+                    elif long_state == 1 and key != long_ob_a_key:
+                        if ob.start_idx > long_ob_a_confirmed_bar:
                             long_state = 2
-                            long_ob_b_idx = ob_i
+                            long_ob_b_key = key
 
-                    elif long_state == 2 and ob_i == long_ob_b_idx:
-                        if bar_close > ob.top:
+                    elif long_state == 2 and key == long_ob_b_key:
+                        b_was_away = long_ob_b_key in ob_has_left
+                        if b_was_away and touching:
+                            long_ob_b_retouched = True
+                            long_state = 3
+
+                    elif long_state == 3 and key == long_ob_b_key:
+                        # OB-B was re-touched; now check for green candle
+                        if bar_close > bar_open:
                             long_signal = True
                             long_sl = long_ob_a_bottom
 
+                # --- Invalidate long setup if price touches OB-C ---
+                if ob.direction == -1 and long_state in (1, 2, 3) and key == long_ob_c_key:
+                    if touching:
+                        long_state = 0
+                        long_ob_a_key = None
+                        long_ob_a_bottom = None
+                        long_ob_a_confirmed_bar = None
+                        long_ob_b_key = None
+                        long_ob_b_retouched = False
+                        long_ob_c_key = None
+                        long_ob_c_bottom = None
+
                 # --- SHORT strategy (bearish OBs) ---
-                if ob.direction == -1:
+                if self.enable_shorts and ob.direction == -1:
                     if short_state == 0:
-                        left_now = not touching and was_touching_prev
-                        if left_now:
+                        retouched = was_away and touching
+                        if retouched:
                             best_dist = float('inf')
-                            best_bull_idx = None
+                            best_bull_key = None
                             best_bull_top = None
-                            for j, ob_j in enumerate(ob_list):
+                            for j_key, ob_j in active_obs.items():
                                 if ob_j.direction != 1:
                                     continue
-                                if j in to_remove:
+                                if j_key in to_remove:
                                     continue
                                 if ob_j.top < bar_close:
                                     dist = bar_close - ob_j.top
                                     if dist < best_dist:
                                         best_dist = dist
-                                        best_bull_idx = j
+                                        best_bull_key = j_key
                                         best_bull_top = ob_j.top
                             if best_bull_top is not None and (bar_close - best_bull_top) / bar_close > self.min_dist_pct:
                                 short_state = 1
                                 short_ob_a_top = ob.top
-                                short_ob_a_idx = ob_i
+                                short_ob_a_key = key
                                 short_ob_a_confirmed_bar = bar
-                                short_ob_c_idx = best_bull_idx
+                                short_ob_c_key = best_bull_key
                                 short_ob_c_top = best_bull_top
 
-                    elif short_state == 1 and ob_i != short_ob_a_idx:
-                        if ob.start_idx > short_ob_a_confirmed_bar and touching:
+                    elif short_state == 1 and key != short_ob_a_key:
+                        if ob.start_idx > short_ob_a_confirmed_bar:
                             short_state = 2
-                            short_ob_b_idx = ob_i
+                            short_ob_b_key = key
 
-                    elif short_state == 2 and ob_i == short_ob_b_idx:
-                        if bar_close < ob.bottom:
-                            short_signal = True
-                            short_sl = short_ob_a_top
+                    elif short_state == 2 and key == short_ob_b_key:
+                        b_was_away = short_ob_b_key in ob_has_left
+                        if not short_ob_b_retouched:
+                            if b_was_away and touching:
+                                short_ob_b_retouched = True
+                        else:
+                            # OB-B was re-touched; now check for red candle
+                            if bar_close < bar_open:
+                                short_signal = True
+                                short_sl = short_ob_a_top
 
-            # --- Step 3: Remove invalidated OBs and adjust indices ---
-            for removed_idx in sorted(to_remove, reverse=True):
-                ob_list.pop(removed_idx)
-                # Adjust all saved indices
-                long_ob_a_idx = _adjust_idx_after_remove(long_ob_a_idx, removed_idx)
-                long_ob_b_idx = _adjust_idx_after_remove(long_ob_b_idx, removed_idx)
-                long_ob_c_idx = _adjust_idx_after_remove(long_ob_c_idx, removed_idx)
-                short_ob_a_idx = _adjust_idx_after_remove(short_ob_a_idx, removed_idx)
-                short_ob_b_idx = _adjust_idx_after_remove(short_ob_b_idx, removed_idx)
-                short_ob_c_idx = _adjust_idx_after_remove(short_ob_c_idx, removed_idx)
+            # Remove invalidated OBs (no index adjustment needed)
+            for key in to_remove:
+                del active_obs[key]
+                ob_has_left.discard(key)
+                dead_obs.append(key)
 
             # --- Execute long entry ---
-            if long_signal and long_ob_c_idx is not None and long_ob_c_idx < len(ob_list):
-                ob_c = ob_list[long_ob_c_idx]
+            bar_signal = None
+            if long_signal and long_ob_c_key is not None and long_ob_c_key in active_obs:
+                ob_c = active_obs[long_ob_c_key]
                 ob_c_start = ob_c.start_idx
                 lowest_low = np.min(low[ob_c_start:bar + 1]) if ob_c_start <= bar else bar_low
                 tp = (lowest_low + long_ob_c_bottom) / 2.0
@@ -316,17 +364,19 @@ class ThreeOBEngine:
                         stop_loss_price=long_sl,
                     )
                     signals.append(sig)
+                    bar_signal = sig
                 long_state = 0
-                long_ob_a_idx = None
+                long_ob_a_key = None
                 long_ob_a_bottom = None
                 long_ob_a_confirmed_bar = None
-                long_ob_b_idx = None
-                long_ob_c_idx = None
+                long_ob_b_key = None
+                long_ob_b_retouched = False
+                long_ob_c_key = None
                 long_ob_c_bottom = None
 
             # --- Execute short entry ---
-            if short_signal and short_ob_c_idx is not None and short_ob_c_idx < len(ob_list):
-                ob_c = ob_list[short_ob_c_idx]
+            if self.enable_shorts and short_signal and short_ob_c_key is not None and short_ob_c_key in active_obs:
+                ob_c = active_obs[short_ob_c_key]
                 ob_c_start = ob_c.start_idx
                 highest_high = np.max(high[ob_c_start:bar + 1]) if ob_c_start <= bar else bar_high
                 tp = (highest_high + short_ob_c_top) / 2.0
@@ -356,12 +406,29 @@ class ThreeOBEngine:
                         stop_loss_price=short_sl,
                     )
                     signals.append(sig)
+                    bar_signal = sig
                 short_state = 0
-                short_ob_a_idx = None
+                short_ob_a_key = None
                 short_ob_a_top = None
                 short_ob_a_confirmed_bar = None
-                short_ob_b_idx = None
-                short_ob_c_idx = None
+                short_ob_b_key = None
+                short_ob_b_retouched = False
+                short_ob_c_key = None
                 short_ob_c_top = None
 
-        return signals
+            # --- Build snapshot ---
+            snapshot = {
+                'long_state': long_state,
+                'short_state': short_state,
+                'long_ob_a_key': long_ob_a_key,
+                'long_ob_b_key': long_ob_b_key,
+                'long_ob_c_key': long_ob_c_key,
+                'short_ob_a_key': short_ob_a_key,
+                'short_ob_b_key': short_ob_b_key,
+                'short_ob_c_key': short_ob_c_key,
+                'active_ob_keys': list(active_obs.keys()),
+                'dead_ob_keys': list(dead_obs),
+                'signal': bar_signal,
+                'signals_so_far': len(signals),
+            }
+            yield bar, snapshot

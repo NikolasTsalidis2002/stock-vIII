@@ -138,8 +138,8 @@ def generate_ob_zones(df: pd.DataFrame, ob: pd.DataFrame) -> List[Dict]:
         if pd.isna(ob_value) or np.isnan(ob_value):
             continue
 
-        end_idx_val = ob["EndIndex"].iloc[i]
-        if pd.notna(end_idx_val):
+        end_idx_val = ob["StatusIndex"].iloc[i]
+        if end_idx_val > 0:
             end_idx = int(end_idx_val)
         else:
             end_idx = len(df) - 1

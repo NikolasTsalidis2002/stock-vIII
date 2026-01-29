@@ -38,6 +38,7 @@ from data_loader import DataLoader
 from strategy import MultiTimeframeStrategy, ThreeOBStrategy
 from strategy_visualizer import StrategySweepVisualizer
 from backtesting import Backtester
+from visualization.three_ob_walkthrough import ThreeOBWalkthrough
 
 
 def get_all_symbols_from_config(config):
@@ -636,7 +637,8 @@ def main():
         '--strategy',
         type=str,
         choices=['multi-tf', '3-ob'],
-        default='multi-tf',
+        # default='multi-tf',
+        default='3-ob',
         help='Strategy to run: multi-tf (default multi-timeframe) or 3-ob (3-OB state machine)'
     )
     parser.add_argument(
@@ -712,6 +714,11 @@ def main():
         type=str,
         default='results/summary/batch_summary.csv',
         help='Path for consolidated summary CSV (default: results/summary/batch_summary.csv)'
+    )
+    parser.add_argument(
+        '--walkthrough-3ob',
+        action='store_true',
+        help='Generate candle-by-candle HTML walkthrough for the 3-OB state machine'
     )
 
     # Apply JSON config as defaults (CLI args will override these)
@@ -898,6 +905,7 @@ def main():
 
         print(f"\n🔧 Initializing 3-OB strategy engine (TF: {three_ob_tf})...")
         df_3ob = loader.get_data(three_ob_tf, force_refresh=False)
+        df_3ob = df_3ob[df_3ob.shape[0] * 3 // 4:] # take last ~750 rows for faster iteration
         print(f"  ✓ {three_ob_tf.upper()}: {len(df_3ob)} candles")
 
         strategy_3ob = ThreeOBStrategy(
@@ -934,6 +942,21 @@ def main():
                 os.makedirs("results/trades", exist_ok=True)
                 journal_path = f"results/trades/{symbol.lower()}_3ob_trades.csv" if args.export_journal == 'auto' else args.export_journal
                 backtester.export_journal(journal_path)
+
+        # Generate walkthrough if requested
+        if args.walkthrough_3ob:
+            print("\n" + "="*80)
+            print("GENERATING 3-OB WALKTHROUGH")
+            print("="*80)
+            walkthrough = ThreeOBWalkthrough()
+            output_path = walkthrough.run(
+                df_3ob,
+                close_break=three_ob_close_break,
+                min_dist_pct=three_ob_min_dist,
+                max_signals=5,
+            )
+            print(f"\n  Open {output_path} in your browser")
+            print("  Use arrow keys to step through candles")
 
         # Summary
         print("\n" + "="*80)

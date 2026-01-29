@@ -443,7 +443,8 @@ class smc_custom:
         inflexions: DataFrame - unused, kept for API compatibility
 
         Returns:
-        OB, Top, Bottom, StartIndex, EndIndex
+        OB, Top, Bottom, StartIndex, BOSIndex,
+        MitigatedIndex, Respected, StatusIndex
         """
         n = len(ohlc)
 
@@ -459,8 +460,11 @@ class smc_custom:
         ob = np.full(n, np.nan, dtype=np.float32)
         top_arr = np.full(n, np.nan, dtype=np.float32)
         bottom_arr = np.full(n, np.nan, dtype=np.float32)
-        start_idx_arr = np.full(n, np.nan, dtype=np.float32)
-        end_idx_arr = np.full(n, np.nan, dtype=np.float32)
+        start_idx_arr = np.full(n, 0, dtype=np.int32)
+        bos_idx_arr = np.full(n, 0, dtype=np.int32)
+        mitigated_idx_arr = np.full(n, 0, dtype=np.int32)
+        respected_arr = np.full(n, None, dtype=object)  # True/False/None
+        status_idx_arr = np.full(n, 0, dtype=np.int32)
 
         for i in range(n):
             if np.isnan(bos_values[i]):
@@ -472,42 +476,87 @@ class smc_custom:
             broken_level = bos_levels[i]
 
             if bos_type == 1:  # Bullish BOS → Bullish OB
-                # Zone from broken peak to BOS, top = broken level, bottom = min low in range
                 zone_bottom = np.min(low_prices[inflexion_idx:bos_idx + 1])
+                zone_top = broken_level
                 ob[inflexion_idx] = 1
-                top_arr[inflexion_idx] = broken_level
+                top_arr[inflexion_idx] = zone_top
                 bottom_arr[inflexion_idx] = zone_bottom
                 start_idx_arr[inflexion_idx] = inflexion_idx
-                # Invalidation: close/open below bottom
-                invalidation_idx = n - 1
+                bos_idx_arr[inflexion_idx] = bos_idx
+
+                # Mitigation: first bar where price touches zone after BOS
+                mitigated_idx = 0
+                for k in range(bos_idx + 1, n):
+                    if low_prices[k] <= zone_top and high_prices[k] >= zone_bottom:
+                        mitigated_idx = k
+                        break
+                mitigated_idx_arr[inflexion_idx] = mitigated_idx
+
+                # Disrespected: first bar where body breaks below bottom
+                disrespect_idx = 0
                 for k in range(bos_idx + 1, n):
                     break_low = min(close_prices[k], open_prices[k])
-                    if break_low < zone_bottom:
-                        invalidation_idx = k
+                    if break_low <= zone_bottom:
+                        disrespect_idx = k
                         break
-                end_idx_arr[inflexion_idx] = invalidation_idx
+
+                # Respected logic (FVG semantics)
+                if disrespect_idx > 0:
+                    respected_arr[inflexion_idx] = False
+                    status_idx_arr[inflexion_idx] = disrespect_idx
+                elif mitigated_idx > 0:
+                    respected_arr[inflexion_idx] = True
+                    status_idx_arr[inflexion_idx] = mitigated_idx
+                else:
+                    respected_arr[inflexion_idx] = None
+                    status_idx_arr[inflexion_idx] = 0
 
             elif bos_type == -1:  # Bearish BOS → Bearish OB
-                # Zone from broken valley to BOS, top = max high in range, bottom = broken level
                 zone_top = np.max(high_prices[inflexion_idx:bos_idx + 1])
+                zone_bottom = broken_level
                 ob[inflexion_idx] = -1
                 top_arr[inflexion_idx] = zone_top
-                bottom_arr[inflexion_idx] = broken_level
+                bottom_arr[inflexion_idx] = zone_bottom
                 start_idx_arr[inflexion_idx] = inflexion_idx
-                # Invalidation: close/open above top
-                invalidation_idx = n - 1
+                bos_idx_arr[inflexion_idx] = bos_idx
+
+                # Mitigation: first bar where price touches zone after BOS
+                mitigated_idx = 0
+                for k in range(bos_idx + 1, n):
+                    if low_prices[k] <= zone_top and high_prices[k] >= zone_bottom:
+                        mitigated_idx = k
+                        break
+                mitigated_idx_arr[inflexion_idx] = mitigated_idx
+
+                # Disrespected: first bar where body breaks above top
+                disrespect_idx = 0
                 for k in range(bos_idx + 1, n):
                     break_high = max(close_prices[k], open_prices[k])
-                    if break_high > zone_top:
-                        invalidation_idx = k
+                    if break_high >= zone_top:
+                        disrespect_idx = k
                         break
-                end_idx_arr[inflexion_idx] = invalidation_idx
+
+                # Respected logic (FVG semantics)
+                if disrespect_idx > 0:
+                    respected_arr[inflexion_idx] = False
+                    status_idx_arr[inflexion_idx] = disrespect_idx
+                elif mitigated_idx > 0:
+                    respected_arr[inflexion_idx] = True
+                    status_idx_arr[inflexion_idx] = mitigated_idx
+                else:
+                    respected_arr[inflexion_idx] = None
+                    status_idx_arr[inflexion_idx] = 0
 
         # Convert to Series
         ob_series = pd.Series(ob, name="OB")
         top_series = pd.Series(top_arr, name="Top")
         bottom_series = pd.Series(bottom_arr, name="Bottom")
         start_idx_series = pd.Series(start_idx_arr, name="StartIndex")
-        end_idx_series = pd.Series(end_idx_arr, name="EndIndex")
+        bos_idx_series = pd.Series(bos_idx_arr, name="BOSIndex")
+        mitigated_idx_series = pd.Series(mitigated_idx_arr, name="MitigatedIndex")
+        respected_series = pd.Series(respected_arr, name="Respected")
+        status_idx_series = pd.Series(status_idx_arr, name="StatusIndex")
 
-        return pd.concat([ob_series, top_series, bottom_series, start_idx_series, end_idx_series], axis=1)
+        return pd.concat([ob_series, top_series, bottom_series, start_idx_series,
+                          bos_idx_series, mitigated_idx_series,
+                          respected_series, status_idx_series], axis=1)
