@@ -426,10 +426,21 @@ class ThreeOBSignalViewer:
         analysis_start = source_df.index.min().strftime('%Y-%m-%d')
         analysis_end = source_df.index.max().strftime('%Y-%m-%d')
 
+        # Compute return per trading day
+        start_date = source_df.index.min().date()
+        end_date = source_df.index.max().date()
+        trading_days = int(np.busday_count(start_date, end_date))
+        if trading_days > 0:
+            return_per_day = float(metrics.total_return_percent) / trading_days
+        else:
+            return_per_day = 0.0
+
         return {
             'analysisStart': analysis_start,
             'analysisEnd': analysis_end,
             'totalReturn': float(metrics.total_return_percent),
+            'returnPerDay': return_per_day,
+            'tradingDays': trading_days,
             'winRate': float(metrics.win_rate * 100),
             'profitFactor': profit_factor_num,
             'profitFactorStr': profit_factor_str,
@@ -712,7 +723,7 @@ class ThreeOBSignalViewer:
         .analysis-period .period-value {{ color: #d1d4dc; font-weight: 500; }}
         .kpi-grid {{
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 16px;
             margin-bottom: 24px;
         }}
@@ -1754,6 +1765,11 @@ class ThreeOBSignalViewer:
                     <div class="kpi-card negative">
                         <div class="kpi-label">Max Drawdown</div>
                         <div class="kpi-value negative">-${{data.maxDrawdownPercent.toFixed(1)}}%</div>
+                    </div>
+                    <div class="kpi-card ${{data.returnPerDay >= 0 ? 'positive' : 'negative'}}">
+                        <div class="kpi-label">Return / Day</div>
+                        <div class="kpi-value ${{data.returnPerDay >= 0 ? 'positive' : 'negative'}}">${{data.returnPerDay >= 0 ? '+' : ''}}${{data.returnPerDay.toFixed(3)}}%</div>
+                        <div class="kpi-label" style="font-size: 11px; margin-top: 4px;">${{data.tradingDays}} trading days</div>
                     </div>
                 </div>
                 <div class="equity-chart-container">

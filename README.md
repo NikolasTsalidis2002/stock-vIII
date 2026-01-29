@@ -1,245 +1,348 @@
 # Smart Money Concepts Trading System
 
-A sophisticated multi-timeframe trading strategy analyzer for Tesla (TSLA) stock using Smart Money Concepts (SMC) indicators to identify high-probability reversal trades based on institutional order flow patterns.
-
-## Overview
-
-This project implements an automated trading signal detection system that analyzes TSLA price action across multiple timeframes (1H, 5M, 1M) using institutional trading concepts. The strategy identifies potential reversal points by detecting liquidity sweeps, break of structure events, and fair value gaps.
-
-**Key Capabilities:**
-- Multi-timeframe analysis with synchronized data alignment
-- 8+ Smart Money Concepts indicators
-- Professional TradingView-style visualizations
-- Automated trade signal generation with complete audit trail
-
-## Features
-
-- **Multi-Timeframe Analysis** - Coordinates 1-Hour, 5-Minute, and 1-Minute timeframes for precise entry signals
-- **SMC Indicators** - Fair Value Gaps, Order Blocks, Break of Structure, Change of Character, Liquidity detection, and more
-- **TradingView Visualizations** - Interactive HTML charts with candle-by-candle walkthroughs
-- **Modular Architecture** - Clean separation of concerns with individual detector components
-- **Partial Setup Tracking** - Analyzes incomplete setups to understand where patterns fail
+Multi-strategy, multi-asset trading signal analyzer using Smart Money Concepts (SMC) indicators with backtesting, statistical filtering, and interactive TradingView-style visualizations.
 
 ## Quick Start
 
-### 1. Create Virtual Environment
 ```bash
+# 1. Create & activate virtual environment
 python3 -m venv venv
-```
+source venv/bin/activate        # macOS/Linux
+# venv\Scripts\activate         # Windows
 
-### 2. Activate Virtual Environment
-```bash
-# macOS/Linux:
-source venv/bin/activate
-
-# Windows:
-venv\Scripts\activate
-```
-
-### 3. Install Dependencies
-```bash
+# 2. Install dependencies
 pip install -r requirements.txt
-```
 
-### 4. Run Strategy Analysis
-```bash
-# Find complete trade setups
+# 3. Run 3-OB strategy on default symbol
 python3 scripts/analyze_strategy.py
 
-# Visualize partial setups (incomplete but close)
-python3 scripts/analyze_strategy.py --animate-partials
+# 4. Run multi-TF strategy with visualization
+python3 scripts/analyze_strategy.py --strategy multi-tf --visualize
+
+# 5. Batch comparison across all symbols
+python3 scripts/batch_3ob_comparison.py
 ```
 
-### 5. View Results
-Open `results/strategy_examples/master_index.html` in your browser to see all detected trade signals.
+---
 
-### 6. Deactivate (when done)
+## Strategies
+
+### Multi-Timeframe Strategy (`--strategy multi-tf`)
+
+A 5-stage liquidity sweep pipeline that coordinates three timeframes (default 1H / 5M / 1M):
+
+```
+ STAGE 1: LIQUIDITY SWEEP (High TF)
+ ├── Detect inflexion points (local peaks/valleys)
+ └── Identify when price sweeps past these levels
+                    ↓
+ STAGE 2: EVENT B (Mid TF)
+ ├── Find Break of Structure (BOS) in entry direction
+ └── OR find Inverse Fair Value Gap (IFVG)
+                    ↓
+ STAGE 3: VALIDATION (Mid TF)
+ ├── Validate with FVG respect
+ ├── OR validate with Equilibrium Premium/Discount zone
+ └── OR validate with Demand Zone (Order Block)
+                    ↓
+ STAGE 4: CONFIRMATION (Low TF)
+ ├── Detect BOS on lowest TF in entry direction
+ └── OR detect IFVG on lowest TF
+                    ↓
+ STAGE 5: TRADE ENTRY
+ └── All 4 conditions met → complete signal
+```
+
+- **Bullish sweep** (low swept, closes above) triggers LONG
+- **Bearish sweep** (high swept, closes below) triggers SHORT
+- Invalidation rules reset to the appropriate stage when conditions break
+
+### 3-OB Strategy (`--strategy 3-ob`)
+
+A 4-state order block state machine tracking OB-A, OB-B, and OB-C:
+
+| State | Description |
+|-------|-------------|
+| **0** | OB-A discovered + opposite OB-C found |
+| **1** | Waiting for OB-B (same direction as OB-A) |
+| **2** | Waiting for OB-B retouch |
+| **3** | Pending LTF confirmation (BOS or Inverse FVG) |
+
+| Setup | OB-A | OB-C | OB-B | Entry |
+|-------|------|------|------|-------|
+| Long | Bullish | Bearish (above) | Bullish | LTF bullish BOS or bearish IFVG |
+| Short | Bearish | Bullish (below) | Bearish | LTF bearish BOS or bullish IFVG |
+
+When `confirmation_timeframe` is configured (e.g. `"1min"`), the engine drops to the lower timeframe for precise entry at the OB-B retouch window.
+
+---
+
+## TradingView Walkthroughs
+
+Interactive candle-by-candle HTML viewers using TradingView LightweightCharts with arrow-key navigation.
+
 ```bash
-deactivate
+# 1H walkthrough
+python3 scripts/analyze_1h_tv.py --symbol AAPL
+
+# 5M walkthrough
+python3 scripts/analyze_5m_tv.py --symbol META
+
+# 3-OB state machine walkthrough
+python3 scripts/analyze_strategy.py --walkthrough-3ob
 ```
 
-## Trading Strategy
+- Indicators appear progressively as each candle forms
+- OB zones, BOS lines, FVGs rendered as D3 SVG overlays
+- Output: `results/<symbol>_<tf>_tv_walkthrough/walkthrough.html`
 
-The strategy uses a **5-step progressive signal detection workflow** that validates each stage before advancing:
+---
+
+## Strategy Analysis
+
+`scripts/analyze_strategy.py` is the main entry point.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    MULTI-TIMEFRAME WORKFLOW                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  STEP 1: LIQUIDITY SWEEP (1H)                                   │
-│  ├── Detect inflexion points (local peaks/valleys)              │
-│  └── Identify when price sweeps past these levels               │
-│                         ↓                                        │
-│  STEP 2: EVENT B (5M)                                           │
-│  ├── Find Break of Structure (BOS) in entry direction           │
-│  └── OR find Inverse Fair Value Gap (IFVG)                      │
-│                         ↓                                        │
-│  STEP 3: VALIDATION (5M)                                        │
-│  ├── Validate with Fair Value Gap (FVG)                         │
-│  └── OR validate with Demand Zone (Order Block)                 │
-│                         ↓                                        │
-│  STEP 4: CONFIRMATION (1M)                                      │
-│  ├── Detect BOS on 1-minute in entry direction                  │
-│  └── OR detect IFVG on 1-minute                                 │
-│                         ↓                                        │
-│  STEP 5: TRADE ENTRY                                            │
-│  └── All 4 conditions met = Complete trade signal               │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+Usage: python3 scripts/analyze_strategy.py [OPTIONS]
+
+Options:
+  --strategy {multi-tf,3-ob}    Strategy to run (default: 3-ob)
+  --symbol SYMBOL               Asset symbol (default: TSLA)
+  --high-tf TF                  High timeframe (default: 1h)
+  --mid-tf TF                   Mid timeframe (default: 5min)
+  --low-tf TF                   Low timeframe (default: 1min)
+  --visualize                   Generate unified HTML visualization
+  --no-backtest                 Skip backtest simulation
+  --initial-capital FLOAT       Starting capital (default: 10000)
+  --hold-overnight              Allow overnight positions
+  --export-journal [PATH]       Export trade journal CSV (default: auto path)
+  --all-symbols                 Batch mode: run all symbols from config
+  --summary-output PATH         Batch summary CSV path
+  --walkthrough-3ob             Generate 3-OB candle walkthrough
 ```
 
-### Entry Direction Logic
-- **Bullish Sweep** (price sweeps a low, then closes above) → **LONG** entry
-- **Bearish Sweep** (price sweeps a high, then closes below) → **SHORT** entry
+Examples:
 
-### Invalidation Rules
-The strategy includes built-in invalidation logic:
-- If sweep level is broken: Entire setup abandoned
-- If Event B is invalidated: Return to Step 2
-- If Validation zone is broken: Return to Step 3
-- If price moves >3% from sweep: Setup abandoned
+```bash
+# 3-OB on NVDA with visualization
+python3 scripts/analyze_strategy.py --symbol NVDA --visualize
+
+# Multi-TF with custom timeframes
+python3 scripts/analyze_strategy.py --strategy multi-tf --high-tf 4h --mid-tf 15min --low-tf 5min
+
+# Batch across all configured symbols
+python3 scripts/analyze_strategy.py --all-symbols --summary-output results/summary/batch.csv
+```
+
+---
+
+## Batch Analysis
+
+`scripts/batch_3ob_comparison.py` runs the 3-OB strategy across all configured symbols with two timeframe combinations (5min/1min and 15min/5min).
+
+```bash
+python3 scripts/batch_3ob_comparison.py --output results/batch_3ob_comparison.csv
+```
+
+- Auto-downloads missing timeframe data (with rate-limit delays)
+- Backtests each symbol + TF combo
+- Produces a CSV sorted by return/day with metrics: trades, win rate, profit factor, return%, max drawdown, R-multiple, consecutive wins/losses
+- Generates an interactive Plotly HTML report (auto-opens in browser) with:
+  - Return/day bar chart by symbol
+  - Win rate vs return/day scatter plot
+  - 5min/1min vs 15min/5min comparison
+  - Top 10 and bottom 10 results table
+
+---
 
 ## SMC Indicators
 
-### Fair Value Gap (FVG)
-A price gap indicating imbalance between buyers and sellers. Represents zones where institutional orders may cluster.
-- **Bullish FVG**: Previous candle high < next candle low
-- **Bearish FVG**: Previous candle low > next candle high
+### Standard Library (`src/indicators/smc.py`)
 
-### Order Blocks (OB)
-Price ranges where large institutional orders exist, identified at the last candle before strong price moves.
+| Indicator | Description |
+|-----------|-------------|
+| **FVG** | Fair Value Gap — price imbalance zones (bullish/bearish) |
+| **OB** | Order Blocks — institutional order zones with volume |
+| **BOS** | Break of Structure — trend continuation confirmation |
+| **CHoCH** | Change of Character — trend reversal signal |
+| **Liquidity** | Swing high/low clusters representing stop-loss pools |
+| **Swing Highs/Lows** | Configurable window-based pivot detection |
+| **Previous High/Low** | Prior timeframe levels |
+| **Retracements** | Fibonacci retracement percentages |
 
-### Break of Structure (BOS)
-Price breaks a significant swing high/low in trend direction, confirming trend continuation.
-- **Bullish BOS**: Price breaks above previous swing high
-- **Bearish BOS**: Price breaks below previous swing low
+### Custom Indicators (`src/indicators/smc_custom.py`)
 
-### Change of Character (CHoCH)
-Price breaks structure in the opposite direction, signaling potential trend reversal.
+| Indicator | Description |
+|-----------|-------------|
+| **Inflexion Points** | 3-point mathematical extrema (concave peaks, convex valleys) with proximity-based near-sweep detection |
+| **Trend-Aware BOS** | Close/open break confirmation with explicit state tracking |
 
-### Liquidity
-Clusters of swing highs/lows within tight price ranges, representing stop-loss clusters that institutions target.
+Inflexion point algorithm:
+```
+Peak:   high[i] >= high[i-1] AND high[i] > high[i+1]
+Valley: low[i]  <= low[i-1]  AND low[i]  < low[i+1]
+```
 
-### Swing Highs/Lows
-Significant pivot points in price action, forming the basis for structure analysis.
+---
 
-### Inflexion Points (Custom)
-More precise local extrema detection using 3-point statistical comparison for accurate liquidity sweep identification.
+## Statistical Models
+
+### ARMA Trend Filter (`src/arma_trend_analysis.py`)
+
+Autoregressive Moving Average model used as a trade direction filter.
+
+1. Converts prices to log returns
+2. Fits ARMA(p, q) with AIC-based order selection
+3. Calculates Signal-to-Noise Ratio: `SNR = |drift| / residual_std`
+4. SNR < 0.05 → neutral (no filtering); drift > 0 → bullish (LONG only); drift < 0 → bearish (SHORT only)
+
+Enable via `backtest.trend_filter_enabled` in config.
+
+### GMM Zone Detection (`src/strategy/gmm_zone_detector.py`)
+
+Gaussian Mixture Model for price distribution regime detection with Fibonacci levels.
+
+1. Generates discrete price levels from candle ranges
+2. Fits GMM with 1 to `max_components` components
+3. Selects optimal count via elbow method or min BIC
+4. Calculates Fibonacci levels within the detected zone
+5. Classifies price position: premium (0.786-1.0) → SHORT bias, discount (0.0-0.236) → LONG bias
+
+Enable via `gmm_zones.enabled` in config. Standalone analysis available:
+
+```bash
+python3 scripts/curr.py --symbol BTC/USD --timeframe 1h --require-normality
+```
+
+---
+
+## Backtesting Engine
+
+Located in `src/backtesting/`. Components: `backtester.py` (orchestrator), `trade_simulator.py` (execution), `performance_tracker.py` (metrics), `trade_journal.py` (CSV export).
+
+### Features
+
+- **Compounding**: full capital deployed per trade, wins increase position size
+- **Trailing Stop Loss**: activates after price reaches a configurable % of TP distance, then trails to nearest swing level on every candle
+- **Trade Filters**: minimum profit %, minimum R:R ratio, ARMA trend filter, 1H BOS trend filter
+- **Intraday Mode**: exits all positions at market close when `hold_overnight` is false
+- **Skip Reasons**: logs why trades were filtered (low R:R, wrong trend, insufficient profit)
+
+### Metrics
+
+Total P&L, win rate, profit factor, max drawdown, average R-multiple, max consecutive wins/losses, largest win/loss, long/short breakdown, capital curve.
+
+### Exit Priority
+
+1. Take Profit
+2. Stop Loss
+3. Trailing SL (if enabled and activated)
+4. Market close (if intraday only)
+
+---
+
+## Configuration
+
+All settings live in `config/strategy_config.json`. Key sections:
+
+| Section | Key Settings |
+|---------|-------------|
+| `symbol` | Asset to analyze (any Twelve Data symbol) |
+| `timeframes` | `high`, `mid`, `low` timeframe triplet |
+| `three_ob` | `timeframe`, `confirmation_timeframe`, `close_break`, `min_dist_pct`, `enable_shorts` |
+| `liquidity` | `sweep_proximity_threshold_percent`, `high_tf_lookback_candles`, `use_fvg_trigger` |
+| `validation` | `use_fvg_validation`, `use_equilibrium_validation`, `require_fvg_in_equilibrium` |
+| `gmm_zones` | `enabled`, `lookback_candles`, `max_components`, `selection_method`, `take_profit_method` |
+| `backtest` | `initial_capital`, `trailing_sl_enabled`, `trailing_sl_activation_pct`, `min_rr_ratio`, `trend_filter_enabled` |
+| `output` | `visualize`, `export_journal` |
+
+---
+
+## Supported Assets
+
+90+ symbols across 9 categories, all fetched via the Twelve Data API:
+
+| Category | Symbols |
+|----------|---------|
+| **Commodities** | XAU/USD, XAG/USD, BRENT, WTI, NG |
+| **Forex** | EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD, USD/CHF, NZD/USD, EUR/GBP |
+| **Crypto** | BTC/USD, ETH/USD, SOL/USD, XRP/USD, ADA/USD, DOGE/USD, AVAX/USD, LINK/USD |
+| **Tech** | AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, AMD, INTC, NFLX, SHOP, ABNB, CRM, ORCL, ADBE |
+| **Finance** | JPM, BAC, GS, MS, V, MA, PYPL, C |
+| **Healthcare** | JNJ, UNH, PFE, ABBV, MRK, LLY |
+| **Energy** | XOM, CVX, COP, SLB, EOG |
+| **ETFs** | SPY, QQQ, IWM, DIA, GLD, SLV, USO, XLF, XLE, ARKK |
+| **Indices** | SPX, NDX, DJI, VIX |
+
+---
 
 ## Project Structure
 
 ```
 smart-money-concepts/
-├── scripts/                           # Entry point scripts
-│   ├── analyze_strategy.py           # Main strategy analysis
-│   ├── analyze_1h_tv.py              # 1H timeframe visualization
-│   └── analyze_5m_tv.py              # 5M timeframe visualization
+├── scripts/
+│   ├── analyze_strategy.py            # Main strategy analyzer (multi-tf & 3-ob)
+│   ├── batch_3ob_comparison.py        # Batch comparison across all symbols
+│   ├── curr.py                        # GMM price distribution analyzer
+│   ├── analyze_1h_tv.py               # 1H TradingView walkthrough
+│   └── analyze_5m_tv.py               # 5M TradingView walkthrough
 │
 ├── src/
-│   ├── data_loader.py                # TSLA data fetching (Twelve Data API)
-│   ├── tradingview_visualizer.py     # TradingView-style visualizations
-│   ├── tradingview_strategy_analyzer.py # Multi-TF strategy visualizer
+│   ├── data_loader.py                 # Data fetching (Twelve Data API)
+│   ├── tradingview_visualizer.py      # TradingView-style chart generation
+│   ├── strategy_visualizer.py         # Multi-TF sweep visualizer
+│   ├── arma_trend_analysis.py         # ARMA trend filter
 │   │
-│   ├── indicators/                   # SMC indicator implementations
-│   │   ├── smc.py                    # Standard SMC library
-│   │   └── smc_custom.py             # Custom implementations
+│   ├── indicators/
+│   │   ├── smc.py                     # Standard SMC library (v0.0.26)
+│   │   └── smc_custom.py             # Inflexion points, trend-aware BOS
 │   │
-│   └── strategy/                     # Modular strategy engine
-│       ├── __init__.py               # Public API
-│       ├── models.py                 # Data models (TradeSignal, etc.)
-│       ├── strategy_engine.py        # Main orchestrator
-│       ├── timeframe_manager.py      # Multi-TF data alignment
-│       ├── liquidity_detector.py     # 1H sweep detection
-│       ├── event_b_detector.py       # 5M BOS/IFVG detection
-│       ├── validation_detector.py    # 5M FVG/OB validation
-│       └── confirmation_detector.py  # 1M confirmation
+│   ├── strategy/
+│   │   ├── models.py                  # TradeSignal, enums, data classes
+│   │   ├── strategy_engine.py         # Multi-TF orchestrator
+│   │   ├── timeframe_manager.py       # Multi-TF data alignment
+│   │   ├── liquidity_detector.py      # Stage 1: 1H sweep detection
+│   │   ├── event_b_detector.py        # Stage 2: BOS/IFVG detection
+│   │   ├── confirmation_detector.py   # Stage 4: LTF confirmation
+│   │   ├── equilibrium_validator.py   # Premium/discount validation
+│   │   ├── exit_target_finder.py      # TP/SL calculation
+│   │   ├── gmm_zone_detector.py       # GMM-based zone detection
+│   │   ├── three_ob_strategy.py       # 3-OB strategy wrapper
+│   │   └── three_ob_engine.py         # 3-OB state machine
+│   │
+│   ├── backtesting/
+│   │   ├── backtester.py              # Backtest orchestrator
+│   │   ├── trade_simulator.py         # Trade execution simulator
+│   │   ├── performance_tracker.py     # Metrics calculation
+│   │   ├── trade_journal.py           # CSV trade log export
+│   │   └── models.py                  # TradeResult, PerformanceMetrics
+│   │
+│   └── visualization/
+│       ├── core.py                    # Shared visualization utilities
+│       ├── three_ob_walkthrough.py    # 3-OB candle walkthrough
+│       └── three_ob_signal_viewer.py  # 3-OB signal dashboard
 │
-├── data/tsla/                        # Cached TSLA data
-│   ├── tsla_1min.csv
-│   ├── tsla_5min.csv
-│   ├── tsla_15min.csv
-│   ├── tsla_1h.csv
-│   └── tsla_1day.csv
+├── config/
+│   └── strategy_config.json           # All strategy & backtest settings
 │
-├── results/                          # Generated outputs
-│   ├── strategy_examples/            # Trade signal visualizations
-│   ├── 1h_tv_walkthrough/           # 1H candle walkthroughs
-│   └── 5m_tv_walkthrough/           # 5M candle walkthroughs
+├── data/                              # Cached market data by symbol
+├── results/                           # Generated outputs
+│   ├── trades/                        # Trade journal CSVs
+│   ├── summary/                       # Batch summary reports
+│   ├── visualizations/                # HTML signal viewers
+│   └── walkthroughs/                  # Candle-by-candle walkthroughs
 │
-├── requirements.txt                  # Python dependencies
-└── CLAUDE.md                        # Detailed project documentation
+├── mds/                               # Strategy documentation
+├── requirements.txt
+├── CLAUDE.md
+└── README.md
 ```
 
-## Usage Examples
-
-### Find Complete Trade Setups
-```bash
-python3 scripts/analyze_strategy.py
-```
-Scans historical data for complete trade signals where all 4 conditions are met. Generates HTML visualizations in `results/strategy_examples/`.
-
-### Analyze Partial Setups
-```bash
-python3 scripts/analyze_strategy.py --animate-partials
-```
-Finds setups that met 1-3 conditions but didn't complete. Useful for understanding where patterns fail and refining the strategy.
-
-### Single Timeframe Visualization
-```bash
-# Generate 1H candle-by-candle walkthrough
-python3 scripts/analyze_1h_tv.py
-
-# Generate 5M candle-by-candle walkthrough
-python3 scripts/analyze_5m_tv.py
-```
-Creates interactive HTML files showing indicators appearing progressively as candles form.
-
-## Data Source
-
-The project uses the **Twelve Data API** to fetch TSLA historical data:
-- Supports multiple timeframes: 1min, 5min, 15min, 1h, 1day
-- Smart caching: Saves data locally, loads from cache when available
-- Update capability: Merges new candles with existing cache
-- Data validation: Checks for OHLC integrity, nulls, and duplicates
-
-## Output Format
-
-### Trade Signal
-When all conditions are met, a `TradeSignal` object is generated containing:
-- Timestamps for each step (1H sweep, 5M Event B, 5M validation, 1M confirmation)
-- Entry direction (long/short)
-- Entry price
-- Condition types (BOS, IFVG, FVG, etc.)
-- DataFrame indices for visualization
-
-### Visualizations
-- **Master Index**: Grid view of all detected trades with statistics
-- **Individual Trade Pages**: 3-panel synchronized view (1H, 5M, 1M)
-- **Candle Walkthroughs**: Frame-by-frame analysis with keyboard navigation
-
-## Requirements
-
-- Python 3.8+
-- pandas >= 2.0.2
-- numpy >= 1.24.3
-- plotly
-- requests
-- numba >= 0.58.1
+---
 
 ## Disclaimer
 
-**This project is for educational and research purposes only.**
-
-- This is not financial advice
-- Past performance does not guarantee future results
-- Trading involves substantial risk of loss
-- Always do your own research and consider consulting a financial advisor
-- The authors are not responsible for any financial losses incurred
-
-## License
-
-This project is for personal use and educational purposes.
+**This project is for educational and research purposes only.** This is not financial advice. Trading involves substantial risk of loss. Past performance does not guarantee future results. Always do your own research.
 
 ## Resources
 

@@ -1,5 +1,5 @@
 {
-  "symbol": "SPY",
+  "symbol": "NVDA",
   "timeframes": {
     "high": "1h",
     "mid": "15min",
@@ -89,9 +89,11 @@
       ]
     }
   },
-  "three_ob": {
-    "timeframe": "15min",
-    "confirmation_timeframe": "5min",
+  "three_ob": {    
+    "timeframe": "5min",
+    "confirmation_timeframe": "1min",
+    "timeframe_copy": "5min",
+    "confirmation_timeframe_copy": "1min",
     "close_break": true,
     "min_dist_pct": 1.0,
     "enable_shorts": true,
@@ -110,7 +112,7 @@
     "trailing_sl_activation_pct": 50.0,
     "trailing_sl_swing_length": 5,
     "min_profit_percent": 0.5,
-    "min_rr_ratio": 1.0,
+    "min_rr_ratio": 2.0,
     "trend_filter_enabled": false,
     "trend_filter_lookback": 500,
     "bos_1h_trend_filter_enabled": false,
