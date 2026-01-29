@@ -43,11 +43,12 @@ class ThreeOBEngine:
         df: pd.DataFrame,
         close_break: bool = True,
         min_dist_pct: float = 0.10,
+        enable_shorts: bool = False,
     ):
         self.df = df.copy().reset_index(drop=True)
         self.close_break = close_break
         self.min_dist_pct = min_dist_pct
-        self.enable_shorts = False
+        self.enable_shorts = enable_shorts
 
         from src.indicators.smc_custom import smc_custom
         self.inflexions = smc_custom.inflexion_points(self.df)
@@ -119,21 +120,29 @@ class ThreeOBEngine:
         long_state = 0
         long_ob_a_key: Optional[int] = None
         long_ob_a_bottom: Optional[float] = None
+        long_ob_a_top: Optional[float] = None
         long_ob_a_confirmed_bar: Optional[int] = None
         long_ob_b_key: Optional[int] = None
+        long_ob_b_bottom: Optional[float] = None
+        long_ob_b_top: Optional[float] = None
         long_ob_b_retouched: bool = False
         long_ob_c_key: Optional[int] = None
         long_ob_c_bottom: Optional[float] = None
+        long_ob_c_top: Optional[float] = None
 
         # --- state variables (short) ---
         short_state = 0
         short_ob_a_key: Optional[int] = None
         short_ob_a_top: Optional[float] = None
+        short_ob_a_bottom: Optional[float] = None
         short_ob_a_confirmed_bar: Optional[int] = None
         short_ob_b_key: Optional[int] = None
+        short_ob_b_bottom: Optional[float] = None
+        short_ob_b_top: Optional[float] = None
         short_ob_b_retouched: bool = False
         short_ob_c_key: Optional[int] = None
         short_ob_c_top: Optional[float] = None
+        short_ob_c_bottom: Optional[float] = None
 
         for bar in range(n):
             if len(signals) >= max_signals:
@@ -145,6 +154,9 @@ class ThreeOBEngine:
             bar_open = open_[bar]
             break_low = min(bar_close, bar_open)
             break_high = max(bar_close, bar_open)
+
+            long_status = ""
+            short_status = ""
 
             # --- Step 1: Activate new OBs at their BOS bar ---
             if bar in self.bos_to_obs:
@@ -168,45 +180,69 @@ class ThreeOBEngine:
                     # Reset state if relevant OB was invalidated
                     if ob.direction == 1:
                         if long_state in (1, 2, 3) and key == long_ob_a_key:
+                            long_status = "OB-A invalidated — resetting to state 0"
                             long_state = 0
                             long_ob_a_key = None
                             long_ob_a_bottom = None
+                            long_ob_a_top = None
                             long_ob_a_confirmed_bar = None
                             long_ob_b_key = None
+                            long_ob_b_bottom = None
+                            long_ob_b_top = None
                             long_ob_b_retouched = False
                         if long_state in (2, 3) and key == long_ob_b_key:
+                            long_status = "OB-B invalidated — back to state 1"
                             long_state = 1
                             long_ob_b_key = None
+                            long_ob_b_bottom = None
+                            long_ob_b_top = None
                             long_ob_b_retouched = False
                     if ob.direction == -1:
-                        if short_state in (1, 2) and key == short_ob_a_key:
+                        if short_state in (1, 2, 3) and key == short_ob_a_key:
+                            short_status = "OB-A invalidated — resetting to state 0"
                             short_state = 0
                             short_ob_a_key = None
                             short_ob_a_top = None
+                            short_ob_a_bottom = None
                             short_ob_a_confirmed_bar = None
                             short_ob_b_key = None
+                            short_ob_b_bottom = None
+                            short_ob_b_top = None
                             short_ob_b_retouched = False
-                        if short_state == 2 and key == short_ob_b_key:
+                        if short_state in (2, 3) and key == short_ob_b_key:
+                            short_status = "OB-B invalidated — back to state 1"
                             short_state = 1
                             short_ob_b_key = None
+                            short_ob_b_bottom = None
+                            short_ob_b_top = None
                             short_ob_b_retouched = False
                     if key == long_ob_c_key:
+                        long_status = "OB-C invalidated — resetting to state 0"
                         long_ob_c_key = None
                         long_ob_c_bottom = None
+                        long_ob_c_top = None
                         long_state = 0
                         long_ob_a_key = None
                         long_ob_a_bottom = None
+                        long_ob_a_top = None
                         long_ob_a_confirmed_bar = None
                         long_ob_b_key = None
+                        long_ob_b_bottom = None
+                        long_ob_b_top = None
                         long_ob_b_retouched = False
                     if key == short_ob_c_key:
+                        short_status = "OB-C invalidated — resetting to state 0"
                         short_ob_c_key = None
                         short_ob_c_top = None
+                        short_ob_c_bottom = None
                         short_state = 0
                         short_ob_a_key = None
                         short_ob_a_top = None
+                        short_ob_a_bottom = None
                         short_ob_a_confirmed_bar = None
                         short_ob_b_key = None
+                        short_ob_b_bottom = None
+                        short_ob_b_top = None
                         short_ob_b_retouched = False
 
                     to_remove.append(key)
@@ -229,101 +265,162 @@ class ThreeOBEngine:
                 # --- LONG strategy (bullish OBs) ---
                 if ob.direction == 1:
                     if long_state == 0:
+                        if not was_away and touching:
+                            long_status = "Bullish OB touching — waiting for price to leave first"
                         retouched = was_away and touching
                         if retouched:
-                            best_dist = float('inf')
-                            best_bear_key = None
-                            best_bear_bot = None
+                            candidates = []
                             for j_key, ob_j in active_obs.items():
-                                if ob_j.direction != -1:
-                                    continue
-                                if j_key in to_remove:
+                                if ob_j.direction != -1 or j_key in to_remove:
                                     continue
                                 if ob_j.bottom > bar_close:
                                     dist = ob_j.bottom - bar_close
-                                    if dist < best_dist:
-                                        best_dist = dist
-                                        best_bear_key = j_key
-                                        best_bear_bot = ob_j.bottom
-                            if best_bear_bot is not None and (best_bear_bot - bar_close) / bar_close > self.min_dist_pct:
+                                    dist_pct = dist / bar_close if bar_close > 0 else 0
+                                    candidates.append((dist, dist_pct, j_key, ob_j.bottom, ob_j.top))
+                            candidates.sort()  # by distance ascending
+
+                            chosen = None
+                            for dist, dist_pct, c_key, c_bot, c_top in candidates:
+                                if dist_pct > self.min_dist_pct:
+                                    chosen = (dist_pct, c_key, c_bot, c_top)
+                                    break
+
+                            if chosen:
+                                best_dist_pct, best_bear_key, best_bear_bot, best_bear_top = chosen
                                 long_state = 1
                                 long_ob_a_bottom = ob.bottom
+                                long_ob_a_top = ob.top
                                 long_ob_a_key = key
                                 long_ob_a_confirmed_bar = bar
                                 long_ob_c_key = best_bear_key
                                 long_ob_c_bottom = best_bear_bot
+                                long_ob_c_top = best_bear_top
+                                long_status = f"[State 0→1] OB-A (bull ${ob.bottom:.2f}–${ob.top:.2f}) confirmed, OB-C found {best_dist_pct*100:.1f}% above — close=${bar_close:.2f}, OB-C bottom=${best_bear_bot:.2f}"
+                            elif candidates:
+                                long_status = f"OB touched & left but all OB-C candidates too close (closest: {candidates[0][1]*100:.1f}% < {self.min_dist_pct*100:.1f}%) — close=${bar_close:.2f}, OB-C bottom=${candidates[0][3]:.2f}"
+                            else:
+                                long_status = "OB touched & left but no bearish OB above current price"
 
                     elif long_state == 1 and key != long_ob_a_key:
                         if ob.start_idx > long_ob_a_confirmed_bar:
                             long_state = 2
                             long_ob_b_key = key
+                            long_ob_b_bottom = ob.bottom
+                            long_ob_b_top = ob.top
+                            long_status = f"[State 1→2] OB-B (bull ${ob.bottom:.2f}–${ob.top:.2f}) found after OB-A (${long_ob_a_bottom:.2f}–${long_ob_a_top:.2f})"
 
                     elif long_state == 2 and key == long_ob_b_key:
                         b_was_away = long_ob_b_key in ob_has_left
+                        if not b_was_away and touching:
+                            long_status = f"[State 2] OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) active, waiting for price to leave"
                         if b_was_away and touching:
                             long_ob_b_retouched = True
                             long_state = 3
+                            long_status = f"[State 2→3] OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) retouched — waiting for green close, close=${bar_close:.2f}"
 
                     elif long_state == 3 and key == long_ob_b_key:
-                        # OB-B was re-touched; now check for green candle
+                        # OB-B was re-touched; now check for green candle (fallback)
                         if bar_close > bar_open:
                             long_signal = True
                             long_sl = long_ob_a_bottom
+                            long_status = f"[State 3] Green close on OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) → LONG signal — SL=${long_ob_a_bottom:.2f}"
 
                 # --- Invalidate long setup if price touches OB-C ---
                 if ob.direction == -1 and long_state in (1, 2, 3) and key == long_ob_c_key:
                     if touching:
+                        long_status = f"OB-C (${long_ob_c_bottom:.2f}–${long_ob_c_top:.2f}) reached — invalidating long setup"
                         long_state = 0
                         long_ob_a_key = None
                         long_ob_a_bottom = None
+                        long_ob_a_top = None
                         long_ob_a_confirmed_bar = None
                         long_ob_b_key = None
+                        long_ob_b_bottom = None
+                        long_ob_b_top = None
                         long_ob_b_retouched = False
                         long_ob_c_key = None
                         long_ob_c_bottom = None
+                        long_ob_c_top = None
 
                 # --- SHORT strategy (bearish OBs) ---
                 if self.enable_shorts and ob.direction == -1:
                     if short_state == 0:
+                        if not was_away and touching:
+                            short_status = "Bearish OB touching — waiting for price to leave first"
                         retouched = was_away and touching
                         if retouched:
-                            best_dist = float('inf')
-                            best_bull_key = None
-                            best_bull_top = None
+                            candidates = []
                             for j_key, ob_j in active_obs.items():
-                                if ob_j.direction != 1:
-                                    continue
-                                if j_key in to_remove:
+                                if ob_j.direction != 1 or j_key in to_remove:
                                     continue
                                 if ob_j.top < bar_close:
                                     dist = bar_close - ob_j.top
-                                    if dist < best_dist:
-                                        best_dist = dist
-                                        best_bull_key = j_key
-                                        best_bull_top = ob_j.top
-                            if best_bull_top is not None and (bar_close - best_bull_top) / bar_close > self.min_dist_pct:
+                                    dist_pct = dist / bar_close if bar_close > 0 else 0
+                                    candidates.append((dist, dist_pct, j_key, ob_j.top, ob_j.bottom))
+                            candidates.sort()  # by distance ascending
+
+                            chosen = None
+                            for dist, dist_pct, c_key, c_top, c_bot in candidates:
+                                if dist_pct > self.min_dist_pct:
+                                    chosen = (dist_pct, c_key, c_top, c_bot)
+                                    break
+
+                            if chosen:
+                                best_dist_pct, best_bull_key, best_bull_top, best_bull_bot = chosen
                                 short_state = 1
                                 short_ob_a_top = ob.top
+                                short_ob_a_bottom = ob.bottom
                                 short_ob_a_key = key
                                 short_ob_a_confirmed_bar = bar
                                 short_ob_c_key = best_bull_key
                                 short_ob_c_top = best_bull_top
+                                short_ob_c_bottom = best_bull_bot
+                                short_status = f"[State 0→1] OB-A (bear ${ob.bottom:.2f}–${ob.top:.2f}) confirmed, OB-C found {best_dist_pct*100:.1f}% below — close=${bar_close:.2f}, OB-C top=${best_bull_top:.2f}"
+                            elif candidates:
+                                short_status = f"OB touched & left but all OB-C candidates too close (closest: {candidates[0][1]*100:.1f}% < {self.min_dist_pct*100:.1f}%) — close=${bar_close:.2f}, OB-C top=${candidates[0][3]:.2f}"
+                            else:
+                                short_status = "OB touched & left but no bullish OB below current price"
 
                     elif short_state == 1 and key != short_ob_a_key:
                         if ob.start_idx > short_ob_a_confirmed_bar:
                             short_state = 2
                             short_ob_b_key = key
+                            short_ob_b_bottom = ob.bottom
+                            short_ob_b_top = ob.top
+                            short_status = f"[State 1→2] OB-B (bear ${ob.bottom:.2f}–${ob.top:.2f}) found after OB-A (${short_ob_a_bottom:.2f}–${short_ob_a_top:.2f})"
 
                     elif short_state == 2 and key == short_ob_b_key:
                         b_was_away = short_ob_b_key in ob_has_left
-                        if not short_ob_b_retouched:
-                            if b_was_away and touching:
-                                short_ob_b_retouched = True
-                        else:
-                            # OB-B was re-touched; now check for red candle
-                            if bar_close < bar_open:
-                                short_signal = True
-                                short_sl = short_ob_a_top
+                        if not b_was_away and touching:
+                            short_status = f"[State 2] OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) active, waiting for price to leave"
+                        if b_was_away and touching:
+                            short_ob_b_retouched = True
+                            short_state = 3
+                            short_status = f"[State 2→3] OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) retouched — waiting for red close, close=${bar_close:.2f}"
+
+                    elif short_state == 3 and key == short_ob_b_key:
+                        # OB-B was re-touched; now check for red candle
+                        if bar_close < bar_open:
+                            short_signal = True
+                            short_sl = short_ob_a_top
+                            short_status = f"[State 3] Red close on OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) → SHORT signal — SL=${short_ob_a_top:.2f}"
+
+                # --- Invalidate short setup if price touches OB-C ---
+                if self.enable_shorts and ob.direction == 1 and short_state in (1, 2, 3) and key == short_ob_c_key:
+                    if touching:
+                        short_status = f"OB-C (${short_ob_c_bottom:.2f}–${short_ob_c_top:.2f}) reached — invalidating short setup"
+                        short_state = 0
+                        short_ob_a_key = None
+                        short_ob_a_top = None
+                        short_ob_a_bottom = None
+                        short_ob_a_confirmed_bar = None
+                        short_ob_b_key = None
+                        short_ob_b_retouched = False
+                        short_ob_b_bottom = None
+                        short_ob_b_top = None
+                        short_ob_c_key = None
+                        short_ob_c_top = None
+                        short_ob_c_bottom = None
 
             # Remove invalidated OBs (no index adjustment needed)
             for key in to_remove:
@@ -368,11 +465,15 @@ class ThreeOBEngine:
                 long_state = 0
                 long_ob_a_key = None
                 long_ob_a_bottom = None
+                long_ob_a_top = None
                 long_ob_a_confirmed_bar = None
                 long_ob_b_key = None
+                long_ob_b_bottom = None
+                long_ob_b_top = None
                 long_ob_b_retouched = False
                 long_ob_c_key = None
                 long_ob_c_bottom = None
+                long_ob_c_top = None
 
             # --- Execute short entry ---
             if self.enable_shorts and short_signal and short_ob_c_key is not None and short_ob_c_key in active_obs:
@@ -410,11 +511,49 @@ class ThreeOBEngine:
                 short_state = 0
                 short_ob_a_key = None
                 short_ob_a_top = None
+                short_ob_a_bottom = None
                 short_ob_a_confirmed_bar = None
                 short_ob_b_key = None
+                short_ob_b_bottom = None
+                short_ob_b_top = None
                 short_ob_b_retouched = False
                 short_ob_c_key = None
                 short_ob_c_top = None
+                short_ob_c_bottom = None
+
+            # --- Build pending_confirmation info ---
+            # Emitted on the bar where State 2→3 fires (OB-B retouched)
+            pending_confirmation = None
+            if long_state == 3 and long_ob_b_retouched and not long_signal:
+                pending_confirmation = {
+                    'direction': 'long',
+                    'ob_b_retouch_bar': bar,
+                    'ob_a_bottom': long_ob_a_bottom,
+                    'ob_a_top': long_ob_a_top,
+                    'ob_a_key': long_ob_a_key,
+                    'ob_b_bottom': long_ob_b_bottom,
+                    'ob_b_top': long_ob_b_top,
+                    'ob_b_key': long_ob_b_key,
+                    'ob_c_bottom': long_ob_c_bottom,
+                    'ob_c_top': long_ob_c_top,
+                    'ob_c_key': long_ob_c_key,
+                    'sl': long_ob_a_bottom,
+                }
+            if self.enable_shorts and short_state == 3 and short_ob_b_retouched and not short_signal:
+                pending_confirmation = {
+                    'direction': 'short',
+                    'ob_b_retouch_bar': bar,
+                    'ob_a_bottom': short_ob_a_bottom,
+                    'ob_a_top': short_ob_a_top,
+                    'ob_a_key': short_ob_a_key,
+                    'ob_b_bottom': short_ob_b_bottom,
+                    'ob_b_top': short_ob_b_top,
+                    'ob_b_key': short_ob_b_key,
+                    'ob_c_bottom': short_ob_c_bottom,
+                    'ob_c_top': short_ob_c_top,
+                    'ob_c_key': short_ob_c_key,
+                    'sl': short_ob_a_top,
+                }
 
             # --- Build snapshot ---
             snapshot = {
@@ -430,5 +569,8 @@ class ThreeOBEngine:
                 'dead_ob_keys': list(dead_obs),
                 'signal': bar_signal,
                 'signals_so_far': len(signals),
+                'long_status': long_status,
+                'short_status': short_status,
+                'pending_confirmation': pending_confirmation,
             }
             yield bar, snapshot

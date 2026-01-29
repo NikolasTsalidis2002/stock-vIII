@@ -1,5 +1,5 @@
 {
-  "symbol": "TSLA",
+  "symbol": "META",
   "timeframes_copy": {
     "high": "1h",
     "mid": "15min",
@@ -91,10 +91,13 @@
   },
   "three_ob": {
     "timeframe": "15min",
+    "confirmation_timeframe": "5min",
     "close_break": true,
-    "min_dist_pct": 1.0,
+    "min_dist_pct": 2.0,
+    "enable_shorts": true,
     "_descriptions": {
       "timeframe": "Single timeframe used for 3-OB strategy. Should match one of the available TFs.",
+      "confirmation_timeframe": "Lower timeframe for BOS/IFVG confirmation after OB-B retouch. Set to null or remove to use old green/red close behavior.",
       "close_break": "Require close/open break for BOS detection (true = conservative, matches Pine default).",
       "min_dist_pct": "Minimum distance (%) between OB A and opposite OB C to qualify a setup."
     }

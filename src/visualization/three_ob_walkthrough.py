@@ -40,6 +40,7 @@ class ThreeOBWalkthrough:
         close_break: bool = True,
         min_dist_pct: float = 0.10,
         max_signals: int = 10,
+        enable_shorts: bool = False,
     ) -> Path:
         """Generate the walkthrough HTML.
 
@@ -53,7 +54,7 @@ class ThreeOBWalkthrough:
             Path to the generated HTML file.
         """
         print("\nInitializing 3-OB engine for walkthrough...")
-        engine = ThreeOBEngine(df, close_break=close_break, min_dist_pct=min_dist_pct)
+        engine = ThreeOBEngine(df, close_break=close_break, min_dist_pct=min_dist_pct, enable_shorts=enable_shorts)
 
         # Prepare the working df with datetime index for candle data generation
         df_work = engine.df.copy()
@@ -209,6 +210,8 @@ class ThreeOBWalkthrough:
             'signalInfo': signal_info,
             'signalsSoFar': snapshot['signals_so_far'],
             'activeOBCount': len(snapshot['active_ob_keys']),
+            'longStatusText': snapshot.get('long_status', ''),
+            'shortStatusText': snapshot.get('short_status', ''),
         }
 
     def _create_html(self, all_frames: list) -> str:
@@ -364,6 +367,20 @@ class ThreeOBWalkthrough:
         }}
         .stat-label {{ color: #787b86; }}
         .stat-value {{ color: #d1d4dc; font-weight: 600; }}
+        .status-text {{
+            margin: 8px 0 0 0;
+            padding: 8px 10px;
+            font-size: 11px;
+            color: #b2b5be;
+            background-color: rgba(255,255,255,0.04);
+            border-left: 2px solid #363a45;
+            border-radius: 2px;
+            min-height: 16px;
+            line-height: 1.4;
+        }}
+        .status-text:empty {{
+            display: none;
+        }}
         .signal-alert {{
             display: none;
             margin: 10px 0;
@@ -465,6 +482,7 @@ class ThreeOBWalkthrough:
                     <span class="check-icon pending">&#9744;</span>
                     <span class="checklist-label pending">Close break past OB-B</span>
                 </div>
+                <div class="status-text" id="long-status-text"></div>
             </div>
 
             <div class="state-group">
@@ -489,6 +507,7 @@ class ThreeOBWalkthrough:
                     <span class="check-icon pending">&#9744;</span>
                     <span class="checklist-label pending">Close break past OB-B</span>
                 </div>
+                <div class="status-text" id="short-status-text"></div>
             </div>
 
             <div class="signal-counter">
@@ -723,6 +742,9 @@ class ThreeOBWalkthrough:
 
             updateChecklist('long', f.longState, longSignalFired);
             updateChecklist('short', f.shortState, shortSignalFired);
+
+            document.getElementById('long-status-text').textContent = f.longStatusText || '';
+            document.getElementById('short-status-text').textContent = f.shortStatusText || '';
 
             // Signal alert
             const alertEl = document.getElementById('signal-alert');

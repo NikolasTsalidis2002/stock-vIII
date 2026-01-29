@@ -902,16 +902,28 @@ def main():
         three_ob_tf = three_ob_cfg.get('timeframe', mid_tf)
         three_ob_close_break = three_ob_cfg.get('close_break', True)
         three_ob_min_dist = three_ob_cfg.get('min_dist_pct', 10.0) / 100.0
+        three_ob_enable_shorts = three_ob_cfg.get('enable_shorts', False)
+        three_ob_conf_tf = three_ob_cfg.get('confirmation_timeframe', None)
 
         print(f"\n🔧 Initializing 3-OB strategy engine (TF: {three_ob_tf})...")
         df_3ob = loader.get_data(three_ob_tf, force_refresh=False)
-        df_3ob = df_3ob[df_3ob.shape[0] * 3 // 4:] # take last ~750 rows for faster iteration
+        df_3ob = df_3ob[df_3ob.shape[0] * 3 // 2:] # take last ~750 rows for faster iteration
         print(f"  ✓ {three_ob_tf.upper()}: {len(df_3ob)} candles")
+
+        # Load lower TF confirmation data if configured
+        df_confirmation = None
+        if three_ob_conf_tf:
+            print(f"  Loading confirmation TF data ({three_ob_conf_tf})...")
+            df_confirmation = loader.get_data(three_ob_conf_tf, force_refresh=False)
+            print(f"  ✓ {three_ob_conf_tf.upper()}: {len(df_confirmation)} candles")
 
         strategy_3ob = ThreeOBStrategy(
             df_3ob,
             close_break=three_ob_close_break,
             min_dist_pct=three_ob_min_dist,
+            enable_shorts=three_ob_enable_shorts,
+            df_confirmation=df_confirmation,
+            confirmation_timeframe=three_ob_conf_tf,
         )
 
         print("\n🔍 Scanning for 3-OB trade setups...")
@@ -954,6 +966,7 @@ def main():
                 close_break=three_ob_close_break,
                 min_dist_pct=three_ob_min_dist,
                 max_signals=5,
+                enable_shorts=three_ob_enable_shorts,
             )
             print(f"\n  Open {output_path} in your browser")
             print("  Use arrow keys to step through candles")
