@@ -74,9 +74,11 @@ class EquilibriumValidator:
         if entry_direction == 'short':
             self._max_level = swept_level  # Fixed (swept high)
             self._min_level = float('inf')  # Will track running min from inflection points
+            self._max_after_event_b = swept_level  # Track highest peak after Event B
         else:  # long
             self._min_level = swept_level  # Fixed (swept low)
             self._max_level = float('-inf')  # Will track running max from inflection points
+            self._min_after_event_b = swept_level  # Track lowest valley after Event B
 
         # Track confirmed inflection points for running extreme
         self._confirmed_extreme_level = None
@@ -157,38 +159,54 @@ class EquilibriumValidator:
         """
         Find the lowest/highest inflection point AFTER Event B.
 
-        For SHORT: look for convex (valley) inflection points (type = -1)
-        For LONG: look for concave (peak) inflection points (type = 1)
+        For SHORT:
+          - Tracks valleys (type=-1) for _min_level (running extreme / 100% level)
+          - Tracks peaks (type=1) for _max_after_event_b (adjusts 0% level if higher than sweep)
+
+        For LONG:
+          - Tracks peaks (type=1) for _max_level (running extreme / 0% level)
+          - Tracks valleys (type=-1) for _min_after_event_b (adjusts 100% level if lower than sweep)
 
         Args:
             inflexions: DataFrame of inflection points
             event_b_time: Timestamp of Event B (start of search window)
         """
-        target_type = -1 if self.entry_direction == 'short' else 1
-
         # Scan ALL inflection points after Event B to find the extreme
         for i in range(len(inflexions)):
             inflexion_type = inflexions['InflexionType'].iloc[i]
             inflexion_time = self.df_mid.index[i]
 
-            # Must be AFTER Event B and correct type
+            # Must be AFTER Event B
             if inflexion_time <= event_b_time:
                 continue
 
-            if np.isnan(inflexion_type) or inflexion_type != target_type:
+            if np.isnan(inflexion_type):
                 continue
 
             level = inflexions['Level'].iloc[i]
 
-            # Update if this is a better extreme (lowest for SHORT, highest for LONG)
             if self.entry_direction == 'short':
-                if self._confirmed_extreme_level is None or level < self._confirmed_extreme_level:
-                    self._confirmed_extreme_level = level
-                    self._min_level = level
+                # Track lowest valley (for 100% level - running extreme)
+                if inflexion_type == -1:  # valley
+                    if self._confirmed_extreme_level is None or level < self._confirmed_extreme_level:
+                        self._confirmed_extreme_level = level
+                        self._min_level = level
+                # Track highest peak (for 0% level adjustment)
+                elif inflexion_type == 1:  # peak
+                    if level > self._max_after_event_b:
+                        self._max_after_event_b = level
+                        self._max_level = self._max_after_event_b
             else:  # long
-                if self._confirmed_extreme_level is None or level > self._confirmed_extreme_level:
-                    self._confirmed_extreme_level = level
-                    self._max_level = level
+                # Track highest peak (for 0% level - running extreme)
+                if inflexion_type == 1:  # peak
+                    if self._confirmed_extreme_level is None or level > self._confirmed_extreme_level:
+                        self._confirmed_extreme_level = level
+                        self._max_level = level
+                # Track lowest valley (for 100% level adjustment)
+                elif inflexion_type == -1:  # valley
+                    if level < self._min_after_event_b:
+                        self._min_after_event_b = level
+                        self._min_level = self._min_after_event_b
 
     def _update_running_extreme_up_to(self, time_5m: datetime) -> None:
         """
@@ -198,6 +216,14 @@ class EquilibriumValidator:
         This is the O(n) optimized version that uses pre-calculated inflexions_mid
         instead of recalculating inflection points for each candle.
 
+        For SHORT:
+          - Tracks valleys (type=-1) for _min_level (running extreme / 100% level)
+          - Tracks peaks (type=1) for _max_after_event_b (adjusts 0% level if higher than sweep)
+
+        For LONG:
+          - Tracks peaks (type=1) for _max_level (running extreme / 0% level)
+          - Tracks valleys (type=-1) for _min_after_event_b (adjusts 100% level if lower than sweep)
+
         Args:
             time_5m: Current candle timestamp to scan up to
         """
@@ -206,25 +232,38 @@ class EquilibriumValidator:
 
         current_idx = self.df_mid.index.get_loc(time_5m)
         sweep_idx = self.df_mid.index.get_loc(self.sweep_time)
-        target_type = -1 if self.entry_direction == 'short' else 1
 
         # Look at inflection points from sweep to current candle
         for i in range(sweep_idx + 1, current_idx + 1):
             inflexion_type = self.inflexions_mid['InflexionType'].iloc[i]
 
-            if pd.isna(inflexion_type) or inflexion_type != target_type:
+            if pd.isna(inflexion_type):
                 continue
 
             level = self.inflexions_mid['Level'].iloc[i]
 
             if self.entry_direction == 'short':
-                if self._confirmed_extreme_level is None or level < self._confirmed_extreme_level:
-                    self._confirmed_extreme_level = level
-                    self._min_level = level
-            else:
-                if self._confirmed_extreme_level is None or level > self._confirmed_extreme_level:
-                    self._confirmed_extreme_level = level
-                    self._max_level = level
+                # Track lowest valley (for 100% level - running extreme)
+                if inflexion_type == -1:  # valley
+                    if self._confirmed_extreme_level is None or level < self._confirmed_extreme_level:
+                        self._confirmed_extreme_level = level
+                        self._min_level = level
+                # Track highest peak (for 0% level adjustment)
+                elif inflexion_type == 1:  # peak
+                    if level > self._max_after_event_b:
+                        self._max_after_event_b = level
+                        self._max_level = self._max_after_event_b  # Update max to use highest peak
+            else:  # long
+                # Track highest peak (for 0% level - running extreme)
+                if inflexion_type == 1:  # peak
+                    if self._confirmed_extreme_level is None or level > self._confirmed_extreme_level:
+                        self._confirmed_extreme_level = level
+                        self._max_level = level
+                # Track lowest valley (for 100% level adjustment)
+                elif inflexion_type == -1:  # valley
+                    if level < self._min_after_event_b:
+                        self._min_after_event_b = level
+                        self._min_level = self._min_after_event_b  # Update min to use lowest valley
 
     def _calculate_equilibrium(self) -> float:
         """Calculate current equilibrium level."""
@@ -243,10 +282,23 @@ class EquilibriumValidator:
             return candle['close'] < self._equilibrium
 
     def get_current_state(self) -> EquilibriumState:
-        """Return current equilibrium tracking state."""
+        """Return current equilibrium tracking state.
+
+        For SHORT: 0% = max(swept_level, highest_peak_after_event_b)
+        For LONG: 100% = min(swept_level, lowest_valley_after_event_b)
+        """
+        if self.entry_direction == 'short':
+            # For SHORT: 0% = max(swept_level, highest_peak_after_event_b)
+            fixed_level = max(self.swept_level, self._max_after_event_b)
+            running_extreme = self._min_level
+        else:  # long
+            # For LONG: 100% = min(swept_level, lowest_valley_after_event_b)
+            fixed_level = min(self.swept_level, self._min_after_event_b)
+            running_extreme = self._max_level
+
         return EquilibriumState(
-            fixed_level=self.swept_level,
-            running_extreme=self._min_level if self.entry_direction == 'short' else self._max_level,
+            fixed_level=fixed_level,
+            running_extreme=running_extreme,
             equilibrium=self._equilibrium if self._equilibrium is not None else 0.0,
             entry_direction=self.entry_direction,
             in_target_zone=self._in_target_zone,

@@ -238,6 +238,7 @@ class TimeframeManager:
         self.liquidity_high = smc.liquidity(self._df_high, self.swings_high, range_percent=0.01)
         self.inflexions_high = smc_custom.inflexion_points(self._df_high)
         self.bos_high = smc_custom.bos(self._df_high, self.inflexions_high, close_break=True)
+        self.fvg_high = smc.fvg(self._df_high, join_consecutive=False)
 
         # Mid TF Indicators
         print(f"  [{mid_label}] Calculating indicators...")

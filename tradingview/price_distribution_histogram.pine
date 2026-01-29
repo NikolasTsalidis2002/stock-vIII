@@ -1,0 +1,84 @@
+//@version=5
+indicator("Price Distribution Histogram", overlay=true, max_boxes_count=500)
+
+// ========== INPUTS ==========
+lookback = input.int(300, "Lookback Candles", minval=10, maxval=1000)
+num_bins = input.int(50, "Number of Bins", minval=10, maxval=100)
+max_width = input.int(50, "Max Histogram Width (bars)", minval=10, maxval=200)
+
+// Colors
+color_low = input.color(color.new(color.blue, 70), "Low Frequency Color")
+color_high = input.color(color.new(color.red, 30), "High Frequency Color")
+
+// ========== HISTOGRAM BOXES STORAGE ==========
+var box[] histogram_boxes = array.new_box(0)
+
+// ========== CALCULATE PRICE RANGE (must run every bar!) ==========
+float period_high = ta.highest(high, lookback)
+float period_low = ta.lowest(low, lookback)
+float bin_size = (period_high - period_low) / num_bins
+
+// ========== ONLY DRAW ON LAST BAR ==========
+if barstate.islast
+    // Create bin counts array
+    float[] bin_counts = array.new_float(num_bins, 0.0)
+
+    // Loop through lookback candles and count touches per bin
+    for i = 0 to lookback - 1
+        float candle_high = high[i]
+        float candle_low = low[i]
+
+        // For each bin, check if this candle touched it
+        for bin_idx = 0 to num_bins - 1
+            float bin_low_price = period_low + bin_idx * bin_size
+            float bin_high_price = bin_low_price + bin_size
+
+            // Calculate how much of the candle overlaps this bin
+            float overlap_low = math.max(candle_low, bin_low_price)
+            float overlap_high = math.min(candle_high, bin_high_price)
+            float overlap = math.max(0.0, overlap_high - overlap_low)
+            if overlap > 0
+                // Weight by overlap amount (normalized by bin_size)
+                float weight = overlap / bin_size
+                float current_count = array.get(bin_counts, bin_idx)
+                array.set(bin_counts, bin_idx, current_count + weight)
+
+    // Find max count for scaling
+    float max_count = 0.0
+    for bin_idx = 0 to num_bins - 1
+        float count = array.get(bin_counts, bin_idx)
+        if count > max_count
+            max_count := count
+
+    // Clear previous boxes
+    if array.size(histogram_boxes) > 0
+        for i = 0 to array.size(histogram_boxes) - 1
+            box.delete(array.get(histogram_boxes, i))
+        array.clear(histogram_boxes)
+
+    // Draw new boxes
+    for bin_idx = 0 to num_bins - 1
+        float count = array.get(bin_counts, bin_idx)
+        if count > 0 and max_count > 0
+            float bin_low_price = period_low + bin_idx * bin_size
+            float bin_high_price = bin_low_price + bin_size
+
+            // Calculate box width based on count (normalized to max_width)
+            int box_width = math.round(count / max_count * max_width)
+            box_width := math.max(box_width, 1)
+
+            // Calculate color based on frequency (gradient from low to high)
+            float ratio = count / max_count
+            color box_color = color.from_gradient(ratio, 0, 1, color_low, color_high)
+
+            // Draw box extending to the right of current bar
+            box new_box = box.new(
+                 left=bar_index + 1,
+                 top=bin_high_price,
+                 right=bar_index + 1 + box_width,
+                 bottom=bin_low_price,
+                 border_color=color.new(box_color, 50),
+                 bgcolor=box_color,
+                 border_width=1
+                 )
+            array.push(histogram_boxes, new_box)

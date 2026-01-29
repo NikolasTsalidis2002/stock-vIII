@@ -35,7 +35,7 @@ from datetime import datetime
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from data_loader import DataLoader
-from strategy import MultiTimeframeStrategy
+from strategy import MultiTimeframeStrategy, ThreeOBStrategy
 from strategy_visualizer import StrategySweepVisualizer
 from backtesting import Backtester
 
@@ -146,6 +146,9 @@ def run_single_symbol(symbol, config, args):
     # Get high TF lookback setting (for extended inflection point detection)
     high_tf_lookback = liquidity_cfg.get('high_tf_lookback_candles', 300)
 
+    # Get FVG trigger setting
+    use_fvg_trigger = liquidity_cfg.get('use_fvg_trigger', False)
+
     # Get GMM zone settings
     gmm_config = config.get('gmm_zones', {})
 
@@ -189,7 +192,8 @@ def run_single_symbol(symbol, config, args):
         sweep_proximity_threshold=sweep_proximity_threshold,
         abandon_on_new_sweep=abandon_on_new_sweep,
         gmm_config=gmm_config,
-        high_tf_lookback=high_tf_lookback
+        high_tf_lookback=high_tf_lookback,
+        use_fvg_trigger=use_fvg_trigger
     )
 
     # Scan for signals
@@ -629,6 +633,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
+        '--strategy',
+        type=str,
+        choices=['multi-tf', '3-ob'],
+        default='multi-tf',
+        help='Strategy to run: multi-tf (default multi-timeframe) or 3-ob (3-OB state machine)'
+    )
+    parser.add_argument(
         '--no-backtest',
         action='store_true',
         help='Skip backtest simulation (backtest runs by default)'
@@ -792,6 +803,9 @@ def main():
     liquidity_cfg = config.get('liquidity', {})
     high_tf_lookback = liquidity_cfg.get('high_tf_lookback_candles', 300)
 
+    # Get FVG trigger setting
+    use_fvg_trigger = liquidity_cfg.get('use_fvg_trigger', False)
+
     # Create timeframe config for display
     timeframe_config = {
         'high': high_tf.upper(),
@@ -839,6 +853,11 @@ def main():
         print(f"  Sweep Proximity:  {sweep_proximity_threshold_percent}% (price within {sweep_proximity_threshold_percent}% of level counts as swept)")
     else:
         print(f"  Sweep Proximity:  Exact touch required (0%)")
+    # Display FVG trigger setting
+    if use_fvg_trigger:
+        print(f"  FVG Trigger:      Enabled (high TF FVG respect triggers Stage 1)")
+    else:
+        print(f"  FVG Trigger:      Disabled")
     # Display GMM zone settings
     gmm_enabled = config.get('gmm_zones', {}).get('enabled', False)
     if gmm_enabled:
@@ -870,6 +889,64 @@ def main():
     # Get GMM zone settings
     gmm_config = config.get('gmm_zones', {})
 
+    # ===== 3-OB strategy branch =====
+    if args.strategy == '3-ob':
+        three_ob_cfg = config.get('three_ob', {})
+        three_ob_tf = three_ob_cfg.get('timeframe', mid_tf)
+        three_ob_close_break = three_ob_cfg.get('close_break', True)
+        three_ob_min_dist = three_ob_cfg.get('min_dist_pct', 10.0) / 100.0
+
+        print(f"\n🔧 Initializing 3-OB strategy engine (TF: {three_ob_tf})...")
+        df_3ob = loader.get_data(three_ob_tf, force_refresh=False)
+        print(f"  ✓ {three_ob_tf.upper()}: {len(df_3ob)} candles")
+
+        strategy_3ob = ThreeOBStrategy(
+            df_3ob,
+            close_break=three_ob_close_break,
+            min_dist_pct=three_ob_min_dist,
+        )
+
+        print("\n🔍 Scanning for 3-OB trade setups...")
+        signals = strategy_3ob.scan_for_signals(max_signals=5)
+
+        if len(signals) == 0:
+            print("\n⚠️  No 3-OB signals found.")
+            return
+
+        print(f"\n✅ Found {len(signals)} 3-OB trade setups!")
+
+        # Run backtest
+        if not args.no_backtest:
+            print("\n" + "="*80)
+            print("RUNNING BACKTEST SIMULATION (3-OB)")
+            print("="*80)
+
+            backtester = Backtester(
+                df_low=strategy_3ob.df_low,
+                initial_capital=args.initial_capital,
+                symbol=symbol,
+                intraday_only=not args.hold_overnight,
+            )
+            _results = backtester.run(signals)
+            backtester.print_summary()
+
+            if args.export_journal:
+                os.makedirs("results/trades", exist_ok=True)
+                journal_path = f"results/trades/{symbol.lower()}_3ob_trades.csv" if args.export_journal == 'auto' else args.export_journal
+                backtester.export_journal(journal_path)
+
+        # Summary
+        print("\n" + "="*80)
+        print("✅ 3-OB ANALYSIS COMPLETE!")
+        print("="*80)
+        for i, sig in enumerate(signals, 1):
+            print(f"\n  Signal #{i}: {sig.entry_direction.upper()}")
+            print(f"    Entry: ${sig.price_entry:.2f}")
+            print(f"    TP: ${sig.take_profit_price:.2f}" if sig.take_profit_price else "    TP: N/A")
+            print(f"    SL: ${sig.stop_loss_price:.2f}" if sig.stop_loss_price else "    SL: N/A")
+        print("="*80 + "\n")
+        return
+
     # Step 2: Initialize strategy
     print("\n🔧 Initializing strategy engine...")
     strategy = MultiTimeframeStrategy(
@@ -880,7 +957,8 @@ def main():
         sweep_proximity_threshold=sweep_proximity_threshold,
         abandon_on_new_sweep=abandon_on_new_sweep,
         gmm_config=gmm_config,
-        high_tf_lookback=high_tf_lookback
+        high_tf_lookback=high_tf_lookback,
+        use_fvg_trigger=use_fvg_trigger
     )
 
     # Step 3: Scan for signals
@@ -957,7 +1035,6 @@ def main():
         if args.export_journal:
             # Generate default path if 'auto'
             if args.export_journal == 'auto':
-                import os
                 os.makedirs("results/trades", exist_ok=True)
                 journal_path = f"results/trades/{symbol.lower()}_trades.csv"
             else:

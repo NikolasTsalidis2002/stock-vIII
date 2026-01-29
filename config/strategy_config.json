@@ -1,19 +1,19 @@
 {
-  "symbol": "MSFT",
+  "symbol": "TSLA",
   "timeframes_copy": {
-    "high": "1h",
-    "mid": "5min",
-    "low": "1min"
-  },
-  "timeframes": {
     "high": "1h",
     "mid": "15min",
     "low": "5min"
+  },
+  "timeframes": {
+    "high": "1day",
+    "mid": "4h",
+    "low": "15min"
   },  
   "gmm_zones": {
-    "enabled": true,
+    "enabled": false,
     "lookback_candles": 300,
-    "timeframe": "15min",
+    "timeframe": "1h",
     "step": 0.1,
     "max_components": 5,
     "selection_method": "elbow",
@@ -34,7 +34,7 @@
       0.0,
       0.236
     ],
-    "allow_middle_zone_trades": true,
+    "allow_middle_zone_trades": false,
     "take_profit_method": "fib",
     "_descriptions": {
       "enabled": "When true, uses GMM-based zone detection to filter trades by fib zones",
@@ -61,16 +61,18 @@
   "liquidity": {
     "sweep_proximity_threshold_percent": 0.01,
     "high_tf_lookback_candles": 300,
+    "use_fvg_trigger": true,
     "_descriptions": {
       "sweep_proximity_threshold_percent": "Percentage threshold for near-sweep detection. If price comes within this % of an inflection level, it counts as a sweep. 0 = exact touch required (default). Example: 0.5 means price within 0.5% of level counts as swept.",
-      "high_tf_lookback_candles": "Number of high TF candles to include BEFORE the overlap period for better inflection point detection. These historical candles help identify price levels that may be swept during the tradable period. Default 300. Set to 0 to disable extended lookback."
+      "high_tf_lookback_candles": "Number of high TF candles to include BEFORE the overlap period for better inflection point detection. These historical candles help identify price levels that may be swept during the tradable period. Default 300. Set to 0 to disable extended lookback.",
+      "use_fvg_trigger": "When true, FVG respect on high TF also triggers Stage 1 (alongside liquidity sweeps). Bullish FVG respected = LONG entry, Bearish FVG respected = SHORT entry."
     }
   },
   "validation": {
-    "use_fvg_validation": false,
+    "use_fvg_validation": true,
     "use_equilibrium_validation": true,
     "require_fvg_in_equilibrium": false,
-    "abandon_on_new_sweep": true,
+    "abandon_on_new_sweep": false,
     "_descriptions": {
       "use_fvg_validation": "When true, FVG respect is checked first and takes priority. If an FVG is touched/respected, validation triggers immediately without checking equilibrium.",
       "use_equilibrium_validation": "When true, checks if price enters the premium/discount zone (above/below equilibrium). For SHORT: trigger when price enters premium. For LONG: trigger when price enters discount.",
@@ -85,6 +87,16 @@
         "FVG priority with equilibrium fallback: use_fvg_validation=true, use_equilibrium_validation=true",
         "FVG within equilibrium (strictest): require_fvg_in_equilibrium=true"
       ]
+    }
+  },
+  "three_ob": {
+    "timeframe": "15min",
+    "close_break": true,
+    "min_dist_pct": 1.0,
+    "_descriptions": {
+      "timeframe": "Single timeframe used for 3-OB strategy. Should match one of the available TFs.",
+      "close_break": "Require close/open break for BOS detection (true = conservative, matches Pine default).",
+      "min_dist_pct": "Minimum distance (%) between OB A and opposite OB C to qualify a setup."
     }
   },
   "backtest": {

@@ -250,3 +250,128 @@ class LiquidityDetector:
             return respected == False
 
         return False
+
+    def detect_all_fvg_triggers(
+        self,
+        fvg_high: pd.DataFrame,
+        tradable_start: datetime = None
+    ) -> List[SweepInfo]:
+        """
+        Detect FVG respect events on high TF as Stage 1 triggers.
+
+        FVG respect occurs when price touches an FVG but doesn't break through:
+        - Bullish FVG (FVG=1) respected → LONG entry signal
+        - Bearish FVG (FVG=-1) respected → SHORT entry signal
+
+        Args:
+            fvg_high: Pre-calculated FVG DataFrame for high timeframe
+            tradable_start: If provided, only return FVG triggers at or after this timestamp
+
+        Returns:
+            List of SweepInfo objects for FVG respect triggers
+        """
+        print(f"  Scanning {len(fvg_high)} candles for FVG triggers...")
+
+        all_fvg_triggers = []
+
+        # Pre-filter for performance:
+        # 1. Has FVG (not NaN)
+        # 2. Was touched (MitigatedIndex > 0)
+        # 3. NOT immediately disrespected (MitigatedIndex == StatusIndex with Respected == False)
+        valid_fvgs = fvg_high[
+            fvg_high['FVG'].notna() &
+            (fvg_high['MitigatedIndex'] > 0) &
+            ~(
+                (fvg_high['MitigatedIndex'] == fvg_high['StatusIndex']) &
+                (fvg_high['Respected'] == False)
+            )
+        ]
+
+        for idx, row in valid_fvgs.iterrows():
+            fvg_type = row['FVG']
+            mitigated_idx = int(row['MitigatedIndex'])
+            fvg_top = row['Top']
+            fvg_bottom = row['Bottom']
+
+            # The trigger timestamp is when the FVG was touched (MitigatedIndex)
+            if mitigated_idx < len(self.df_high):
+                timestamp = self.df_high.index[mitigated_idx]
+            else:
+                continue
+
+            # Determine entry direction based on FVG type
+            # Bullish FVG (1) touched = price came down to FVG = LONG
+            # Bearish FVG (-1) touched = price came up to FVG = SHORT
+            if fvg_type == 1:  # Bullish FVG
+                entry_direction = 'long'
+                swept_level = fvg_bottom  # Price touched bottom of bullish FVG
+            else:  # Bearish FVG (fvg_type == -1)
+                entry_direction = 'short'
+                swept_level = fvg_top  # Price touched top of bearish FVG
+
+            sweep_type = f'fvg_{entry_direction}'
+
+            print(f"  Found FVG trigger at candle {mitigated_idx+1}: {timestamp} "
+                  f"({sweep_type}, FVG range: ${fvg_bottom:.2f}-${fvg_top:.2f})")
+
+            all_fvg_triggers.append(SweepInfo(
+                candle_idx=mitigated_idx,
+                sweep_type=sweep_type,
+                swept_level=swept_level,
+                inflexion_idx=idx,  # Store the FVG formation index for invalidation checks
+                timestamp=timestamp,
+                fvg_formation_idx=idx,
+                fvg_top=fvg_top,
+                fvg_bottom=fvg_bottom
+            ))
+
+        print(f"  Total FVG triggers found: {len(all_fvg_triggers)}")
+
+        # Filter to tradable period if specified
+        if tradable_start is not None:
+            pre_filter_count = len(all_fvg_triggers)
+            all_fvg_triggers = [t for t in all_fvg_triggers if t.timestamp >= tradable_start]
+            filtered_out = pre_filter_count - len(all_fvg_triggers)
+            if filtered_out > 0:
+                print(f"  Filtered out {filtered_out} FVG triggers before tradable_start ({tradable_start})")
+                print(f"  Tradable FVG triggers: {len(all_fvg_triggers)}")
+
+        print()
+        return all_fvg_triggers
+
+    def is_fvg_broken_at_time(
+        self,
+        fvg_formation_idx: int,
+        fvg_high: pd.DataFrame,
+        end_time: datetime
+    ) -> bool:
+        """
+        Check if the FVG that triggered has been disrespected by a specific time.
+
+        An FVG is "broken" when its Respected status is False, meaning price
+        closed through the FVG zone after initially touching it.
+
+        Args:
+            fvg_formation_idx: Index of the FVG formation in the FVG DataFrame
+            fvg_high: Pre-calculated FVG DataFrame for high timeframe
+            end_time: Only consider data up to this timestamp (inclusive)
+
+        Returns:
+            True if FVG was disrespected by end_time, False if still valid
+        """
+        if fvg_formation_idx >= len(fvg_high):
+            return False
+
+        # Get the current status of the FVG
+        respected = fvg_high['Respected'].iloc[fvg_formation_idx]
+        status_idx = fvg_high['StatusIndex'].iloc[fvg_formation_idx]
+
+        # If status is False (disrespected), check if it happened before end_time
+        if respected == False and not np.isnan(status_idx):
+            status_idx = int(status_idx)
+            if status_idx < len(self.df_high):
+                status_time = self.df_high.index[status_idx]
+                # Only consider broken if disrespect happened at or before end_time
+                return status_time <= end_time
+
+        return False

@@ -592,6 +592,25 @@ def generate_gmm_debug_data(gmm_zone_info, df_window: pd.DataFrame) -> Optional[
     if gmm_zone_info.price_levels is None or gmm_zone_info.bic_scores is None:
         return None
 
+    # VALIDATION: Verify DataFrame matches price_levels to detect mismatches
+    if len(df_window) > 0:
+        import warnings
+        df_price_min = df_window['low'].min()
+        df_price_max = df_window['high'].max()
+        price_levels_min = gmm_zone_info.price_levels.min()
+        price_levels_max = gmm_zone_info.price_levels.max()
+        # Allow 1% tolerance for floating point differences
+        if abs(df_price_min - price_levels_min) > 0.01 * df_price_min:
+            warnings.warn(
+                f"GMM Debug data mismatch: candle min=${df_price_min:.2f}, "
+                f"price_levels min=${price_levels_min:.2f}"
+            )
+        if abs(df_price_max - price_levels_max) > 0.01 * df_price_max:
+            warnings.warn(
+                f"GMM Debug data mismatch: candle max=${df_price_max:.2f}, "
+                f"price_levels max=${price_levels_max:.2f}"
+            )
+
     # Generate candlestick data for window
     candle_data = []
     for idx, row in df_window.iterrows():
@@ -645,6 +664,8 @@ def generate_gmm_debug_data(gmm_zone_info, df_window: pd.DataFrame) -> Optional[
             'mean': float(mean),
             'std': float(std),
             'weight': float(weight),
+            'priceMin': gmm_zone_info.component_ranges[i][0],
+            'priceMax': gmm_zone_info.component_ranges[i][1],
             'priceRange': price_range.tolist(),
             'pdfValues': pdf_scaled.tolist(),
             'isCurrent': i == gmm_zone_info.current_component

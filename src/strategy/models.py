@@ -32,9 +32,9 @@ class TrackedFVG:
 
 @dataclass
 class SweepInfo:
-    """Information about a detected liquidity sweep."""
+    """Information about a detected liquidity sweep or FVG trigger."""
     candle_idx: int
-    sweep_type: str  # 'high', 'low', 'dual_short', or 'dual_long'
+    sweep_type: str  # 'high', 'low', 'dual_short', 'dual_long', 'fvg_long', or 'fvg_short'
     swept_level: float
     inflexion_idx: int
     timestamp: datetime
@@ -44,6 +44,10 @@ class SweepInfo:
     dual_low_level: Optional[float] = None
     dual_high_inflexion_idx: Optional[int] = None
     dual_low_inflexion_idx: Optional[int] = None
+    # FVG trigger fields (used when sweep_type is 'fvg_long' or 'fvg_short')
+    fvg_formation_idx: Optional[int] = None
+    fvg_top: Optional[float] = None
+    fvg_bottom: Optional[float] = None
 
 
 @dataclass

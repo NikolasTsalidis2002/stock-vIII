@@ -32,6 +32,7 @@ class GMMZoneInfo:
     current_fib_position: float
     entry_bias: str  # 'short', 'long', 'neutral', or 'skip'
     sweep_type_filter: Optional[str]  # 'high', 'low', 'both', or None
+    component_ranges: List[Tuple[float, float]]  # [(min, max) for each component]
 
     # Debug fields for GMM Debug tab visualization
     price_levels: Optional[np.ndarray] = None  # All price points used for GMM fitting
@@ -41,6 +42,7 @@ class GMMZoneInfo:
     window_candle_count: Optional[int] = None  # Number of candles in window
     current_price: Optional[float] = None      # Price used for classification
     selection_method: Optional[str] = None     # 'elbow' or 'min_bic'
+    window_df: Optional['pd.DataFrame'] = None # The exact candle data used for GMM fitting
 
 
 class GMMZoneDetector:
@@ -113,13 +115,13 @@ class GMMZoneDetector:
             best_n = np.argmin(bics) + 1
             selection_reason = "lowest BIC score"
 
-        # Debug: Print BIC scores for component selection
-        print(f"\n[GMM DEBUG] === BIC Scores for Component Selection ===")
-        for n, bic in enumerate(bics, 1):
-            marker = " <-- SELECTED" if n == best_n else ""
-            print(f"  {n} components: BIC = {bic:.2f}{marker}")
-        print(f"  Selection method: {self.selection_method}")
-        print(f"  Selection reason: {best_n} components selected via {selection_reason}")
+        # # Debug: Print BIC scores for component selection
+        # print(f"\n[GMM DEBUG] === BIC Scores for Component Selection ===")
+        # for n, bic in enumerate(bics, 1):
+        #     marker = " <-- SELECTED" if n == best_n else ""
+        #     print(f"  {n} components: BIC = {bic:.2f}{marker}")
+        # print(f"  Selection method: {self.selection_method}")
+        # print(f"  Selection reason: {best_n} components selected via {selection_reason}")
 
         return best_n, bics, models[best_n - 1]
 
@@ -250,10 +252,10 @@ class GMMZoneDetector:
         df_subset = df.iloc[start_idx:end_index + 1]
         window_size = len(df_subset)
 
-        print(f"\n[GMM DEBUG] === Growing Window ===")
-        print(f"  Fixed start index: {start_idx}")
-        print(f"  End index (sweep): {end_index}")
-        print(f"  Window size: {window_size} candles")
+        # print(f"\n[GMM DEBUG] === Growing Window ===")
+        # print(f"  Fixed start index: {start_idx}")
+        # print(f"  End index (sweep): {end_index}")
+        # print(f"  Window size: {window_size} candles")
 
         if len(df_subset) < 20:
             print(f"  [GMM] Insufficient data: {len(df_subset)} candles (need 20+)")
@@ -293,6 +295,16 @@ class GMMZoneDetector:
         # Get entry bias
         bias, sweep_type = self.get_entry_bias(current_price, fib_prices)
 
+        # Compute component ranges (min, max) for ALL components
+        component_ranges = []
+        for i in range(n_components):
+            comp_prices = self._get_component_prices(price_levels, gmm, i)
+            if len(comp_prices) > 0:
+                component_ranges.append((float(comp_prices.min()), float(comp_prices.max())))
+            else:
+                # Fallback to mean if no prices assigned
+                component_ranges.append((float(gmm.means_[i][0]), float(gmm.means_[i][0])))
+
         result = GMMZoneInfo(
             n_components=n_components,
             current_component=component,
@@ -309,6 +321,7 @@ class GMMZoneDetector:
             current_fib_position=current_fib,
             entry_bias=bias,
             sweep_type_filter=sweep_type,
+            component_ranges=component_ranges,
             # Debug fields for GMM Debug tab
             price_levels=price_levels,
             bic_scores=bics,
@@ -316,43 +329,44 @@ class GMMZoneDetector:
             window_end_idx=end_index,
             window_candle_count=window_size,
             current_price=current_price,
-            selection_method=self.selection_method
+            selection_method=self.selection_method,
+            window_df=df_subset.copy()  # Store the exact DataFrame slice used for GMM fitting
         )
 
-        # Debug output: Component statistics
-        print(f"\n[GMM DEBUG] === Component Statistics ===")
-        print(f"  Detected {n_components} zones (components)")
-        print(f"  Current price ${current_price:.2f} assigned to zone {component + 1}")
-        for i in range(n_components):
-            comp_mean = gmm.means_[i][0]
-            comp_std = np.sqrt(gmm.covariances_[i][0][0])
-            comp_weight = gmm.weights_[i]
-            comp_prices = self._get_component_prices(price_levels, gmm, i)
-            comp_range = f"${comp_prices.min():.2f} - ${comp_prices.max():.2f}" if len(comp_prices) > 0 else "N/A"
-            marker = " <-- CURRENT" if i == component else ""
-            print(f"  Zone {i + 1}: mean=${comp_mean:.2f}, std=${comp_std:.2f}, weight={comp_weight:.3f}, range={comp_range}, points={len(comp_prices)}{marker}")
+        # # Debug output: Component statistics
+        # # print(f"\n[GMM DEBUG] === Component Statistics ===")
+        # # print(f"  Detected {n_components} zones (components)")
+        # # print(f"  Current price ${current_price:.2f} assigned to zone {component + 1}")
+        # for i in range(n_components):
+        #     comp_mean = gmm.means_[i][0]
+        #     comp_std = np.sqrt(gmm.covariances_[i][0][0])
+        #     comp_weight = gmm.weights_[i]
+        #     comp_prices = self._get_component_prices(price_levels, gmm, i)
+        #     comp_range = f"${comp_prices.min():.2f} - ${comp_prices.max():.2f}" if len(comp_prices) > 0 else "N/A"
+        #     marker = " <-- CURRENT" if i == component else ""
+        #     print(f"  Zone {i + 1}: mean=${comp_mean:.2f}, std=${comp_std:.2f}, weight={comp_weight:.3f}, range={comp_range}, points={len(comp_prices)}{marker}")
 
-        # Debug output: Fibonacci levels with zone labels
-        print(f"\n[GMM DEBUG] === Fibonacci Levels ===")
-        for level in sorted(self.fib_levels, reverse=True):
-            price = fib_prices[level]
-            # Determine zone label
-            if level >= self.premium_zone[0]:
-                zone_label = " [PREMIUM ZONE]"
-            elif level <= self.discount_zone[1]:
-                zone_label = " [DISCOUNT ZONE]"
-            elif level == 0.5:
-                zone_label = " [EQUILIBRIUM]"
-            else:
-                zone_label = ""
-            print(f"  {level * 100:5.1f}%: ${price:.2f}{zone_label}")
+        # # Debug output: Fibonacci levels with zone labels
+        # # print(f"\n[GMM DEBUG] === Fibonacci Levels ===")
+        # for level in sorted(self.fib_levels, reverse=True):
+        #     price = fib_prices[level]
+        #     # Determine zone label
+        #     if level >= self.premium_zone[0]:
+        #         zone_label = " [PREMIUM ZONE]"
+        #     elif level <= self.discount_zone[1]:
+        #         zone_label = " [DISCOUNT ZONE]"
+        #     elif level == 0.5:
+        #         zone_label = " [EQUILIBRIUM]"
+        #     else:
+        #         zone_label = ""
+        #     print(f"  {level * 100:5.1f}%: ${price:.2f}{zone_label}")
 
-        # Debug output: Current position analysis
-        print(f"\n[GMM DEBUG] === Current Position Analysis ===")
-        print(f"  Zone range: ${fib_prices[0.0]:.2f} - ${fib_prices[1.0]:.2f}")
-        print(f"  Current fib position: {current_fib:.3f} ({current_fib * 100:.1f}%)")
-        print(f"  Entry bias: {bias}")
-        print(f"  Sweep type filter: {sweep_type}")
+        # # Debug output: Current position analysis
+        # print(f"\n[GMM DEBUG] === Current Position Analysis ===")
+        # print(f"  Zone range: ${fib_prices[0.0]:.2f} - ${fib_prices[1.0]:.2f}")
+        # print(f"  Current fib position: {current_fib:.3f} ({current_fib * 100:.1f}%)")
+        # print(f"  Entry bias: {bias}")
+        # print(f"  Sweep type filter: {sweep_type}")
 
         return result
 
@@ -505,12 +519,12 @@ class GMMZoneDetector:
             decision = False
             reason = f"unrecognized filter '{sweep_type_filter}'"
 
-        # Debug output
-        print(f"\n[GMM DEBUG] === Sweep Filter Decision ===")
-        print(f"  Sweep type: {sweep_type}")
-        print(f"  Entry bias: {entry_bias}")
-        print(f"  Required sweep type: {sweep_type_filter}")
-        print(f"  DECISION: {'REJECT' if decision else 'ACCEPT'} - {reason}")
+        # # Debug output
+        # print(f"\n[GMM DEBUG] === Sweep Filter Decision ===")
+        # print(f"  Sweep type: {sweep_type}")
+        # print(f"  Entry bias: {entry_bias}")
+        # print(f"  Required sweep type: {sweep_type_filter}")
+        # print(f"  DECISION: {'REJECT' if decision else 'ACCEPT'} - {reason}")
 
         return decision
 

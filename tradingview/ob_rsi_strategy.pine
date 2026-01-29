@@ -1,0 +1,579 @@
+//@version=5
+strategy("OB + Distance Strategy", overlay=true, max_boxes_count=500, max_lines_count=500,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     initial_capital=10000, commission_value=0.1)
+
+// ========== INPUTS ==========
+bool close_break = input.bool(true, "Require close/open break for BOS")
+float ob_min_dist_pct = input.float(10.0, "Min Opposite OB Distance %") / 100
+int tz_offset_hours = input.int(6, "Timezone Offset (hours from exchange to local)")
+
+// Colors
+color bull_ob_color   = input.color(color.new(color.aqua, 70), "Bullish OB Fill")
+color bull_ob_border  = input.color(color.aqua, "Bullish OB Border")
+color bear_ob_color   = input.color(color.new(color.orange, 70), "Bearish OB Fill")
+color bear_ob_border  = input.color(color.orange, "Bearish OB Border")
+
+// ========== INFLEXION POINTS ==========
+bool is_concave = high[1] >= high[2] and high[1] > high[0]
+bool is_convex  = low[1] <= low[2] and low[1] < low[0]
+
+var float last_concave_level = na
+var int   last_concave_bar   = na
+var float last_convex_level  = na
+var int   last_convex_bar    = na
+
+if is_concave
+    last_concave_level := high[1]
+    last_concave_bar   := bar_index - 1
+if is_convex
+    last_convex_level := low[1]
+    last_convex_bar   := bar_index - 1
+
+// ========== BOS / TREND TRACKING ==========
+var int   current_trend    = 0
+var float trend_max_level  = na
+var int   trend_max_bar    = na
+var float trend_min_level  = na
+var int   trend_min_bar    = na
+var float recent_max_level = na
+var int   recent_max_bar   = na
+var float recent_min_level = na
+var int   recent_min_bar   = na
+var int   trend_max_time  = na
+var int   trend_min_time  = na
+var int   recent_max_time = na
+var int   recent_min_time = na
+
+if is_concave
+    recent_max_level := high[1]
+    recent_max_bar   := bar_index - 1
+    recent_max_time  := time[1]
+if is_convex
+    recent_min_level := low[1]
+    recent_min_bar   := bar_index - 1
+    recent_min_time  := time[1]
+
+float check_high = close_break ? math.max(close, open) : high
+float check_low  = close_break ? math.min(close, open) : low
+
+int   bos_dir         = 0
+float bos_level       = na
+int   bos_inflexion_bar = na
+int   bos_inflexion_time = na
+
+if current_trend == -1 and not na(trend_max_level)
+    if check_high > trend_max_level
+        bos_dir           := 1
+        bos_level         := trend_max_level
+        bos_inflexion_bar := trend_max_bar
+        bos_inflexion_time := trend_max_time
+        current_trend     := 1
+        if not na(recent_min_level)
+            trend_min_level := recent_min_level
+            trend_min_bar   := recent_min_bar
+            trend_min_time  := recent_min_time
+        if not na(recent_max_level)
+            trend_max_level := recent_max_level
+            trend_max_bar   := recent_max_bar
+            trend_max_time  := recent_max_time
+
+else if current_trend == 1 and not na(trend_min_level)
+    if check_low < trend_min_level
+        bos_dir           := -1
+        bos_level         := trend_min_level
+        bos_inflexion_bar := trend_min_bar
+        bos_inflexion_time := trend_min_time
+        current_trend     := -1
+        if not na(recent_max_level)
+            trend_max_level := recent_max_level
+            trend_max_bar   := recent_max_bar
+            trend_max_time  := recent_max_time
+        if not na(recent_min_level)
+            trend_min_level := recent_min_level
+            trend_min_bar   := recent_min_bar
+            trend_min_time  := recent_min_time
+
+if current_trend == 0
+    if is_concave and not na(trend_max_level)
+        if high[1] < trend_max_level
+            current_trend := -1
+        else if high[1] > trend_max_level
+            current_trend := 1
+    if is_convex and not na(trend_min_level)
+        if low[1] > trend_min_level
+            current_trend := 1
+        else if low[1] < trend_min_level
+            current_trend := -1
+
+if na(trend_max_level) and is_concave
+    trend_max_level := high[1]
+    trend_max_bar   := bar_index - 1
+    trend_max_time  := time[1]
+if na(trend_min_level) and is_convex
+    trend_min_level := low[1]
+    trend_min_bar   := bar_index - 1
+    trend_min_time  := time[1]
+
+if current_trend == -1
+    if is_concave and high[1] < trend_max_level
+        trend_max_level := high[1]
+        trend_max_bar   := bar_index - 1
+        trend_max_time  := time[1]
+    if is_convex and low[1] < trend_min_level
+        trend_min_level := low[1]
+        trend_min_bar   := bar_index - 1
+        trend_min_time  := time[1]
+if current_trend == 1
+    if is_concave and high[1] > trend_max_level
+        trend_max_level := high[1]
+        trend_max_bar   := bar_index - 1
+        trend_max_time  := time[1]
+    if is_convex and low[1] > trend_min_level
+        trend_min_level := low[1]
+        trend_min_bar   := bar_index - 1
+        trend_min_time  := time[1]
+
+// ========== BOS VISUALIZATION ==========
+if bos_dir == 1 and not na(bos_inflexion_bar)
+    line.new(bos_inflexion_bar, bos_level, bar_index, bos_level,
+         color=color.green, style=line.style_dashed, width=1)
+    label.new(bos_inflexion_bar, bos_level, "BOS ↑",
+         style=label.style_none, textcolor=color.green, size=size.tiny)
+
+if bos_dir == -1 and not na(bos_inflexion_bar)
+    line.new(bos_inflexion_bar, bos_level, bar_index, bos_level,
+         color=color.red, style=line.style_dashed, width=1)
+    label.new(bos_inflexion_bar, bos_level, "BOS ↓",
+         style=label.style_none, textcolor=color.red, size=size.tiny)
+
+// ========== ORDER BLOCK STORAGE ==========
+var box[]   ob_boxes = array.new_box(0)
+var int[]   ob_dirs  = array.new_int(0)    // 1=bullish, -1=bearish
+var float[] ob_tops  = array.new_float(0)
+var float[] ob_bots  = array.new_float(0)
+var int[]   ob_bos_times = array.new_int(0)
+
+// ========== ORDER BLOCK CREATION ==========
+if bos_dir == 1 and not na(bos_inflexion_bar)
+    // Bullish OB: top = broken level, bottom = min(low) from inflexion to BOS
+    int bars_back = bar_index - bos_inflexion_bar
+    float zone_bottom = low
+    for k = 0 to bars_back
+        zone_bottom := math.min(zone_bottom, low[k])
+    array.push(ob_boxes, box.new(bos_inflexion_bar, bos_level, bar_index, zone_bottom,
+         bgcolor=bull_ob_color, border_color=bull_ob_border,
+         border_width=1, extend=extend.right, text="Bullish OB", text_color=color.new(color.aqua, 50), text_size=size.tiny))
+    array.push(ob_dirs, 1)
+    array.push(ob_tops, bos_level)
+    array.push(ob_bots, zone_bottom)
+    array.push(ob_bos_times, time)
+
+if bos_dir == -1 and not na(bos_inflexion_bar)
+    // Bearish OB: top = max(high) from inflexion to BOS, bottom = broken level
+    int bars_back = bar_index - bos_inflexion_bar
+    float zone_top = high
+    for k = 0 to bars_back
+        zone_top := math.max(zone_top, high[k])
+    array.push(ob_boxes, box.new(bos_inflexion_bar, zone_top, bar_index, bos_level,
+         bgcolor=bear_ob_color, border_color=bear_ob_border,
+         border_width=1, extend=extend.right, text="Bearish OB", text_color=color.new(color.orange, 50), text_size=size.tiny))
+    array.push(ob_dirs, -1)
+    array.push(ob_tops, zone_top)
+    array.push(ob_bots, bos_level)
+    array.push(ob_bos_times, time)
+
+// ========== STRATEGY STATE MACHINE ==========
+// States for long:
+//   0 = waiting for distant bearish OB + OB A touch & leave
+//   1 = OB A confirmed, scanning for price to touch OB B
+//   2 = price is inside OB B, waiting for candle to close above (respected) → entry
+// States for short (mirror):
+//   0 = waiting for distant bullish OB + OB A touch & leave
+//   1 = OB A confirmed, scanning for price to touch OB B
+//   2 = price is inside OB B, waiting for candle to close below (respected) → entry
+
+var int   long_state  = 0
+var float long_ob_a_bottom = na   // SL reference: bottom of OB A
+var int   long_ob_a_idx    = na   // array index of OB A (to track invalidation)
+var int   long_ob_a_confirmed_bar = na  // bar_index when OB A was respected
+
+var int   short_state = 0
+var float short_ob_a_top = na     // SL reference: top of OB A
+var int   short_ob_a_idx  = na
+var int   short_ob_a_confirmed_bar = na  // bar_index when OB A was respected
+
+var int   long_ob_b_idx  = na
+var int   short_ob_b_idx = na
+
+var int   long_ob_c_idx     = na
+var float long_ob_c_bottom  = na
+
+var int   short_ob_c_idx    = na
+var float short_ob_c_top    = na
+
+var float long_entry_price = na
+var int   long_entry_bar   = na
+var line  long_tp_line     = na
+var line  long_sl_line     = na
+
+var float short_entry_price = na
+var int   short_entry_bar   = na
+var line  short_tp_line     = na
+var line  short_sl_line     = na
+
+// ========== TOUCH / INVALIDATION + STRATEGY SIGNALS ==========
+bool long_signal  = false
+bool short_signal = false
+float long_sl     = na
+float short_sl    = na
+
+if array.size(ob_boxes) > 0
+    for i = array.size(ob_boxes) - 1 to 0
+        b = array.get(ob_boxes, i)
+        int dir = array.get(ob_dirs, i)
+        float b_top = box.get_top(b)
+        float b_bottom = box.get_bottom(b)
+
+        float break_low = math.min(close, open)
+        float break_high = math.max(close, open)
+        bool invalidated = dir == 1 ? break_low <= b_bottom : break_high >= b_top
+
+        if invalidated
+            box.set_right(b, bar_index)
+            box.set_extend(b, extend.none)
+            box.set_bgcolor(b, dir == 1 ? color.new(color.aqua, 93) : color.new(color.orange, 93))
+            box.set_border_color(b, dir == 1 ? color.new(color.aqua, 85) : color.new(color.orange, 85))
+            int bos_time = array.get(ob_bos_times, i)
+            string inv_label = (dir == 1 ? "Bullish OB - Invalidated" : "Bearish OB - Invalidated") + "\nMin: " + str.tostring(b_bottom, "#.##") + " | Max: " + str.tostring(b_top, "#.##") + "\nBOS: " + str.format_time(bos_time + tz_offset_hours * 3600000, "yyyy-MM-dd HH:mm")
+            box.set_text(b, inv_label)
+            // Reset strategy state if OB A got invalidated
+            if dir == 1 and (long_state == 1 or long_state == 2) and i == long_ob_a_idx
+                long_state := 0
+                long_ob_a_bottom := na
+                long_ob_a_idx := na
+                long_ob_a_confirmed_bar := na
+                long_ob_b_idx := na
+            if dir == -1 and (short_state == 1 or short_state == 2) and i == short_ob_a_idx
+                short_state := 0
+                short_ob_a_top := na
+                short_ob_a_idx := na
+                short_ob_a_confirmed_bar := na
+                short_ob_b_idx := na
+            // Reset to state 1 if OB B got invalidated
+            if dir == 1 and long_state == 2 and i == long_ob_b_idx
+                long_state := 1
+                long_ob_b_idx := na
+            if dir == -1 and short_state == 2 and i == short_ob_b_idx
+                short_state := 1
+                short_ob_b_idx := na
+            // Adjust saved indices after removal
+            if not na(long_ob_a_idx) and i < long_ob_a_idx
+                long_ob_a_idx := long_ob_a_idx - 1
+            if not na(short_ob_a_idx) and i < short_ob_a_idx
+                short_ob_a_idx := short_ob_a_idx - 1
+            if not na(long_ob_b_idx) and i < long_ob_b_idx
+                long_ob_b_idx := long_ob_b_idx - 1
+            if not na(short_ob_b_idx) and i < short_ob_b_idx
+                short_ob_b_idx := short_ob_b_idx - 1
+            if not na(long_ob_c_idx) and i < long_ob_c_idx
+                long_ob_c_idx := long_ob_c_idx - 1
+            if not na(long_ob_c_idx) and i == long_ob_c_idx
+                long_ob_c_idx := na
+                long_ob_c_bottom := na
+                // OB C invalidated — no valid TP target, reset setup
+                long_state := 0
+                long_ob_a_bottom := na
+                long_ob_a_idx := na
+                long_ob_a_confirmed_bar := na
+                long_ob_b_idx := na
+            if not na(short_ob_c_idx) and i < short_ob_c_idx
+                short_ob_c_idx := short_ob_c_idx - 1
+            if not na(short_ob_c_idx) and i == short_ob_c_idx
+                short_ob_c_idx := na
+                short_ob_c_top := na
+                // OB C invalidated — no valid TP target, reset setup
+                short_state := 0
+                short_ob_a_top := na
+                short_ob_a_idx := na
+                short_ob_a_confirmed_bar := na
+                short_ob_b_idx := na
+            array.remove(ob_boxes, i)
+            array.remove(ob_dirs, i)
+            array.remove(ob_tops, i)
+            array.remove(ob_bots, i)
+            array.remove(ob_bos_times, i)
+        else
+            bool touching = low <= b_top and high >= b_bottom
+            if touching
+                box.set_bgcolor(b, dir == 1 ? color.new(color.green, 50) : color.new(color.purple, 50))
+                box.set_border_color(b, dir == 1 ? color.green : color.purple)
+                int bos_time_t = array.get(ob_bos_times, i)
+                string touch_price = dir == 1 ? str.tostring(low, "#.##") : str.tostring(high, "#.##")
+                string touch_label = (dir == 1 ? "Bullish OB - Touched" : "Bearish OB - Touched") + "\nMin: " + str.tostring(b_bottom, "#.##") + " | Max: " + str.tostring(b_top, "#.##") + "\nBOS: " + str.format_time(bos_time_t + tz_offset_hours * 3600000, "yyyy-MM-dd HH:mm") + "\nTouch: " + str.format_time(time + tz_offset_hours * 3600000, "yyyy-MM-dd HH:mm") + " | " + (dir == 1 ? "Low: " : "High: ") + touch_price
+                box.set_text(b, touch_label)
+            else
+                box.set_bgcolor(b, dir == 1 ? bull_ob_color : bear_ob_color)
+                box.set_border_color(b, dir == 1 ? bull_ob_border : bear_ob_border)
+                int bos_time_i = array.get(ob_bos_times, i)
+                string idle_label = (dir == 1 ? "Bullish OB" : "Bearish OB") + "\nMin: " + str.tostring(b_bottom, "#.##") + " | Max: " + str.tostring(b_top, "#.##") + "\nBOS: " + str.format_time(bos_time_i + tz_offset_hours * 3600000, "yyyy-MM-dd HH:mm")
+                box.set_text(b, idle_label)
+
+            // --- LONG STRATEGY ---
+            if dir == 1  // bullish OB
+                // State 0 → 1: distant bearish OB exists, price touches OB A, then leaves
+                if long_state == 0
+                    bool was_touching_prev = low[1] <= b_top and high[1] >= b_bottom
+                    bool left_now = not touching and was_touching_prev
+                    if left_now
+                        // Find closest bearish OB above current close
+                        float closest_bear_bot = na
+                        int   closest_bear_idx = na
+                        float closest_bear_dist = 1e10
+                        if array.size(ob_dirs) > 0
+                            for j = 0 to array.size(ob_dirs) - 1
+                                if array.get(ob_dirs, j) == -1
+                                    float j_bot = array.get(ob_bots, j)
+                                    if j_bot > close
+                                        float dist = j_bot - close
+                                        if dist < closest_bear_dist
+                                            closest_bear_dist := dist
+                                            closest_bear_bot := j_bot
+                                            closest_bear_idx := j
+                        if not na(closest_bear_bot) and (closest_bear_bot - close) / close > ob_min_dist_pct
+                            // Compute and plot equilibrium level
+                            int eq_ob_c_left = box.get_left(array.get(ob_boxes, closest_bear_idx))
+                            int eq_bars = bar_index - eq_ob_c_left
+                            float eq_lowest = low
+                            if eq_bars > 0
+                                for q = 0 to eq_bars
+                                    eq_lowest := math.min(eq_lowest, low[q])
+                            float eq_level = (eq_lowest + closest_bear_bot) / 2
+                            line.new(bar_index, eq_level, bar_index + 20, eq_level,
+                                 color=color.green, style=line.style_dotted, width=1)
+                            label.new(bar_index, eq_level, "EQ: " + str.tostring(eq_level, "#.##"),
+                                 style=label.style_label_up, color=color.green, textcolor=color.white, size=size.tiny)
+                            long_state := 1
+                            long_ob_a_bottom := b_bottom
+                            long_ob_a_idx := i
+                            long_ob_a_confirmed_bar := bar_index
+                            long_ob_c_idx := closest_bear_idx
+                            long_ob_c_bottom := closest_bear_bot
+                        else if not na(closest_bear_bot)
+                            // Distance filter rejected — show debug levels
+                            float rej_dist_pct = (closest_bear_bot - close) / close * 100
+                            label.new(bar_index, close,
+                                 "EQ rej: " + str.tostring(rej_dist_pct, "#.#") + "%",
+                                 style=label.style_xcross, color=color.gray, textcolor=color.gray, size=size.tiny)
+                            // Debug: show OB A (bottom) and OB C (bottom) levels
+                            line.new(bar_index - 3, b_bottom, bar_index + 3, b_bottom,
+                                 color=color.gray, style=line.style_dotted, width=1)
+                            line.new(bar_index - 3, closest_bear_bot, bar_index + 3, closest_bear_bot,
+                                 color=color.gray, style=line.style_dotted, width=1)
+
+                // State 1 → 2: price touches OB B (formed after OB A)
+                else if long_state == 1 and i != long_ob_a_idx
+                    if box.get_left(b) > long_ob_a_confirmed_bar and touching
+                        long_state := 2
+                        long_ob_b_idx := i
+
+                // State 2 → entry: candle closes above OB B top (respected)
+                else if long_state == 2 and i == long_ob_b_idx
+                    if close > b_top
+                        long_signal := true
+                        long_sl := long_ob_a_bottom
+
+            // --- SHORT STRATEGY ---
+            if dir == -1  // bearish OB
+                // State 0 → 1: distant bullish OB exists, price touches OB A, then leaves
+                if short_state == 0
+                    bool was_touching_prev = low[1] <= b_top and high[1] >= b_bottom
+                    bool left_now = not touching and was_touching_prev
+                    if left_now
+                        // Find closest bullish OB below current close
+                        float closest_bull_top = na
+                        int   closest_bull_idx = na
+                        float closest_bull_dist = 1e10
+                        if array.size(ob_dirs) > 0
+                            for j = 0 to array.size(ob_dirs) - 1
+                                if array.get(ob_dirs, j) == 1
+                                    float j_top = array.get(ob_tops, j)
+                                    if j_top < close
+                                        float dist = close - j_top
+                                        if dist < closest_bull_dist
+                                            closest_bull_dist := dist
+                                            closest_bull_top := j_top
+                                            closest_bull_idx := j
+                        if not na(closest_bull_top) and (close - closest_bull_top) / close > ob_min_dist_pct
+                            // Compute and plot equilibrium level
+                            int eq_ob_c_left_s = box.get_left(array.get(ob_boxes, closest_bull_idx))
+                            int eq_bars_s = bar_index - eq_ob_c_left_s
+                            float eq_highest = high
+                            if eq_bars_s > 0
+                                for q = 0 to eq_bars_s
+                                    eq_highest := math.max(eq_highest, high[q])
+                            float eq_level_s = (eq_highest + closest_bull_top) / 2
+                            line.new(bar_index, eq_level_s, bar_index + 20, eq_level_s,
+                                 color=color.red, style=line.style_dotted, width=1)
+                            label.new(bar_index, eq_level_s, "EQ: " + str.tostring(eq_level_s, "#.##"),
+                                 style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
+                            short_state := 1
+                            short_ob_a_top := b_top
+                            short_ob_a_idx := i
+                            short_ob_a_confirmed_bar := bar_index
+                            short_ob_c_idx := closest_bull_idx
+                            short_ob_c_top := closest_bull_top
+                        else if not na(closest_bull_top)
+                            // Distance filter rejected — show debug levels
+                            float rej_dist_pct_s = (close - closest_bull_top) / close * 100
+                            label.new(bar_index, close,
+                                 "EQ rej: " + str.tostring(rej_dist_pct_s, "#.#") + "%",
+                                 style=label.style_xcross, color=color.gray, textcolor=color.gray, size=size.tiny)
+                            // Debug: show OB A (top) and OB C (top) levels
+                            line.new(bar_index - 3, b_top, bar_index + 3, b_top,
+                                 color=color.gray, style=line.style_dotted, width=1)
+                            line.new(bar_index - 3, closest_bull_top, bar_index + 3, closest_bull_top,
+                                 color=color.gray, style=line.style_dotted, width=1)
+
+                // State 1 → 2: price touches OB B (formed after OB A)
+                else if short_state == 1 and i != short_ob_a_idx
+                    if box.get_left(b) > short_ob_a_confirmed_bar and touching
+                        short_state := 2
+                        short_ob_b_idx := i
+
+                // State 2 → entry: candle closes below OB B bottom (respected)
+                else if short_state == 2 and i == short_ob_b_idx
+                    if close < b_bottom
+                        short_signal := true
+                        short_sl := short_ob_a_top
+
+// ========== EXECUTE TRADES ==========
+if long_signal and strategy.position_size == 0 and not na(long_ob_c_idx)
+    // Equilibrium TP: midpoint of lowest low in [OB C bar → entry bar] and OB C bottom
+    int ob_c_left = not na(long_ob_c_idx) ? box.get_left(array.get(ob_boxes, long_ob_c_idx)) : bar_index
+    int bars_to_ob_c = bar_index - ob_c_left
+    float lowest_low = low
+    if bars_to_ob_c > 0
+        for k = 0 to bars_to_ob_c
+            lowest_low := math.min(lowest_low, low[k])
+    float long_tp = (lowest_low + long_ob_c_bottom) / 2
+    if long_tp <= close
+        // TP below entry — skip trade, reset state
+        long_state := 0
+        long_ob_a_bottom := na
+        long_ob_a_idx := na
+        long_ob_a_confirmed_bar := na
+        long_ob_b_idx := na
+        long_ob_c_idx := na
+        long_ob_c_bottom := na
+        label.new(bar_index, low, "TP invalid",
+             style=label.style_xcross, color=color.gray, textcolor=color.gray, size=size.tiny)
+    else
+        strategy.entry("Long", strategy.long)
+        strategy.exit("Long TP/SL", "Long",
+             limit=long_tp,
+             stop=long_sl)
+        long_entry_price := close
+        long_entry_bar   := bar_index
+        long_tp_line := line.new(bar_index, long_tp, bar_index + 1, long_tp,
+             color=color.green, style=line.style_dashed, width=1, extend=extend.right)
+        long_sl_line := line.new(bar_index, long_sl, bar_index + 1, long_sl,
+             color=color.red, style=line.style_dashed, width=1, extend=extend.right)
+        long_state := 0
+        long_ob_a_bottom := na
+        long_ob_a_idx := na
+        long_ob_a_confirmed_bar := na
+        long_ob_b_idx := na
+        long_ob_c_idx := na
+        long_ob_c_bottom := na
+        label.new(bar_index, low,
+             "LONG @ " + str.tostring(close, "#.##") + "\nTP: " + str.tostring(long_tp, "#.##") + " | SL: " + str.tostring(long_sl, "#.##"),
+             style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+
+if short_signal and strategy.position_size == 0 and not na(short_ob_c_idx)
+    // Equilibrium TP: midpoint of highest high in [OB C bar → entry bar] and OB C top
+    int ob_c_left_s = not na(short_ob_c_idx) ? box.get_left(array.get(ob_boxes, short_ob_c_idx)) : bar_index
+    int bars_to_ob_c_s = bar_index - ob_c_left_s
+    float highest_high = high
+    if bars_to_ob_c_s > 0
+        for k = 0 to bars_to_ob_c_s
+            highest_high := math.max(highest_high, high[k])
+    float short_tp = (highest_high + short_ob_c_top) / 2
+    if short_tp >= close
+        // TP above entry — skip trade, reset state
+        short_state := 0
+        short_ob_a_top := na
+        short_ob_a_idx := na
+        short_ob_a_confirmed_bar := na
+        short_ob_b_idx := na
+        short_ob_c_idx := na
+        short_ob_c_top := na
+        label.new(bar_index, high, "TP invalid",
+             style=label.style_xcross, color=color.gray, textcolor=color.gray, size=size.tiny)
+    else
+        strategy.entry("Short", strategy.short)
+        strategy.exit("Short TP/SL", "Short",
+             limit=short_tp,
+             stop=short_sl)
+        short_entry_price := close
+        short_entry_bar   := bar_index
+        short_tp_line := line.new(bar_index, short_tp, bar_index + 1, short_tp,
+             color=color.green, style=line.style_dashed, width=1, extend=extend.right)
+        short_sl_line := line.new(bar_index, short_sl, bar_index + 1, short_sl,
+             color=color.red, style=line.style_dashed, width=1, extend=extend.right)
+        short_state := 0
+        short_ob_a_top := na
+        short_ob_a_idx := na
+        short_ob_a_confirmed_bar := na
+        short_ob_b_idx := na
+        short_ob_c_idx := na
+        short_ob_c_top := na
+        label.new(bar_index, high,
+             "SHORT @ " + str.tostring(close, "#.##") + "\nTP: " + str.tostring(short_tp, "#.##") + " | SL: " + str.tostring(short_sl, "#.##"),
+             style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+
+// ========== SL UPDATE FOR OPEN POSITIONS ==========
+// If OB A gets invalidated while in a trade, close the position
+if strategy.position_size > 0
+    float break_low_now = math.min(close, open)
+    if not na(long_ob_a_bottom) and break_low_now < long_ob_a_bottom
+        strategy.close("Long", comment="OB A Invalidated")
+
+if strategy.position_size < 0
+    float break_high_now = math.max(close, open)
+    if not na(short_ob_a_top) and break_high_now > short_ob_a_top
+        strategy.close("Short", comment="OB A Invalidated")
+
+// ========== EXIT VISUALIZATION ==========
+var float prev_pos = 0
+if prev_pos > 0 and strategy.position_size == 0
+    // Long closed
+    float pnl = close - long_entry_price
+    color c = pnl > 0 ? color.green : color.red
+    string sign = pnl > 0 ? "+" : ""
+    line.new(long_entry_bar, long_entry_price, bar_index, close, color=c, width=2)
+    label.new(bar_index, close, sign + str.tostring(pnl, "#.##"),
+         style=label.style_label_down, color=c, textcolor=color.white, size=size.small)
+    line.delete(long_tp_line)
+    line.delete(long_sl_line)
+
+if prev_pos < 0 and strategy.position_size == 0
+    // Short closed
+    float pnl = short_entry_price - close
+    color c = pnl > 0 ? color.green : color.red
+    string sign = pnl > 0 ? "+" : ""
+    line.new(short_entry_bar, short_entry_price, bar_index, close, color=c, width=2)
+    label.new(bar_index, close, sign + str.tostring(pnl, "#.##"),
+         style=label.style_label_up, color=c, textcolor=color.white, size=size.small)
+    line.delete(short_tp_line)
+    line.delete(short_sl_line)
+
+prev_pos := strategy.position_size
+
+// Defensive cleanup: delete TP/SL lines whenever flat
+if strategy.position_size == 0
+    line.delete(long_tp_line)
+    line.delete(long_sl_line)
+    line.delete(short_tp_line)
+    line.delete(short_sl_line)
+

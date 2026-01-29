@@ -43,7 +43,8 @@ class StrategyEngine:
         require_fvg_in_equilibrium: bool = False,
         sweep_proximity_threshold: float = 0.0,
         abandon_on_new_sweep: bool = True,
-        gmm_config: Dict = None
+        gmm_config: Dict = None,
+        use_fvg_trigger: bool = False
     ) -> None:
         """
         Initialize with pre-configured timeframe manager.
@@ -74,12 +75,15 @@ class StrategyEngine:
                         - discount_zone: list (default [0.0, 0.236])
                         - allow_middle_zone_trades: bool (default False)
                         - take_profit_method: str ('fib' or 'order_block', default 'fib')
+            use_fvg_trigger: If True, FVG respect on high TF also triggers Stage 1.
+                            Bullish FVG respected = LONG, Bearish = SHORT.
         """
         self._tm = timeframe_manager
         self._use_fvg_validation = use_fvg_validation
         self._use_equilibrium_validation = use_equilibrium_validation
         self._require_fvg_in_equilibrium = require_fvg_in_equilibrium
         self._abandon_on_new_sweep = abandon_on_new_sweep
+        self._use_fvg_trigger = use_fvg_trigger
 
         # GMM Zone Detector (optional)
         self._gmm_config = gmm_config or {}
@@ -157,13 +161,20 @@ class StrategyEngine:
         inflexion_idx: int,
         exit_target: Optional[ExitTarget],
         all_sweeps: List[SweepInfo],
-        equilibrium_state: Optional[EquilibriumState] = None
+        must_process_sweeps: set,
+        equilibrium_state: Optional[EquilibriumState] = None,
+        is_fvg_trigger: bool = False,
+        fvg_formation_idx: Optional[int] = None
     ) -> Tuple[Optional[Tuple[datetime, str, float]], bool, bool, datetime, bool, Optional[datetime]]:
         """
         Search for low TF confirmation with invalidation checks.
 
         Strategy adds additional invalidation check for exit OB break,
         new sweep invalidation, and FVG disrespect monitoring.
+
+        Args:
+            is_fvg_trigger: True if this is an FVG trigger (not liquidity sweep)
+            fvg_formation_idx: Index of FVG formation (required if is_fvg_trigger)
 
         Returns:
             (confirmation_tuple, sweep_broken, new_sweep_occurred, last_time_scanned,
@@ -206,11 +217,19 @@ class StrategyEngine:
                 check_time = time_high_sweep + timedelta(seconds=high_duration.total_seconds() * current_candle_boundary)
                 current_candle_idx = sweep_idx + int(current_candle_boundary) - 1
 
-                # Check: Sweep disrespected?
-                if self._liquidity_detector.is_sweep_broken_at_time(inflexion_idx, check_time, current_candle_idx):
-                    print(f"    ⚠️  Sweep broken at {check_time} during low TF scan - abandoning setup")
-                    sweep_broken = True
-                    break
+                # Check: Trigger invalidated? (sweep disrespected or FVG broken)
+                if is_fvg_trigger:
+                    # FVG trigger: check if FVG was disrespected
+                    if self._liquidity_detector.is_fvg_broken_at_time(fvg_formation_idx, self._tm.fvg_high, check_time):
+                        print(f"    ⚠️  FVG broken at {check_time} during low TF scan - abandoning setup")
+                        sweep_broken = True
+                        break
+                else:
+                    # Liquidity sweep: check if sweep was broken
+                    if self._liquidity_detector.is_sweep_broken_at_time(inflexion_idx, check_time, current_candle_idx):
+                        print(f"    ⚠️  Sweep broken at {check_time} during low TF scan - abandoning setup")
+                        sweep_broken = True
+                        break
 
             # Check: FVG disrespected? (only if tracking FVG-based validation)
             if tracking_fvg and len(active_fvgs) > 0:
@@ -246,11 +265,20 @@ class StrategyEngine:
                             fvg_invalidation_time = current_5m_time
                             break
 
-            # Check: New sweep occurred? (invalidates current setup)
-            if self._abandon_on_new_sweep and self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_low_current):
-                print(f"    ⚠️  New sweep occurred during low TF scan - abandoning current setup")
-                new_sweep_occurred = True
-                break
+            # Check: New sweep occurred?
+            if self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_low_current):
+                if self._abandon_on_new_sweep:
+                    # Abandon current setup
+                    print(f"    ⚠️  New sweep occurred during low TF scan - abandoning current setup")
+                    new_sweep_occurred = True
+                    break
+                else:
+                    # Track new sweeps so they're processed later (don't skip them)
+                    for sweep_check in all_sweeps:
+                        if sweep_check.timestamp > time_high_sweep and sweep_check.timestamp <= time_low_current:
+                            if sweep_check.timestamp not in must_process_sweeps:
+                                must_process_sweeps.add(sweep_check.timestamp)
+                                print(f"    📌 New sweep at {sweep_check.timestamp} tracked for later processing")
 
             # Strategy: Check if price breaks exit OB (target reached before entry)
             if exit_target is not None:
@@ -297,6 +325,8 @@ class StrategyEngine:
         """
         print("🔍 Scanning for Strategy trade signals...")
         print(f"  Using Equilibrium Premium/Discount zones")
+        if self._use_fvg_trigger:
+            print(f"  FVG Trigger: ENABLED (high TF FVG respect triggers Stage 1)")
         if self._gmm_enabled:
             print(f"  GMM Zone Detection: ENABLED")
             print(f"    - Lookback: {self._gmm_config.get('lookback_candles', 300)} candles")
@@ -312,6 +342,10 @@ class StrategyEngine:
 
         # Track last analysis end time to ensure temporal consistency
         last_analysis_end_time = None
+
+        # Track sweeps that occurred during analysis - these must be processed later
+        # even if they would normally be skipped by the "overlaps" check
+        must_process_sweeps = set()
 
         # Get the high TF duration for time calculations
         high_duration = self._tm.high_duration
@@ -348,13 +382,26 @@ class StrategyEngine:
             print(f"[GMM] Fixed start index: {fixed_start_index}")
             print(f"[GMM] Initial window: {first_overlap_index - fixed_start_index} candles")
 
-        # Step 1: Detect all liquidity sweeps upfront (no GMM filter - we filter per sweep)
-        # Get tradable_start from timeframe manager - only trade sweeps within overlap period
+        # Step 1: Detect all Stage 1 triggers (liquidity sweeps and optionally FVG triggers)
+        # Get tradable_start from timeframe manager - only trade triggers within overlap period
         tradable_start = self._tm.tradable_start
         all_sweeps = self._liquidity_detector.detect_all_sweeps(
             sweep_type_filter=None,  # No pre-filtering - GMM filter applied per sweep
             tradable_start=tradable_start
         )
+
+        # If FVG trigger is enabled, also detect FVG respect events
+        if self._use_fvg_trigger:
+            self._tm.fvg_high.to_csv('debug_fvg_high.csv')  # Debug output
+            fvg_triggers = self._liquidity_detector.detect_all_fvg_triggers(
+                fvg_high=self._tm.fvg_high,
+                tradable_start=tradable_start
+            )
+            # Merge FVG triggers with liquidity sweeps
+            all_sweeps.extend(fvg_triggers)
+            # Sort all triggers by timestamp for chronological processing
+            all_sweeps.sort(key=lambda x: x.timestamp)
+            print(f"  Combined triggers: {len(all_sweeps)} (liquidity sweeps + FVG triggers)")
 
         # Step 2: Process each sweep in order
         for sweep in all_sweeps:
@@ -376,9 +423,13 @@ class StrategyEngine:
                 continue
 
             # Skip if sweep time is before or at last analysis end time
+            # UNLESS the sweep is in must_process_sweeps (occurred during previous analysis)
             if last_analysis_end_time is not None and time_high_sweep <= last_analysis_end_time:
-                print(f"  Skipping sweep at {time_high_sweep} (overlaps with previous analysis)")
-                continue
+                if time_high_sweep not in must_process_sweeps:
+                    print(f"  Skipping sweep at {time_high_sweep} (overlaps with previous analysis)")
+                    continue
+                else:
+                    print(f"  Processing sweep at {time_high_sweep} (occurred during previous analysis, must process)")
 
             # Mark this timestamp as analyzed
             analyzed_sweep_times.add(time_high_sweep)
@@ -390,10 +441,18 @@ class StrategyEngine:
 
             price_high_sweep = swept_level
 
+            print(f"\n{'='*30}")
             print(f"\n  Analyzing sweep at {time_high_sweep} (high TF trend: {trend_high})")
 
-            # Determine entry direction based on how liquidity was swept
-            if sweep.is_dual_sweep:
+            # Determine entry direction based on trigger type
+            is_fvg_trigger = sweep.sweep_type.startswith('fvg_')
+            if is_fvg_trigger:
+                # FVG trigger: direction already determined by FVG type
+                entry_direction = sweep.sweep_type.replace('fvg_', '')  # 'fvg_long' → 'long'
+                print(f"    📊 FVG respect trigger detected")
+                print(f"       FVG range: ${sweep.fvg_bottom:.2f}-${sweep.fvg_top:.2f}")
+                print(f"       Direction: {entry_direction.upper()}")
+            elif sweep.is_dual_sweep:
                 # Dual sweep: direction already determined by candle color in detector
                 entry_direction = sweep.sweep_type.replace('dual_', '')  # 'dual_short' → 'short'
                 print(f"    🔄 Dual liquidity sweep detected")
@@ -429,14 +488,19 @@ class StrategyEngine:
                 # Store current GMM zone for this sweep (for visualization)
                 self._current_gmm_zone = sweep_gmm_zone
 
+                gmm_bias = sweep_gmm_zone.entry_bias
+
                 # Set fib prices for ExitTargetFinder
-                use_fib_tp = self._gmm_config.get('take_profit_method', 'fib') == 'fib'
+                # Middle zone trades always use order block TP, not fib
+                is_middle_zone_trade = gmm_bias == 'neutral'
+                if is_middle_zone_trade:
+                    use_fib_tp = False  # Middle zone trades use order block TP
+                else:
+                    use_fib_tp = self._gmm_config.get('take_profit_method', 'fib') == 'fib'
                 self._exit_target_finder.set_fib_prices(
                     sweep_gmm_zone.fib_prices,
                     use_fib_tp=use_fib_tp
                 )
-
-                gmm_bias = sweep_gmm_zone.entry_bias
 
                 # Check: Is price in middle zone?
                 if gmm_bias == 'skip':
@@ -534,16 +598,34 @@ class StrategyEngine:
                     check_time = time_high_sweep + timedelta(seconds=high_duration.total_seconds() * current_candle_boundary)
                     current_candle_idx = sweep_idx + int(current_candle_boundary) - 1
 
-                    if self._liquidity_detector.is_sweep_broken_at_time(inflexion_idx, check_time, current_candle_idx):
-                        print(f"    ⚠️  Sweep broken - abandoning setup")
-                        sweep_broken = True
-                        break
+                    # Check: Trigger invalidated? (sweep disrespected or FVG broken)
+                    if is_fvg_trigger:
+                        # FVG trigger: check if FVG was disrespected
+                        if self._liquidity_detector.is_fvg_broken_at_time(sweep.fvg_formation_idx, self._tm.fvg_high, check_time):
+                            print(f"    ⚠️  FVG broken - abandoning setup")
+                            sweep_broken = True
+                            break
+                    else:
+                        # Liquidity sweep: check if sweep was broken
+                        if self._liquidity_detector.is_sweep_broken_at_time(inflexion_idx, check_time, current_candle_idx):
+                            print(f"    ⚠️  Sweep broken - abandoning setup")
+                            sweep_broken = True
+                            break
 
-                # Check: New sweep occurred? (invalidates current setup)
-                if self._abandon_on_new_sweep and self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_mid_current):
-                    print(f"    ⚠️  New sweep occurred during mid TF scan - abandoning current setup")
-                    new_sweep_occurred = True
-                    break
+                # Check: New sweep occurred?
+                if self._has_new_sweep_occurred(all_sweeps, time_high_sweep, time_mid_current):
+                    if self._abandon_on_new_sweep:
+                        # Abandon current setup
+                        print(f"    ⚠️  New sweep occurred during mid TF scan - abandoning current setup")
+                        new_sweep_occurred = True
+                        break
+                    else:
+                        # Track new sweeps so they're processed later (don't skip them)
+                        for sweep_check in all_sweeps:
+                            if sweep_check.timestamp > time_high_sweep and sweep_check.timestamp <= time_mid_current:
+                                if sweep_check.timestamp not in must_process_sweeps:
+                                    must_process_sweeps.add(sweep_check.timestamp)
+                                    print(f"    📌 New sweep at {sweep_check.timestamp} tracked for later processing")
 
                 # State 1: Looking for Event B
                 if event_b is None:
@@ -623,7 +705,11 @@ class StrategyEngine:
                     price_1m_confirmation=None,
                     trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
-                    condition_liquidity_sweep=f"{sweep_type} liquidity swept",
+                    condition_liquidity_sweep=(
+                        f"{sweep_type.replace('fvg_', '').upper()} FVG Respect"
+                        if sweep_type.startswith('fvg_')
+                        else f"{sweep_type} liquidity swept"
+                    ),
                     condition_event_b=None,
                     condition_validation=None,
                     condition_confirmation=None,
@@ -656,7 +742,11 @@ class StrategyEngine:
                     price_1m_confirmation=None,
                     trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
-                    condition_liquidity_sweep=f"{sweep_type} liquidity swept",
+                    condition_liquidity_sweep=(
+                        f"{sweep_type.replace('fvg_', '').upper()} FVG Respect"
+                        if sweep_type.startswith('fvg_')
+                        else f"{sweep_type} liquidity swept"
+                    ),
                     condition_event_b=event_b_type_tmp,
                     condition_validation=None,
                     condition_confirmation=None,
@@ -698,7 +788,11 @@ class StrategyEngine:
                     price_1m_confirmation=None,
                     trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
-                    condition_liquidity_sweep=f"{sweep_type} liquidity swept",
+                    condition_liquidity_sweep=(
+                        f"{sweep_type.replace('fvg_', '').upper()} FVG Respect"
+                        if sweep_type.startswith('fvg_')
+                        else f"{sweep_type} liquidity swept"
+                    ),
                     condition_event_b=event_b_type_tmp,
                     condition_validation=None,
                     condition_confirmation=None,
@@ -751,7 +845,10 @@ class StrategyEngine:
                     inflexion_idx,
                     exit_target,
                     all_sweeps,
-                    equilibrium_state
+                    must_process_sweeps,
+                    equilibrium_state,
+                    is_fvg_trigger=is_fvg_trigger,
+                    fvg_formation_idx=sweep.fvg_formation_idx
                 )
 
                 final_last_time_scanned = last_time_scanned
@@ -849,7 +946,11 @@ class StrategyEngine:
                     price_1m_confirmation=None,
                     trend_1h_before_sweep=trend_high,
                     entry_direction=entry_direction,
-                    condition_liquidity_sweep=f"{sweep_type} liquidity swept",
+                    condition_liquidity_sweep=(
+                        f"{sweep_type.replace('fvg_', '').upper()} FVG Respect"
+                        if sweep_type.startswith('fvg_')
+                        else f"{sweep_type} liquidity swept"
+                    ),
                     condition_event_b=event_b_type,
                     condition_validation=validation_type,
                     condition_confirmation=None,
@@ -889,7 +990,11 @@ class StrategyEngine:
                 price_5m_validation=price_mid_validation,
                 price_1m_confirmation=price_low_confirmation,
                 price_entry=price_low_confirmation,
-                condition_liquidity_sweep=f"{sweep_type} liquidity swept",
+                condition_liquidity_sweep=(
+                    f"{sweep_type.replace('fvg_', '').upper()} FVG Respect"
+                    if sweep_type.startswith('fvg_')
+                    else f"{sweep_type} liquidity swept"
+                ),
                 condition_event_b=event_b_type,
                 condition_validation=validation_type,
                 condition_confirmation=confirmation_type,

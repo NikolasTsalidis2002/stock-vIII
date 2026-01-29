@@ -264,14 +264,16 @@ class StrategySweepVisualizer:
         if len(df_slice) == 0:
             return None
 
-        # Calculate indicators on slice (1H shows only liquidity and BOS, no FVG/OB)
+        # Calculate indicators on slice
         inflexions_slice = smc_custom.inflexion_points(df_slice)
         bos_slice = smc_custom.bos(df_slice, inflexions_slice, close_break=True)
+        fvg_slice = smc.fvg(df_slice, join_consecutive=False)
 
         # Generate data using shared visualization functions
         candle_data = generate_candle_data(df_slice)
         bos_lines = generate_bos_lines(df_slice, bos_slice, inflexions_slice)
         liquidity_lines = generate_liquidity_lines(df_slice, inflexions_slice)
+        fvg_zones = generate_fvg_zones(df_slice, fvg_slice)
 
         # Highlight sweep candle
         sweep_marker = {
@@ -292,66 +294,25 @@ class StrategySweepVisualizer:
         elif sweep_entry.partial:
             sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
 
-        # Generate GMM zones if enabled and we have per-sweep zone data
-        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
-
-        # Extract equilibrium data
-        equilibrium_level = None
-        equilibrium_fixed = None
-        equilibrium_extreme = None
-        if sweep_entry.is_complete:
-            equilibrium_level = sweep_entry.signal.equilibrium_level
-            equilibrium_fixed = sweep_entry.signal.equilibrium_fixed_level
-            equilibrium_extreme = sweep_entry.signal.equilibrium_running_extreme
-        elif sweep_entry.partial:
-            equilibrium_level = getattr(sweep_entry.partial, 'equilibrium_level', None)
-            equilibrium_fixed = getattr(sweep_entry.partial, 'equilibrium_fixed_level', None)
-            equilibrium_extreme = getattr(sweep_entry.partial, 'equilibrium_running_extreme', None)
-
-        # Fibonacci levels
-        fibonacci_lines = None
-        if equilibrium_level is not None:
-            fibonacci_lines = []
-            if equilibrium_fixed is not None:
-                fibonacci_lines.append({
-                    'price': float(equilibrium_fixed),
-                    'color': '#f44336',  # Red
-                    'lineWidth': 1,
-                    'label': f'0% ${equilibrium_fixed:.2f}',
-                    'level': '0%'
-                })
-            fibonacci_lines.append({
-                'price': float(equilibrium_level),
-                'color': '#ffeb3b',  # Yellow
-                'lineWidth': 2,
-                'label': f'50% ${equilibrium_level:.2f}',
-                'level': '50%'
-            })
-            if equilibrium_extreme is not None:
-                fibonacci_lines.append({
-                    'price': float(equilibrium_extreme),
-                    'color': '#4caf50',  # Green
-                    'lineWidth': 1,
-                    'label': f'100% ${equilibrium_extreme:.2f}',
-                    'level': '100%'
-                })
+        # Note: GMM zones and equilibrium levels are NOT shown on 1H tab
+        # They are only shown on 5min validation tab
 
         return {
             'timeframe': self.tf_labels.get('high', '1H'),
             'tabName': self.tf_labels.get('high', '1H'),
             'candleData': candle_data,
-            'fvgZones': [],  # 1H tab shows only liquidity and BOS
-            'obZones': [],   # 1H tab shows only liquidity and BOS
+            'fvgZones': fvg_zones,
+            'obZones': [],
             'bosLines': bos_lines,
             'liquidityLines': liquidity_lines,
             'sweepMarker': sweep_marker,
             'markers': [sweep_marker],
-            'fibonacciLines': fibonacci_lines,
+            'fibonacciLines': None,  # Equilibrium only shown on 5min validation
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
             'contextCandles': 30,  # Show 30 candles on each side of focus
-            'gmmZones': gmm_zones_data
+            'gmmZones': None  # GMM zones only shown on 5min validation
         }
 
     def _generate_tab_5m_event_b(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -409,16 +370,6 @@ class StrategySweepVisualizer:
         # Focus on Event B time
         focus_time = int(event_b_time.timestamp())
 
-        # Get GMM zone info from the signal or partial (per-sweep data, not stale class attribute)
-        sweep_gmm_zone = None
-        if sweep_entry.is_complete and sweep_entry.signal:
-            sweep_gmm_zone = getattr(sweep_entry.signal, 'gmm_zone_info', None)
-        elif sweep_entry.partial:
-            sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
-
-        # Generate GMM zones if enabled and we have per-sweep zone data
-        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
-
         return {
             'timeframe': self.tf_labels.get('mid', '5M'),
             'tabName': f"{self.tf_labels.get('mid', '5M')} Event B",
@@ -436,7 +387,7 @@ class StrategySweepVisualizer:
             'slLine': None,
             'focusTime': focus_time,
             'contextCandles': 40,  # Show 40 candles on each side for 5M
-            'gmmZones': gmm_zones_data
+            'gmmZones': None
         }
 
     def _generate_tab_5m_validation(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -505,15 +456,33 @@ class StrategySweepVisualizer:
         # Focus on validation time
         focus_time = int(validation_time.timestamp())
 
-        # Get GMM zone info from the signal or partial (per-sweep data, not stale class attribute)
-        sweep_gmm_zone = None
-        if sweep_entry.is_complete and sweep_entry.signal:
-            sweep_gmm_zone = getattr(sweep_entry.signal, 'gmm_zone_info', None)
-        elif sweep_entry.partial:
-            sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
-
-        # Generate GMM zones if enabled and we have per-sweep zone data
-        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
+        # Validation Fibonacci levels (shows the equilibrium zone used for validation)
+        fibonacci_lines = None
+        if equilibrium_level is not None:
+            fibonacci_lines = []
+            if equilibrium_fixed is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_fixed),
+                    'color': '#f44336',  # Red
+                    'lineWidth': 1,
+                    'label': f'0% ${equilibrium_fixed:.2f}',
+                    'level': '0%'
+                })
+            fibonacci_lines.append({
+                'price': float(equilibrium_level),
+                'color': '#ffeb3b',  # Yellow
+                'lineWidth': 2,
+                'label': f'50% ${equilibrium_level:.2f}',
+                'level': '50%'
+            })
+            if equilibrium_extreme is not None:
+                fibonacci_lines.append({
+                    'price': float(equilibrium_extreme),
+                    'color': '#4caf50',  # Green
+                    'lineWidth': 1,
+                    'label': f'100% ${equilibrium_extreme:.2f}',
+                    'level': '100%'
+                })
 
         return {
             'timeframe': self.tf_labels.get('mid', '5M'),
@@ -526,11 +495,12 @@ class StrategySweepVisualizer:
             'sweepMarker': None,
             'markers': [validation_marker],
             'validationType': validation_type,
+            'fibonacciLines': fibonacci_lines,
             'tpLine': None,
             'slLine': None,
             'focusTime': focus_time,
             'contextCandles': 40,  # Show 40 candles on each side for 5M
-            'gmmZones': gmm_zones_data
+            'gmmZones': None  # Show validation Fibonacci instead of GMM zones
         }
 
     def _generate_tab_1m(self, sweep_entry: SweepEntry, trade_result: Optional[TradeResult] = None) -> Optional[Dict]:
@@ -602,16 +572,6 @@ class StrategySweepVisualizer:
         # Focus on confirmation/entry time
         focus_time = int(confirmation_time.timestamp())
 
-        # Get GMM zone info from the signal or partial (per-sweep data, not stale class attribute)
-        sweep_gmm_zone = None
-        if sweep_entry.is_complete and sweep_entry.signal:
-            sweep_gmm_zone = getattr(sweep_entry.signal, 'gmm_zone_info', None)
-        elif sweep_entry.partial:
-            sweep_gmm_zone = getattr(sweep_entry.partial, 'gmm_zone_info', None)
-
-        # Generate GMM zones if enabled and we have per-sweep zone data
-        gmm_zones_data = generate_gmm_zones(sweep_gmm_zone, df_slice) if (self.gmm_enabled and sweep_gmm_zone) else None
-
         # Extract equilibrium data
         equilibrium_level = None
         equilibrium_fixed = None
@@ -668,7 +628,7 @@ class StrategySweepVisualizer:
             'slLine': sl_line,
             'focusTime': focus_time,
             'contextCandles': 60,  # Show 60 candles on each side for 1M (covers more time)
-            'gmmZones': gmm_zones_data
+            'gmmZones': None
         }
 
     def _get_trade_result_for_sweep(self, sweep_entry: SweepEntry) -> Optional[TradeResult]:
@@ -795,22 +755,9 @@ class StrategySweepVisualizer:
         if gmm_zone_info.price_levels is None or gmm_zone_info.bic_scores is None:
             return None
 
-        # Get the GMM window DataFrame
-        # We need to reconstruct the window used for GMM analysis
-        # The window is defined by window_start_idx and window_end_idx
-        gmm_df = self._get_gmm_dataframe()
-        if gmm_df is None:
-            return None
-
-        start_idx = gmm_zone_info.window_start_idx
-        end_idx = gmm_zone_info.window_end_idx
-
-        if start_idx is None or end_idx is None:
-            return None
-
-        # Get window slice
-        df_window = gmm_df.iloc[start_idx:end_idx + 1]
-        if len(df_window) == 0:
+        # Use the stored DataFrame slice directly - guaranteed to match!
+        df_window = gmm_zone_info.window_df
+        if df_window is None or len(df_window) == 0:
             return None
 
         # Generate debug data using shared function
@@ -822,28 +769,6 @@ class StrategySweepVisualizer:
             'tabName': 'GMM Debug',
             **debug_data
         }
-
-    def _get_gmm_dataframe(self) -> Optional['pd.DataFrame']:
-        """Get the DataFrame used for GMM zone detection (original unfiltered)."""
-        # The GMM timeframe is configurable - check strategy config
-        # Default to mid timeframe (5M)
-        gmm_timeframe = 'mid'
-        if hasattr(self.strategy, '_gmm_config'):
-            tf_config = self.strategy._gmm_config.get('timeframe', '15min').lower()
-            if 'hour' in tf_config or '1h' in tf_config or '60' in tf_config:
-                gmm_timeframe = 'high'
-            elif '15' in tf_config:
-                gmm_timeframe = 'mid'  # 15min often maps to mid
-            elif '5' in tf_config:
-                gmm_timeframe = 'mid'
-            else:
-                gmm_timeframe = 'mid'
-
-        # Use original unfiltered DataFrames - GMM indices reference original data positions
-        if gmm_timeframe == 'high':
-            return self.df_high_original
-        else:
-            return self.df_mid_original
 
     def _generate_sweep_data(self, sweep_entry: SweepEntry, sweep_idx: int) -> Dict:
         """
@@ -873,11 +798,24 @@ class StrategySweepVisualizer:
             active_tab = '1H'
 
         # Build conditions list
+        # Determine label based on condition value (FVG Respect vs Liquidity Sweep)
+        condition_liq_sweep_value = (
+            sweep_entry.partial.condition_liquidity_sweep
+            if sweep_entry.partial
+            else sweep_entry.signal.condition_liquidity_sweep
+        )
+        # Check if this is an FVG trigger (value contains "FVG Respect")
+        is_fvg_trigger = condition_liq_sweep_value and 'FVG Respect' in condition_liq_sweep_value
+        first_condition_label = (
+            f'{self.tf_labels.get("high", "1H")} FVG'
+            if is_fvg_trigger
+            else f'{self.tf_labels.get("high", "1H")} Liquidity'
+        )
         conditions = [
             {
-                'label': f'{self.tf_labels.get("high", "1H")} Sweep',
+                'label': first_condition_label,
                 'met': True,
-                'value': sweep_entry.partial.condition_liquidity_sweep if sweep_entry.partial else sweep_entry.signal.condition_liquidity_sweep
+                'value': condition_liq_sweep_value
             }
         ]
 
@@ -3754,13 +3692,13 @@ class StrategySweepVisualizer:
                 }});
             }}
 
-            // Create legend annotations for zones
+            // Create legend annotations for zones (show mean±std for the Gaussian fit)
             const annotations = curves.map((curve, i) => ({{
                 x: 0.02,
                 y: curve.mean,
                 xref: 'paper',
                 yref: 'y',
-                text: `Zone ${{i + 1}}: $${{curve.mean.toFixed(0)}}±${{curve.std.toFixed(0)}}`,
+                text: `Zone ${{i + 1}}: μ=${{curve.mean.toFixed(0)}} σ=${{curve.std.toFixed(1)}}`,
                 showarrow: false,
                 font: {{
                     color: componentColors[i % componentColors.length],
@@ -3838,7 +3776,7 @@ class StrategySweepVisualizer:
                 x: curve.pdfValues,
                 type: 'scatter',
                 mode: 'lines',
-                name: `Zone ${{i + 1}}: $${{curve.mean.toFixed(0)}}±$${{curve.std.toFixed(0)}}`,
+                name: `Zone ${{i + 1}}: $${{curve.priceMin.toFixed(0)}} - $${{curve.priceMax.toFixed(0)}}`,
                 line: {{
                     color: componentColors[i % componentColors.length],
                     width: curve.isCurrent ? 3 : 2,

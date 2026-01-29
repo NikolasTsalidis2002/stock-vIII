@@ -22,6 +22,7 @@ from .equilibrium_validator import EquilibriumValidator
 from .exit_target_finder import ExitTargetFinder
 from .gmm_zone_detector import GMMZoneDetector, GMMZoneInfo
 from .strategy_engine import StrategyEngine
+from .three_ob_strategy import ThreeOBStrategy
 
 
 class MultiTimeframeStrategy:
@@ -44,7 +45,8 @@ class MultiTimeframeStrategy:
         sweep_proximity_threshold: float = 0.0,
         abandon_on_new_sweep: bool = True,
         gmm_config: Optional[Dict] = None,
-        high_tf_lookback: int = 300
+        high_tf_lookback: int = 300,
+        use_fvg_trigger: bool = False
     ):
         """
         Initialize strategy with multi-timeframe data.
@@ -81,6 +83,8 @@ class MultiTimeframeStrategy:
                         - take_profit_method: str ('fib' or 'order_block', default 'fib')
             high_tf_lookback: Number of high TF candles to include before the overlap
                              period for better inflection point detection. Default 300.
+            use_fvg_trigger: If True, FVG respect on high TF also triggers Stage 1.
+                            Bullish FVG respected = LONG, Bearish = SHORT.
         """
         # Initialize timeframe manager
         self._tm = TimeframeManager(
@@ -96,7 +100,8 @@ class MultiTimeframeStrategy:
             require_fvg_in_equilibrium=require_fvg_in_equilibrium,
             sweep_proximity_threshold=sweep_proximity_threshold,
             abandon_on_new_sweep=abandon_on_new_sweep,
-            gmm_config=gmm_config
+            gmm_config=gmm_config,
+            use_fvg_trigger=use_fvg_trigger
         )
 
         # Expose attributes for convenience
@@ -121,6 +126,7 @@ class MultiTimeframeStrategy:
         self.liquidity_high = self._tm.liquidity_high
         self.inflexions_high = self._tm.inflexions_high
         self.bos_high = self._tm.bos_high
+        self.fvg_high = self._tm.fvg_high
         self.swings_mid = self._tm.swings_mid
         self.inflexions_mid = self._tm.inflexions_mid
         self.bos_mid = self._tm.bos_mid
@@ -231,6 +237,7 @@ __all__ = [
     'GMMZoneInfo',
     # Engine
     'StrategyEngine',
-    # Convenience wrapper
+    # Convenience wrappers
     'MultiTimeframeStrategy',
+    'ThreeOBStrategy',
 ]

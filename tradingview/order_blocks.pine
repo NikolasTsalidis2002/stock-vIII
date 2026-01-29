@@ -1,0 +1,205 @@
+//@version=5
+indicator("Order Blocks (SMC Custom)", overlay=true, max_boxes_count=500)
+
+// ========== INPUTS ==========
+bool close_break = input.bool(true, "Require close/open break for BOS")
+
+// Colors
+color bull_ob_color = input.color(color.new(color.aqua, 70), "Bullish OB Fill")
+color bull_ob_border = input.color(color.aqua, "Bullish OB Border")
+color bear_ob_color = input.color(color.new(color.orange, 70), "Bearish OB Fill")
+color bear_ob_border = input.color(color.orange, "Bearish OB Border")
+color bull_bos_color = input.color(color.aqua, "Bullish BOS Line")
+color bear_bos_color = input.color(color.orange, "Bearish BOS Line")
+
+// ========== INFLEXION POINTS ==========
+// Concave (peak): high[1] >= high[2] and high[1] > high[0]  (confirmed 1 bar later)
+// Convex (valley): low[1] <= low[2] and low[1] < low[0]
+
+bool is_concave = high[1] >= high[2] and high[1] > high[0]
+bool is_convex  = low[1] <= low[2] and low[1] < low[0]
+
+// Store most recent inflexion levels and bar indices
+var float last_concave_level = na
+var int   last_concave_bar   = na
+var float last_convex_level  = na
+var int   last_convex_bar    = na
+
+if is_concave
+    last_concave_level := high[1]
+    last_concave_bar   := bar_index - 1
+
+if is_convex
+    last_convex_level := low[1]
+    last_convex_bar   := bar_index - 1
+
+// ========== BOS / TREND TRACKING ==========
+var int   current_trend      = 0   // 1=bullish, -1=bearish, 0=undefined
+var float trend_max_level    = na  // last trend-defining peak
+var int   trend_max_bar      = na
+var float trend_min_level    = na  // last trend-defining valley
+var int   trend_min_bar      = na
+var float recent_max_level   = na  // most recent peak (any)
+var int   recent_max_bar     = na
+var float recent_min_level   = na  // most recent valley (any)
+var int   recent_min_bar     = na
+
+// Update recent pivots when new inflexion detected
+if is_concave
+    recent_max_level := high[1]
+    recent_max_bar   := bar_index - 1
+
+if is_convex
+    recent_min_level := low[1]
+    recent_min_bar   := bar_index - 1
+
+// BOS check price (close/open confirmation or high/low)
+float check_high = close_break ? math.max(close, open) : high
+float check_low  = close_break ? math.min(close, open) : low
+
+// Detect BOS
+int   bos_dir   = 0
+float bos_level = na
+int   bos_inflexion_bar = na  // bar of the inflexion that was broken
+
+// Bullish BOS: bearish trend broken upward
+if current_trend == -1 and not na(trend_max_level)
+    if check_high > trend_max_level
+        bos_dir          := 1
+        bos_level        := trend_max_level
+        bos_inflexion_bar := trend_max_bar
+        current_trend    := 1
+        // Carry over recent pivots as new trend pivots
+        if not na(recent_min_level)
+            trend_min_level := recent_min_level
+            trend_min_bar   := recent_min_bar
+        if not na(recent_max_level)
+            trend_max_level := recent_max_level
+            trend_max_bar   := recent_max_bar
+
+// Bearish BOS: bullish trend broken downward
+else if current_trend == 1 and not na(trend_min_level)
+    if check_low < trend_min_level
+        bos_dir          := -1
+        bos_level        := trend_min_level
+        bos_inflexion_bar := trend_min_bar
+        current_trend    := -1
+        if not na(recent_max_level)
+            trend_max_level := recent_max_level
+            trend_max_bar   := recent_max_bar
+        if not na(recent_min_level)
+            trend_min_level := recent_min_level
+            trend_min_bar   := recent_min_bar
+
+// Draw BOS line from broken inflexion to current bar
+if bos_dir == 1 and not na(bos_inflexion_bar)
+    line.new(bos_inflexion_bar, bos_level, bar_index, bos_level,
+         color=bull_bos_color, style=line.style_dashed, width=1)
+    label.new(bar_index, bos_level, "BOS", style=label.style_none,
+         textcolor=bull_bos_color, size=size.small)
+
+if bos_dir == -1 and not na(bos_inflexion_bar)
+    line.new(bos_inflexion_bar, bos_level, bar_index, bos_level,
+         color=bear_bos_color, style=line.style_dashed, width=1)
+    label.new(bar_index, bos_level, "BOS", style=label.style_none,
+         textcolor=bear_bos_color, size=size.small)
+
+// Initial trend establishment (undefined → first direction)
+if current_trend == 0
+    if is_concave and not na(trend_max_level)
+        if high[1] < trend_max_level
+            current_trend   := -1
+        else if high[1] > trend_max_level
+            current_trend   := 1
+    if is_convex and not na(trend_min_level)
+        if low[1] > trend_min_level
+            current_trend   := 1
+        else if low[1] < trend_min_level
+            current_trend   := -1
+
+// Seed first pivots
+if na(trend_max_level) and is_concave
+    trend_max_level := high[1]
+    trend_max_bar   := bar_index - 1
+
+if na(trend_min_level) and is_convex
+    trend_min_level := low[1]
+    trend_min_bar   := bar_index - 1
+
+// Trend maintenance: update trend pivots on HH/HL or LH/LL
+if current_trend == -1
+    if is_concave and high[1] < trend_max_level
+        trend_max_level := high[1]
+        trend_max_bar   := bar_index - 1
+    if is_convex and low[1] < trend_min_level
+        trend_min_level := low[1]
+        trend_min_bar   := bar_index - 1
+
+if current_trend == 1
+    if is_concave and high[1] > trend_max_level
+        trend_max_level := high[1]
+        trend_max_bar   := bar_index - 1
+    if is_convex and low[1] > trend_min_level
+        trend_min_level := low[1]
+        trend_min_bar   := bar_index - 1
+
+// ========== ORDER BLOCK STORAGE ==========
+var box[]  ob_boxes = array.new_box(0)
+var int[]  ob_dirs  = array.new_int(0)   // 1=bullish, -1=bearish
+
+// ========== ORDER BLOCK CREATION ==========
+// On BOS, find the most recent relevant inflexion and create OB zone
+
+if bos_dir == 1
+    // Bullish BOS → Bullish OB
+    if not na(bos_inflexion_bar)
+        int bars_back = bar_index - bos_inflexion_bar
+        float zone_bottom = low
+        for k = 0 to bars_back
+            zone_bottom := math.min(zone_bottom, low[k])
+        array.push(ob_boxes, box.new(bos_inflexion_bar, bos_level, bar_index, zone_bottom,
+             bgcolor=bull_ob_color, border_color=bull_ob_border,
+             border_width=1, extend=extend.right, text="Bullish OB", text_color=color.new(color.aqua, 50), text_size=size.tiny))
+        array.push(ob_dirs, 1)
+
+if bos_dir == -1
+    // Bearish BOS → Bearish OB
+    if not na(bos_inflexion_bar)
+        int bars_back = bar_index - bos_inflexion_bar
+        float zone_top = high
+        for k = 0 to bars_back
+            zone_top := math.max(zone_top, high[k])
+        array.push(ob_boxes, box.new(bos_inflexion_bar, zone_top, bar_index, bos_level,
+             bgcolor=bear_ob_color, border_color=bear_ob_border,
+             border_width=1, extend=extend.right, text="Bearish OB", text_color=color.new(color.orange, 50), text_size=size.tiny))
+        array.push(ob_dirs, -1)
+
+// ========== TOUCH HIGHLIGHT + INVALIDATION ==========
+if array.size(ob_boxes) > 0
+    for i = array.size(ob_boxes) - 1 to 0
+        b = array.get(ob_boxes, i)
+        int dir = array.get(ob_dirs, i)
+        float b_top = box.get_top(b)
+        float b_bottom = box.get_bottom(b)
+
+        float break_low = math.min(close, open)
+        float break_high = math.max(close, open)
+        bool invalidated = dir == 1 ? break_low < b_bottom : break_high > b_top
+        if invalidated
+            box.set_right(b, bar_index)
+            box.set_extend(b, extend.none)
+            box.set_bgcolor(b, dir == 1 ? color.new(color.aqua, 93) : color.new(color.orange, 93))
+            box.set_border_color(b, dir == 1 ? color.new(color.aqua, 85) : color.new(color.orange, 85))
+            box.set_text(b, dir == 1 ? "Bullish OB - Invalidated" : "Bearish OB - Invalidated")
+            array.remove(ob_boxes, i)
+            array.remove(ob_dirs, i)
+        else
+            bool touching = low <= b_top and high >= b_bottom
+            if touching
+                box.set_bgcolor(b, dir == 1 ? color.new(color.green, 50) : color.new(color.purple, 50))
+                box.set_border_color(b, dir == 1 ? color.green : color.purple)
+                box.set_text(b, dir == 1 ? "Bullish OB - Touched" : "Bearish OB - Touched")
+            else
+                box.set_bgcolor(b, dir == 1 ? bull_ob_color : bear_ob_color)
+                box.set_border_color(b, dir == 1 ? bull_ob_border : bear_ob_border)
+                box.set_text(b, dir == 1 ? "Bullish OB" : "Bearish OB")
