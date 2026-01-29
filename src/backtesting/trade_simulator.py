@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from typing import List, Tuple, Optional, Dict
 
+from indicators.smc import smc
+
 from src.strategy.models import TradeSignal
 from .models import (
     TradeResult, TradeOutcome, ExitType, SkipReason, SkippedTrade,
@@ -35,14 +37,14 @@ class TradeSimulator:
         initial_capital: float = 10000.0,
         max_trade_duration_hours: int = 24,
         intraday_only: bool = True,
-        bos_exit_enabled: bool = False,
-        bos_exit_threshold_percent: float = 50.0,
-        bos_mid_df: pd.DataFrame = None,
-        df_mid: pd.DataFrame = None,
         symbol: str = 'TSLA',
         min_profit_percent: float = 0.0,
+        min_rr_ratio: float = 0.0,
         trend_filter: str = None,
-        bos_1h_trend_filter_enabled: bool = False
+        bos_1h_trend_filter_enabled: bool = False,
+        trailing_sl_enabled: bool = False,
+        trailing_sl_step_pct: float = 0.5,
+        trailing_sl_swing_length: int = 5
     ) -> None:
         """
         Initialize trade simulator.
@@ -52,14 +54,13 @@ class TradeSimulator:
             initial_capital: Starting capital (default $10,000)
             max_trade_duration_hours: Max hours before timeout (default 24h)
             intraday_only: If True, exit at market close (21:59). If False, allow overnight holding.
-            bos_exit_enabled: If True, exit when opposing BOS signal detected while in profit
-            bos_exit_threshold_percent: Min profit as % of TP target before BOS exit allowed (default 50%)
-            bos_mid_df: Mid timeframe BOS DataFrame (columns: BOS, Level, etc.)
-            df_mid: Mid timeframe OHLCV DataFrame with datetime index
             symbol: Stock symbol being backtested (default 'TSLA')
             min_profit_percent: Minimum profit % to accept a trade (default 0.0, disabled)
             trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
             bos_1h_trend_filter_enabled: If True, filter trades to follow 1H BOS trend direction
+            trailing_sl_enabled: If True, trail SL to swing levels as profit milestones are reached
+            trailing_sl_step_pct: Profit % step that triggers trailing SL update
+            trailing_sl_swing_length: Swing detection lookback for trailing SL
         """
         self.df_low = df_low
         self.initial_capital = initial_capital
@@ -67,19 +68,17 @@ class TradeSimulator:
         self.intraday_only = intraday_only
         self.symbol = symbol.upper()
         self.min_profit_percent = min_profit_percent
+        self.min_rr_ratio = min_rr_ratio
         self.trend_filter = trend_filter  # 'bullish', 'bearish', 'neutral', or None
         self.bos_1h_trend_filter_enabled = bos_1h_trend_filter_enabled
+
+        # Trailing SL configuration
+        self.trailing_sl_enabled = trailing_sl_enabled
+        self.trailing_sl_step_pct = trailing_sl_step_pct
 
         # Store data date range for validation
         self.data_start = df_low.index.min()
         self.data_end = df_low.index.max()
-
-        # BOS exit configuration
-        self.bos_exit_enabled = bos_exit_enabled
-        self.bos_exit_threshold_percent = bos_exit_threshold_percent
-        self.bos_mid_df = bos_mid_df
-        self.df_mid = df_mid
-        self.low_to_mid_idx: Dict[datetime, int] = {}
 
         # Setup symbol-specific plots directory
         self._setup_plots_directory()
@@ -87,9 +86,11 @@ class TradeSimulator:
         # Build lookup: date -> last candle timestamp for that day
         self.last_candle_by_date = df_low.groupby(df_low.index.date).apply(lambda x: x.index.max()).to_dict()
 
-        # Build 1min->5min timestamp mapping if BOS exit is enabled
-        if bos_exit_enabled and bos_mid_df is not None and df_mid is not None:
-            self._build_low_to_mid_mapping()
+        # Precompute swing levels on df_low for trailing SL
+        self.swing_lows: List[Tuple[int, float]] = []   # (index, price)
+        self.swing_highs: List[Tuple[int, float]] = []   # (index, price)
+        if trailing_sl_enabled:
+            self._compute_swing_levels(trailing_sl_swing_length)
 
     def _setup_plots_directory(self) -> None:
         """Create symbol-specific plots folder and clean existing plots."""
@@ -186,6 +187,15 @@ class TradeSimulator:
         # Track unrealized P&L at each candle
         unrealized_pnl_series = []
 
+        # Trailing SL state
+        current_sl = sl_price
+        if self.trailing_sl_enabled:
+            step_count = 0
+            if direction == 'long':
+                next_step_threshold = entry_price * (1 + self.trailing_sl_step_pct / 100.0)
+            else:
+                next_step_threshold = entry_price * (1 - self.trailing_sl_step_pct / 100.0)
+
         # Find starting point in 1M data
         start_idx = self._find_start_index(entry_time)
         if start_idx is None:
@@ -260,27 +270,31 @@ class TradeSimulator:
 
             # Check for gap opening beyond TP/SL
             gap_result = self._check_gap_exit(
-                candle_open, tp_price, sl_price, direction
+                candle_open, tp_price, current_sl, direction
             )
             if gap_result is not None:
                 exit_price = candle_open
                 exit_time = candle_time
                 exit_candle_idx = idx
-                exit_type = gap_result
+                # If gap hit trailing SL (not original), mark as TRAILING_SL
+                if gap_result == ExitType.SL_HIT and current_sl != sl_price:
+                    exit_type = ExitType.TRAILING_SL
+                else:
+                    exit_type = gap_result
                 gap_exit = True
                 break
 
             # Normal candle processing: check high/low for TP/SL
             tp_hit, sl_hit = self._check_candle_crosses(
-                candle_high, candle_low, tp_price, sl_price, direction
+                candle_high, candle_low, tp_price, current_sl, direction
             )
 
             if tp_hit and sl_hit:
                 # Both TP and SL touched in same candle - assume worst case (SL hit first)
-                exit_price = sl_price
+                exit_price = current_sl
                 exit_time = candle_time
                 exit_candle_idx = idx
-                exit_type = ExitType.SL_HIT
+                exit_type = ExitType.TRAILING_SL if current_sl != sl_price else ExitType.SL_HIT
                 break
             elif tp_hit:
                 exit_price = tp_price
@@ -289,28 +303,33 @@ class TradeSimulator:
                 exit_type = ExitType.TP_HIT
                 break
             elif sl_hit:
-                exit_price = sl_price
+                exit_price = current_sl
                 exit_time = candle_time
                 exit_candle_idx = idx
-                exit_type = ExitType.SL_HIT
+                exit_type = ExitType.TRAILING_SL if current_sl != sl_price else ExitType.SL_HIT
                 break
 
-            # Check for BOS-based early exit (opposing BOS when profit >= threshold % of TP)
-            if self.bos_exit_enabled:
-                bos_exit_price = self._check_bos_exit(
-                    candle_time=candle_time,
-                    entry_price=entry_price,
-                    tp_price=tp_price,
-                    current_close=candle['close'],
-                    shares=shares,
-                    direction=direction
-                )
-                if bos_exit_price is not None:
-                    exit_price = bos_exit_price
-                    exit_time = candle_time
-                    exit_candle_idx = idx
-                    exit_type = ExitType.BOS_EXIT
-                    break
+            # Trailing SL: check if price reached next profit milestone
+            if self.trailing_sl_enabled:
+                threshold_hit = False
+                if direction == 'long':
+                    threshold_hit = candle_high >= next_step_threshold
+                else:
+                    threshold_hit = candle_low <= next_step_threshold
+
+                if threshold_hit:
+                    step_count += 1
+                    # Find nearest swing level to move SL to
+                    new_sl = self._find_trailing_sl_level(
+                        idx, entry_price, current_sl, direction
+                    )
+                    if new_sl is not None:
+                        current_sl = new_sl
+                    # Calculate next threshold
+                    if direction == 'long':
+                        next_step_threshold = entry_price * (1 + self.trailing_sl_step_pct * (step_count + 1) / 100.0)
+                    else:
+                        next_step_threshold = entry_price * (1 - self.trailing_sl_step_pct * (step_count + 1) / 100.0)
 
             # Check for market close - exit at end of trading day
             # Only applies if intraday_only is True
@@ -439,115 +458,51 @@ class TradeSimulator:
 
         return (tp_hit, sl_hit)
 
-    def _build_low_to_mid_mapping(self) -> None:
-        """
-        Build mapping from 1min candle timestamps to corresponding 5min candle indices.
+    def _compute_swing_levels(self, swing_length: int) -> None:
+        """Precompute swing highs and lows on df_low for trailing SL."""
+        swing_hl = smc.swing_highs_lows(self.df_low, swing_length=swing_length)
+        for i in range(len(swing_hl)):
+            val = swing_hl['HighLow'].iloc[i]
+            if val == -1:  # swing low
+                self.swing_lows.append((i, self.df_low['low'].iloc[i]))
+            elif val == 1:  # swing high
+                self.swing_highs.append((i, self.df_low['high'].iloc[i]))
 
-        For each 1min candle, find which 5min candle it belongs to.
-        A 1min candle at 09:32 belongs to the 5min candle starting at 09:30.
-
-        Uses a timestamp-to-index lookup for O(1) mapping instead of O(n) search.
-        """
-        if self.df_mid is None or len(self.df_mid) == 0:
-            return
-
-        mid_timestamps = self.df_mid.index.tolist()
-
-        # Calculate mid timeframe duration from data (in minutes)
-        if len(mid_timestamps) > 1:
-            mid_duration = mid_timestamps[1] - mid_timestamps[0]
-            mid_minutes = int(mid_duration.total_seconds() / 60)
-        else:
-            mid_minutes = 5  # Default assumption
-
-        # Build lookup: mid_timestamp -> index in bos_mid_df
-        mid_time_to_idx = {ts: i for i, ts in enumerate(mid_timestamps)}
-
-        # Build mapping for each low timeframe candle
-        for low_time in self.df_low.index:
-            # Calculate the floor timestamp (start of the mid timeframe candle)
-            # e.g., 09:32 -> 09:30 for 5min candles
-            minutes_from_midnight = low_time.hour * 60 + low_time.minute
-            floored_minutes = (minutes_from_midnight // mid_minutes) * mid_minutes
-            floored_time = low_time.replace(
-                hour=floored_minutes // 60,
-                minute=floored_minutes % 60,
-                second=0,
-                microsecond=0
-            )
-
-            # Look up the corresponding mid candle index
-            if floored_time in mid_time_to_idx:
-                self.low_to_mid_idx[low_time] = mid_time_to_idx[floored_time]
-
-    def _check_bos_exit(
+    def _find_trailing_sl_level(
         self,
-        candle_time: datetime,
+        current_idx: int,
         entry_price: float,
-        tp_price: float,
-        current_close: float,
-        shares: float,
+        current_sl: float,
         direction: str
     ) -> Optional[float]:
         """
-        Check if BOS-based exit condition is met.
+        Find the best swing level to move trailing SL to.
 
-        Exit conditions:
-        1. Unrealized P&L >= threshold % of TP target
-        2. Opposing BOS signal detected (bearish BOS for longs, bullish BOS for shorts)
+        For LONG: find most recent swing low above current_sl and below current price.
+        For SHORT: find most recent swing high below current_sl and above current price.
 
-        Uses BOS signals (events) not trend state.
-
-        Args:
-            candle_time: Current 1min candle timestamp
-            entry_price: Original entry price
-            tp_price: Take profit price
-            current_close: Current candle close price
-            shares: Position size in shares
-            direction: 'long' or 'short'
-
-        Returns:
-            Exit price (candle close) if BOS exit triggered, None otherwise
+        Returns new SL price with 0.1% buffer, or None if no valid level found.
         """
-        if not self.bos_exit_enabled:
-            return None
+        buffer_pct = 0.001  # 0.1% buffer
 
-        if self.bos_mid_df is None or candle_time not in self.low_to_mid_idx:
-            return None
-
-        # Get the corresponding mid timeframe index
-        mid_idx = self.low_to_mid_idx[candle_time]
-
-        # Calculate unrealized P&L and TP target in dollars
         if direction == 'long':
-            unrealized_pnl = (current_close - entry_price) * shares
-            tp_dollars = (tp_price - entry_price) * shares
+            best_level = None
+            for swing_idx, swing_price in self.swing_lows:
+                if swing_idx >= current_idx:
+                    break
+                if swing_price > current_sl:
+                    best_level = swing_price
+            if best_level is not None:
+                return best_level * (1 - buffer_pct)
         else:  # short
-            unrealized_pnl = (entry_price - current_close) * shares
-            tp_dollars = (entry_price - tp_price) * shares
-
-        # Check if profit meets threshold (% of TP target)
-        threshold_dollars = tp_dollars * (self.bos_exit_threshold_percent / 100.0)
-        if unrealized_pnl < threshold_dollars:
-            return None
-
-        # Check for opposing BOS signal (event, not trend state)
-        bos_value = self.bos_mid_df['BOS'].iloc[mid_idx]
-
-        # Skip if no BOS signal at this candle
-        if pd.isna(bos_value):
-            return None
-
-        # Check for opposing BOS
-        if direction == 'long':
-            # Exit LONG on bearish BOS (-1)
-            opposing_bos = (bos_value == -1)
-        else:  # short
-            # Exit SHORT on bullish BOS (+1)
-            opposing_bos = (bos_value == 1)
-
-        if opposing_bos:
-            return current_close
+            best_level = None
+            for swing_idx, swing_price in self.swing_highs:
+                if swing_idx >= current_idx:
+                    break
+                if swing_price < current_sl:
+                    best_level = swing_price
+            if best_level is not None:
+                return best_level * (1 + buffer_pct)
 
         return None
 
@@ -656,6 +611,24 @@ class TradeSimulator:
                     ))
                     continue
 
+            # Skip signals below minimum reward-to-risk ratio
+            if self.min_rr_ratio > 0:
+                reward = abs(signal.take_profit_price - signal.price_entry)
+                risk = abs(signal.price_entry - signal.stop_loss_price)
+                if risk > 0:
+                    rr_ratio = reward / risk
+                else:
+                    rr_ratio = 0.0
+
+                if rr_ratio < self.min_rr_ratio:
+                    print(f"  Trade {i+1}: SKIPPED - R:R {rr_ratio:.2f} below {self.min_rr_ratio:.1f} threshold")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.INSUFFICIENT_RR,
+                        details=f"R:R ratio {rr_ratio:.2f} < {self.min_rr_ratio:.1f} minimum"
+                    ))
+                    continue
+
             # Skip signals that overlap with previous trade (can only be in one position at a time)
             if results:
                 previous_result = results[-1]
@@ -755,7 +728,7 @@ class TradeSimulator:
                 ExitType.TP_HIT: "TP",
                 ExitType.SL_HIT: "SL",
                 ExitType.TIMEOUT: "TO",
-                ExitType.BOS_EXIT: "BOS"
+                ExitType.TRAILING_SL: "TSL"
             }
             outcome_symbol = "WIN " if result.outcome == TradeOutcome.WIN else "LOSS"
 

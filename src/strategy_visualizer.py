@@ -971,7 +971,7 @@ class StrategySweepVisualizer:
             'tpExits': int(metrics.tp_exits),
             'slExits': int(metrics.sl_exits),
             'timeoutExits': int(metrics.timeout_exits),
-            'bosExits': int(metrics.bos_exits),
+            'trailingSlExits': int(metrics.trailing_sl_exits),
 
             # Risk metrics
             'avgRMultiple': float(metrics.average_r_multiple),
@@ -2278,7 +2278,7 @@ class StrategySweepVisualizer:
                     'tp_hit': 'Take Profit',
                     'sl_hit': 'Stop Loss',
                     'timeout': 'Timeout',
-                    'bos_exit': 'BOS Exit'
+                    'trailing_sl': 'Trailing SL'
                 }};
                 exitTypeSpan.textContent = exitTypeMap[sweep.exitType] || sweep.exitType || '-';
 
@@ -3183,8 +3183,8 @@ class StrategySweepVisualizer:
                             <span class="stats-value">${{data.timeoutExits}}</span>
                         </div>
                         <div class="stats-row">
-                            <span class="stats-label">BOS Exits</span>
-                            <span class="stats-value">${{data.bosExits}}</span>
+                            <span class="stats-label">Trailing SL Exits</span>
+                            <span class="stats-value">${{data.trailingSlExits}}</span>
                         </div>
                     </div>
 
@@ -3422,7 +3422,7 @@ class StrategySweepVisualizer:
                 }} else if (trade.exitType === 'sl_hit') {{
                     exitClass = 'sl';
                     exitText = 'SL';
-                }} else if (trade.exitType === 'bos_exit') {{
+                }} else if (trade.exitType === 'trailing_sl') {{
                     exitClass = 'bos';
                     exitText = 'BOS';
                 }}

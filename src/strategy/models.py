@@ -183,3 +183,27 @@ class TradeSignal:
             self.stop_loss_price = self.price_entry + risk_distance
         else:  # long
             self.stop_loss_price = self.price_entry - risk_distance
+
+
+@dataclass
+class ThreeOBSignalContext:
+    """Stores per-signal OB-A/B/C zone data alongside the TradeSignal."""
+    signal: TradeSignal
+
+    # OB-A zone
+    ob_a_top: float
+    ob_a_bottom: float
+    ob_a_start_idx: int
+
+    # OB-B zone
+    ob_b_top: float
+    ob_b_bottom: float
+    ob_b_start_idx: int
+
+    # OB-C zone
+    ob_c_top: float
+    ob_c_bottom: float
+    ob_c_start_idx: int
+
+    # Direction of the setup
+    direction: str  # 'long' or 'short'

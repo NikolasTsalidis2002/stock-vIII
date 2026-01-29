@@ -44,7 +44,7 @@ class PerformanceTracker:
         tp_exits = sum(1 for r in results if r.exit_type == ExitType.TP_HIT)
         sl_exits = sum(1 for r in results if r.exit_type == ExitType.SL_HIT)
         timeout_exits = sum(1 for r in results if r.exit_type == ExitType.TIMEOUT)
-        bos_exits = sum(1 for r in results if r.exit_type == ExitType.BOS_EXIT)
+        trailing_sl_exits = sum(1 for r in results if r.exit_type == ExitType.TRAILING_SL)
 
         # Win rate (simple: wins / total)
         win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
@@ -98,7 +98,7 @@ class PerformanceTracker:
             tp_exits=tp_exits,
             sl_exits=sl_exits,
             timeout_exits=timeout_exits,
-            bos_exits=bos_exits,
+            trailing_sl_exits=trailing_sl_exits,
             win_rate=win_rate,
             initial_capital=self.initial_capital,
             final_capital=final_capital,
@@ -181,7 +181,7 @@ class PerformanceTracker:
             tp_exits=0,
             sl_exits=0,
             timeout_exits=0,
-            bos_exits=0,
+            trailing_sl_exits=0,
             win_rate=0.0,
             initial_capital=self.initial_capital,
             final_capital=self.initial_capital,
@@ -221,7 +221,7 @@ class PerformanceTracker:
         print(f"  TP Exits:           {metrics.tp_exits}")
         print(f"  SL Exits:           {metrics.sl_exits}")
         print(f"  Timeout Exits:      {metrics.timeout_exits}")
-        print(f"  BOS Exits:          {metrics.bos_exits}")
+        print(f"  Trailing SL Exits:  {metrics.trailing_sl_exits}")
 
         print("\n--- PROFIT & LOSS (Compounding) ---")
         print(f"  Initial Capital:    ${metrics.initial_capital:,.2f}")

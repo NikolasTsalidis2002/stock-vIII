@@ -8,7 +8,7 @@ import logging
 from typing import List, Optional
 import pandas as pd
 
-from .models import TradeSignal
+from .models import TradeSignal, ThreeOBSignalContext
 from .three_ob_engine import ThreeOBEngine
 from .confirmation_detector import ConfirmationDetector
 
@@ -90,6 +90,10 @@ class ThreeOBStrategy:
 
         # Use lower TF confirmation
         return self._scan_with_confirmation(max_signals=max_signals)
+
+    def scan_for_signals_with_context(self, max_signals: int = 10) -> List[ThreeOBSignalContext]:
+        """Scan for signals and return ThreeOBSignalContext objects with OB zone data."""
+        return self._engine.scan_for_signals_with_context(max_signals=max_signals)
 
     def _scan_with_confirmation(self, max_signals: int = 10) -> List[TradeSignal]:
         """Scan using lower TF BOS/IFVG confirmation instead of green/red close."""

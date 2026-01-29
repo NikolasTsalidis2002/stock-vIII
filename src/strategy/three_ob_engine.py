@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from .models import TradeSignal
+from .models import TradeSignal, ThreeOBSignalContext
 
 
 @dataclass
@@ -680,3 +680,129 @@ class ThreeOBEngine:
                 'pending_confirmation': pending_confirmation,
             }
             reset_cmd = yield bar, snapshot
+
+    def scan_for_signals_with_context(self, max_signals: int = 10) -> List[ThreeOBSignalContext]:
+        """
+        Like scan_for_signals(), but returns ThreeOBSignalContext objects
+        that include OB-A/B/C zone information for each signal.
+        """
+        df = self.df
+        close = df['close'].values
+        open_ = df['open'].values
+        times = df['time'].values
+
+        contexts: List[ThreeOBSignalContext] = []
+        fired_ob_b_keys: set = set()
+
+        for bar, snapshot in self.scan_with_snapshots(max_signals=max_signals):
+            # Direct signal from engine (State machine fired internally)
+            if snapshot['signal'] is not None:
+                sig = snapshot['signal']
+                ctx = self._context_from_snapshot(sig, snapshot)
+                if ctx is not None:
+                    contexts.append(ctx)
+                continue
+
+            pc = snapshot.get('pending_confirmation')
+            if pc is None:
+                continue
+
+            if pc['ob_b_key'] in fired_ob_b_keys:
+                continue
+
+            bar_close = close[bar]
+            bar_open = open_[bar]
+            direction = pc['direction']
+
+            if direction == 'long' and bar_close <= bar_open:
+                continue
+            if direction == 'short' and bar_close >= bar_open:
+                continue
+
+            ob_c_key = pc['ob_c_key']
+            if ob_c_key is None:
+                continue
+
+            if direction == 'long':
+                tp = pc['ob_c_bottom']
+                if tp <= bar_close:
+                    continue
+            else:
+                tp = pc['ob_c_top']
+                if tp >= bar_close:
+                    continue
+
+            fired_ob_b_keys.add(pc['ob_b_key'])
+            entry_time = pd.Timestamp(times[bar])
+            sig = TradeSignal(
+                timestamp_1h_sweep=entry_time,
+                timestamp_5m_event_b=entry_time,
+                timestamp_5m_validation=entry_time,
+                timestamp_1m_confirmation=entry_time,
+                timestamp_entry=entry_time,
+                trend_1h_before_sweep='n/a',
+                entry_direction=direction,
+                price_1h_sweep=bar_close,
+                price_5m_event_b=bar_close,
+                price_5m_validation=bar_close,
+                price_1m_confirmation=bar_close,
+                price_entry=bar_close,
+                condition_liquidity_sweep='3-OB State Machine',
+                condition_event_b='OB-A touch',
+                condition_validation='OB-C distance',
+                condition_confirmation='OB-B close break',
+                indices_1h=(bar, bar),
+                indices_5m=(bar, bar),
+                indices_1m=(bar, bar),
+                take_profit_price=tp,
+                stop_loss_price=pc['sl'],
+            )
+            ctx = self._context_from_pending(sig, pc, direction)
+            contexts.append(ctx)
+
+        return contexts
+
+    def _context_from_snapshot(self, sig: TradeSignal, snapshot: dict) -> Optional[ThreeOBSignalContext]:
+        """Build ThreeOBSignalContext from a snapshot that has a direct signal."""
+        direction = sig.entry_direction
+        prefix = 'long' if direction == 'long' else 'short'
+
+        ob_a_key = snapshot.get(f'{prefix}_ob_a_key')
+        ob_b_key = snapshot.get(f'{prefix}_ob_b_key')
+        ob_c_key = snapshot.get(f'{prefix}_ob_c_key')
+
+        # Need all three OB keys to build context
+        if ob_a_key is None or ob_b_key is None or ob_c_key is None:
+            return None
+
+        ob_a = self.ob_records.get(ob_a_key)
+        ob_b = self.ob_records.get(ob_b_key)
+        ob_c = self.ob_records.get(ob_c_key)
+        if ob_a is None or ob_b is None or ob_c is None:
+            return None
+
+        return ThreeOBSignalContext(
+            signal=sig,
+            ob_a_top=ob_a.top, ob_a_bottom=ob_a.bottom, ob_a_start_idx=ob_a.start_idx,
+            ob_b_top=ob_b.top, ob_b_bottom=ob_b.bottom, ob_b_start_idx=ob_b.start_idx,
+            ob_c_top=ob_c.top, ob_c_bottom=ob_c.bottom, ob_c_start_idx=ob_c.start_idx,
+            direction=direction,
+        )
+
+    def _context_from_pending(self, sig: TradeSignal, pc: dict, direction: str) -> ThreeOBSignalContext:
+        """Build ThreeOBSignalContext from a pending_confirmation dict."""
+        ob_a_key = pc.get('ob_a_key')
+        ob_b_key = pc.get('ob_b_key')
+        ob_c_key = pc.get('ob_c_key')
+
+        ob_a_start = self.ob_records[ob_a_key].start_idx if ob_a_key and ob_a_key in self.ob_records else 0
+        ob_b_start = self.ob_records[ob_b_key].start_idx if ob_b_key and ob_b_key in self.ob_records else 0
+        ob_c_start = self.ob_records[ob_c_key].start_idx if ob_c_key and ob_c_key in self.ob_records else 0
+
+        return ThreeOBSignalContext(
+            signal=sig,
+            ob_a_top=pc.get('ob_a_top', 0), ob_a_bottom=pc.get('ob_a_bottom', 0), ob_a_start_idx=ob_a_start,
+            ob_b_top=pc.get('ob_b_top', 0), ob_b_bottom=pc.get('ob_b_bottom', 0), ob_b_start_idx=ob_b_start,
+            ob_c_top=pc.get('ob_c_top', 0), ob_c_bottom=pc.get('ob_c_bottom', 0), ob_c_start_idx=ob_c_start,
+            direction=direction,
+        )

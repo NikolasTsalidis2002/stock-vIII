@@ -1,11 +1,11 @@
 {
-  "symbol": "MSFT",
-  "timeframes_copy": {
+  "symbol": "TSLA",
+  "timeframes": {
     "high": "1h",
     "mid": "15min",
     "low": "5min"
   },
-  "timeframes": {
+  "timeframes_copy": {
     "high": "1day",
     "mid": "4h",
     "low": "15min"
@@ -106,9 +106,11 @@
     "enabled": true,
     "initial_capital": 10000.0,
     "hold_overnight": true,
-    "bos_exit_enabled": false,
-    "bos_exit_threshold_percent": 50.0,
+    "trailing_sl_enabled": true,
+    "trailing_sl_step_pct": 0.5,
+    "trailing_sl_swing_length": 5,
     "min_profit_percent": 0.5,
+    "min_rr_ratio": 1.0,
     "trend_filter_enabled": false,
     "trend_filter_lookback": 500,
     "bos_1h_trend_filter_enabled": false,
@@ -116,9 +118,11 @@
       "enabled": "When true, runs backtest simulation on found signals. Set to false to only scan for setups without simulating trades.",
       "initial_capital": "Starting capital in USD for the backtest. Trades use full capital (compounding).",
       "hold_overnight": "When false (default), exits all positions at market close (intraday only). When true, allows holding positions overnight.",
-      "bos_exit_enabled": "When true, exits trades early if an opposing BOS (Break of Structure) signal appears while in profit.",
-      "bos_exit_threshold_percent": "Minimum profit as percentage of TP target required before BOS exit is allowed. E.g., 50 means you need 50% of the way to TP before early exit triggers.",
+      "trailing_sl_enabled": "When true, moves SL to nearest structural level (swing low for longs, swing high for shorts) each time profit reaches a new step milestone.",
+      "trailing_sl_step_pct": "Profit step percentage that triggers a trailing SL update. E.g., 0.5 means at 0.5%, 1.0%, 1.5% profit milestones the SL is moved.",
+      "trailing_sl_swing_length": "Swing detection lookback for the low TF trailing SL. Smaller = more sensitive (more swing points found).",
       "min_profit_percent": "Skip trades where expected profit (entry to TP) is below this percentage. Set to 0 to disable.",
+      "min_rr_ratio": "Minimum reward-to-risk ratio (TP distance / SL distance) required to enter a trade. E.g., 2.0 means potential reward must be at least 2x the risk. Set to 0 to disable.",
       "trend_filter_enabled": "When true, uses ARMA analysis to determine market trend and filters trades against it. Bullish trend = only LONG trades. Bearish trend = only SHORT trades. Neutral = all trades allowed.",
       "trend_filter_lookback": "Number of mid-timeframe candles to use for ARMA trend calculation. Higher values = smoother/longer-term trend detection.",
       "bos_1h_trend_filter_enabled": "When true, filters trades to follow 1H BOS trend direction. Bullish 1H trend = only LONG trades. Bearish 1H trend = only SHORT trades."
@@ -126,7 +130,7 @@
     "_usage_notes": {
       "trend_filter": "The ARMA model calculates a Signal-to-Noise Ratio (SNR). If SNR < 0.05, trend is considered 'neutral' and no filtering occurs. This prevents false signals from noisy/sideways markets.",
       "compounding": "Capital compounds after each trade. Wins increase position size, losses decrease it.",
-      "exit_priority": "TP/SL are checked first, then BOS exit (if enabled), then market close (if intraday only)."
+      "exit_priority": "TP/SL are checked first, then trailing SL (if enabled), then market close (if intraday only)."
     }
   },
   "output": {

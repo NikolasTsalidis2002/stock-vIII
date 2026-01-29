@@ -25,7 +25,9 @@ class SkipReason(Enum):
     PARTIAL_SETUP = "partial_setup"        # Setup conditions not met
     NO_BACKTEST = "no_backtest"            # Backtest not run
     INSUFFICIENT_PROFIT = "insufficient_profit"  # Below min_profit_percent threshold
+    INSUFFICIENT_RR = "insufficient_rr"  # Below min_rr_ratio threshold
     AGAINST_TREND = "against_trend"        # Trade direction opposes ARMA trend
+    NO_LOW_TF_DATA = "no_low_tf_data"      # No low-timeframe data for backtesting
 
 
 # Human-readable messages for skip reasons
@@ -37,7 +39,9 @@ SKIP_REASON_MESSAGES = {
     SkipReason.PARTIAL_SETUP: "Setup incomplete",
     SkipReason.NO_BACKTEST: "No backtest data available",
     SkipReason.INSUFFICIENT_PROFIT: "Skipped - profit potential below minimum threshold",
+    SkipReason.INSUFFICIENT_RR: "Skipped - reward-to-risk ratio below minimum threshold",
     SkipReason.AGAINST_TREND: "Skipped - trade direction opposes ARMA trend",
+    SkipReason.NO_LOW_TF_DATA: "Skipped - no low-timeframe data for backtesting",
 }
 
 
@@ -54,7 +58,7 @@ class ExitType(Enum):
     TP_HIT = "tp_hit"         # Take profit price was hit
     SL_HIT = "sl_hit"         # Stop loss price was hit
     TIMEOUT = "timeout"       # Neither TP nor SL hit (timeout or end of data)
-    BOS_EXIT = "bos_exit"     # Exited due to opposing BOS signal while in profit
+    TRAILING_SL = "trailing_sl"  # Exited due to trailing stop loss hit
 
 
 class RejectionReason(Enum):
@@ -162,7 +166,7 @@ class PerformanceMetrics:
     tp_exits: int                        # Trades that hit take profit
     sl_exits: int                        # Trades that hit stop loss
     timeout_exits: int                   # Trades that timed out
-    bos_exits: int                       # Trades that exited on opposing trend
+    trailing_sl_exits: int                # Trades that exited via trailing stop loss
 
     # Win/Loss metrics
     win_rate: float                      # winning_trades / total_trades

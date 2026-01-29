@@ -38,7 +38,9 @@ from data_loader import DataLoader
 from strategy import MultiTimeframeStrategy, ThreeOBStrategy
 from strategy_visualizer import StrategySweepVisualizer
 from backtesting import Backtester
+from backtesting.models import SkippedTrade, SkipReason
 from visualization.three_ob_walkthrough import ThreeOBWalkthrough
+from visualization.three_ob_signal_viewer import ThreeOBSignalViewer
 
 
 def get_all_symbols_from_config(config):
@@ -157,9 +159,11 @@ def run_single_symbol(symbol, config, args):
     backtest_cfg = config.get('backtest', {})
     initial_capital = backtest_cfg.get('initial_capital', 10000.0)
     hold_overnight = backtest_cfg.get('hold_overnight', False)
-    bos_exit_enabled = backtest_cfg.get('bos_exit_enabled', False)
-    bos_exit_threshold_percent = backtest_cfg.get('bos_exit_threshold_percent', 50.0)
+    trailing_sl_enabled = backtest_cfg.get('trailing_sl_enabled', False)
+    trailing_sl_step_pct = backtest_cfg.get('trailing_sl_step_pct', 0.5)
+    trailing_sl_swing_length = backtest_cfg.get('trailing_sl_swing_length', 5)
     min_profit_percent = backtest_cfg.get('min_profit_percent', 0.0)
+    min_rr_ratio = backtest_cfg.get('min_rr_ratio', 0.0)
     trend_filter_enabled = backtest_cfg.get('trend_filter_enabled', False)
     trend_filter_lookback = backtest_cfg.get('trend_filter_lookback', 500)
     bos_1h_trend_filter_enabled = backtest_cfg.get('bos_1h_trend_filter_enabled', False)
@@ -239,11 +243,13 @@ def run_single_symbol(symbol, config, args):
         initial_capital=initial_capital,
         symbol=symbol,
         intraday_only=not hold_overnight,
-        bos_exit_enabled=bos_exit_enabled,
-        bos_exit_threshold_percent=bos_exit_threshold_percent,
         min_profit_percent=min_profit_percent,
+        min_rr_ratio=min_rr_ratio,
         trend_filter=trend_signal if trend_filter_enabled else None,
-        bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled
+        bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled,
+        trailing_sl_enabled=trailing_sl_enabled,
+        trailing_sl_step_pct=trailing_sl_step_pct,
+        trailing_sl_swing_length=trailing_sl_swing_length
     )
     _results = backtester.run(signals)
 
@@ -694,17 +700,6 @@ def main():
         help='Allow trades to hold overnight (default: intraday only, exit at market close 21:59)'
     )
     parser.add_argument(
-        '--bos-exit',
-        action='store_true',
-        default=None,
-        help='Enable BOS-based early exit: exit when opposing BOS occurs while in profit'
-    )
-    parser.add_argument(
-        '--no-bos-exit',
-        action='store_true',
-        help='Disable BOS-based early exit (overrides config file)'
-    )
-    parser.add_argument(
         '--all-symbols',
         action='store_true',
         help='Run analysis for all symbols configured in asset_options (batch mode)'
@@ -737,9 +732,11 @@ def main():
             initial_capital=backtest_cfg.get('initial_capital', 10000.0),
             no_backtest=not backtest_cfg.get('enabled', True),
             hold_overnight=backtest_cfg.get('hold_overnight', False),
-            bos_exit_enabled=backtest_cfg.get('bos_exit_enabled', False),
-            bos_exit_threshold_percent=backtest_cfg.get('bos_exit_threshold_percent', 50.0),
+            trailing_sl_enabled=backtest_cfg.get('trailing_sl_enabled', False),
+            trailing_sl_step_pct=backtest_cfg.get('trailing_sl_step_pct', 0.5),
+            trailing_sl_swing_length=backtest_cfg.get('trailing_sl_swing_length', 5),
             min_profit_percent=backtest_cfg.get('min_profit_percent', 0.0),
+            min_rr_ratio=backtest_cfg.get('min_rr_ratio', 0.0),
             trend_filter_enabled=backtest_cfg.get('trend_filter_enabled', False),
             trend_filter_lookback=backtest_cfg.get('trend_filter_lookback', 500),
             bos_1h_trend_filter_enabled=backtest_cfg.get('bos_1h_trend_filter_enabled', False),
@@ -783,17 +780,15 @@ def main():
     mid_tf = args.mid_tf
     low_tf = args.low_tf
 
-    # Resolve bos_exit setting: CLI flags take precedence over config
-    bos_exit_enabled = getattr(args, 'bos_exit_enabled', False)
-    bos_exit_threshold_percent = getattr(args, 'bos_exit_threshold_percent', 50.0)
+    # Resolve trailing SL and other settings from config/CLI
+    trailing_sl_enabled = getattr(args, 'trailing_sl_enabled', False)
+    trailing_sl_step_pct = getattr(args, 'trailing_sl_step_pct', 0.5)
+    trailing_sl_swing_length = getattr(args, 'trailing_sl_swing_length', 5)
     min_profit_percent = getattr(args, 'min_profit_percent', 0.0)
+    min_rr_ratio = getattr(args, 'min_rr_ratio', 0.0)
     trend_filter_enabled = getattr(args, 'trend_filter_enabled', False)
     trend_filter_lookback = getattr(args, 'trend_filter_lookback', 500)
     bos_1h_trend_filter_enabled = getattr(args, 'bos_1h_trend_filter_enabled', False)
-    if args.bos_exit:
-        bos_exit_enabled = True
-    elif args.no_bos_exit:
-        bos_exit_enabled = False
 
     # Get validation settings from config
     use_fvg_validation = getattr(args, 'use_fvg_validation', True)
@@ -831,12 +826,14 @@ def main():
     print(f"  Initial Capital:  ${args.initial_capital:,.2f}")
     print(f"  Backtest:         {'Disabled' if args.no_backtest else 'Enabled'}")
     print(f"  Hold Overnight:   {'Yes' if args.hold_overnight else 'No (intraday only)'}")
-    if bos_exit_enabled:
-        print(f"  BOS Exit:         Enabled (exit on opposing BOS when profit >= {bos_exit_threshold_percent:.0f}% of TP)")
+    if trailing_sl_enabled:
+        print(f"  Trailing SL:      Enabled (step={trailing_sl_step_pct}%, swing_length={trailing_sl_swing_length})")
     else:
-        print(f"  BOS Exit:         Disabled")
+        print(f"  Trailing SL:      Disabled")
     if min_profit_percent > 0:
         print(f"  Min Profit:       {min_profit_percent}% (skip trades below)")
+    if min_rr_ratio > 0:
+        print(f"  Min R:R Ratio:    {min_rr_ratio:.1f} (skip trades below)")
     if trend_filter_enabled:
         print(f"  Trend Filter:     Enabled (ARMA, lookback={trend_filter_lookback})")
     else:
@@ -917,6 +914,15 @@ def main():
             df_confirmation = loader.get_data(three_ob_conf_tf, force_refresh=False)
             print(f"  ✓ {three_ob_conf_tf.upper()}: {len(df_confirmation)} candles")
 
+            # Auto-refresh if confirmation data is stale compared to primary TF
+            primary_end = df_3ob['time'].max()
+            conf_end = df_confirmation['time'].max()
+            if conf_end < primary_end:
+                print(f"  ⚠️ Confirmation data ends at {conf_end}, primary TF goes to {primary_end}")
+                print(f"  🔄 Refreshing {three_ob_conf_tf} data...")
+                df_confirmation = loader.update_cache(three_ob_conf_tf)
+                print(f"  ✓ {three_ob_conf_tf.upper()}: {len(df_confirmation)} candles (refreshed)")
+
         strategy_3ob = ThreeOBStrategy(
             df_3ob,
             close_break=three_ob_close_break,
@@ -927,7 +933,12 @@ def main():
         )
 
         print("\n🔍 Scanning for 3-OB trade setups...")
-        signals = strategy_3ob.scan_for_signals(max_signals=5)
+        signal_contexts = None
+        if args.visualize:
+            signal_contexts = strategy_3ob.scan_for_signals_with_context(max_signals=5)
+            signals = [ctx.signal for ctx in signal_contexts]
+        else:
+            signals = strategy_3ob.scan_for_signals(max_signals=5)
 
         # Generate walkthrough if requested (before signal check so it runs even with 0 signals)
         if args.walkthrough_3ob:
@@ -964,14 +975,63 @@ def main():
                 initial_capital=args.initial_capital,
                 symbol=symbol,
                 intraday_only=not args.hold_overnight,
+                min_profit_percent=min_profit_percent,
+                min_rr_ratio=min_rr_ratio,
+                trailing_sl_enabled=trailing_sl_enabled,
+                trailing_sl_step_pct=trailing_sl_step_pct,
+                trailing_sl_swing_length=trailing_sl_swing_length,
             )
-            _results = backtester.run(signals)
+
+            # Filter signals to only those with low-TF data coverage
+            no_data_skipped = []
+            if df_confirmation is not None and len(df_confirmation) > 0:
+                conf_start = df_confirmation['time'].min()
+                conf_end = df_confirmation['time'].max()
+                tradeable_signals = []
+                for s in signals:
+                    if conf_start <= s.timestamp_entry <= conf_end:
+                        tradeable_signals.append(s)
+                    else:
+                        no_data_skipped.append(SkippedTrade(
+                            signal_entry_time=s.timestamp_entry,
+                            skip_reason=SkipReason.NO_LOW_TF_DATA,
+                            details=f"Signal at {s.timestamp_entry} outside low-TF data range ({conf_start} to {conf_end})"
+                        ))
+                if no_data_skipped:
+                    print(f"\n  Skipping {len(no_data_skipped)} signals without low-TF data coverage")
+                    print(f"  Backtesting {len(tradeable_signals)} signals with low-TF data")
+            else:
+                tradeable_signals = signals
+
+            _results = backtester.run(tradeable_signals)
             backtester.print_summary()
 
             if args.export_journal:
                 os.makedirs("results/trades", exist_ok=True)
                 journal_path = f"results/trades/{symbol.lower()}_3ob_trades.csv" if args.export_journal == 'auto' else args.export_journal
                 backtester.export_journal(journal_path)
+
+        # Generate signal viewer visualization if requested
+        if args.visualize and signal_contexts:
+            print("\n" + "="*80)
+            print("GENERATING 3-OB SIGNAL VISUALIZATION")
+            print("="*80)
+
+            trade_results = backtester.results if not args.no_backtest and 'backtester' in locals() else []
+            perf_metrics = backtester.metrics if not args.no_backtest and 'backtester' in locals() else None
+            skipped_trades = (backtester.skipped_trades if not args.no_backtest and 'backtester' in locals() else []) + (no_data_skipped if 'no_data_skipped' in locals() else [])
+            viewer = ThreeOBSignalViewer(
+                df=df_3ob,
+                signal_contexts=signal_contexts,
+                symbol=symbol,
+                trade_results=trade_results,
+                performance_metrics=perf_metrics,
+                df_entry=df_confirmation,
+                skipped_trades=skipped_trades,
+            )
+            viz_path = viewer.generate_html()
+            print(f"\n✅ Signal viewer: {viz_path}")
+            print("   Use dropdown or arrow keys to browse signals")
 
         # Summary
         print("\n" + "="*80)
@@ -1061,11 +1121,13 @@ def main():
             initial_capital=args.initial_capital,
             symbol=symbol,
             intraday_only=not args.hold_overnight,
-            bos_exit_enabled=bos_exit_enabled,
-            bos_exit_threshold_percent=bos_exit_threshold_percent,
             min_profit_percent=min_profit_percent,
+            min_rr_ratio=min_rr_ratio,
             trend_filter=trend_signal if trend_filter_enabled else None,
-            bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled
+            bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled,
+            trailing_sl_enabled=trailing_sl_enabled,
+            trailing_sl_step_pct=trailing_sl_step_pct,
+            trailing_sl_swing_length=trailing_sl_swing_length
         )
         _results = backtester.run(signals)
         backtester.print_summary()
