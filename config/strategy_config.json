@@ -1,5 +1,5 @@
 {
-  "symbol": "TSLA",
+  "symbol": "SPY",
   "timeframes": {
     "high": "1h",
     "mid": "15min",
@@ -107,7 +107,7 @@
     "initial_capital": 10000.0,
     "hold_overnight": true,
     "trailing_sl_enabled": true,
-    "trailing_sl_step_pct": 0.5,
+    "trailing_sl_activation_pct": 50.0,
     "trailing_sl_swing_length": 5,
     "min_profit_percent": 0.5,
     "min_rr_ratio": 1.0,
@@ -118,8 +118,8 @@
       "enabled": "When true, runs backtest simulation on found signals. Set to false to only scan for setups without simulating trades.",
       "initial_capital": "Starting capital in USD for the backtest. Trades use full capital (compounding).",
       "hold_overnight": "When false (default), exits all positions at market close (intraday only). When true, allows holding positions overnight.",
-      "trailing_sl_enabled": "When true, moves SL to nearest structural level (swing low for longs, swing high for shorts) each time profit reaches a new step milestone.",
-      "trailing_sl_step_pct": "Profit step percentage that triggers a trailing SL update. E.g., 0.5 means at 0.5%, 1.0%, 1.5% profit milestones the SL is moved.",
+      "trailing_sl_enabled": "When true, activates trailing SL after price reaches activation threshold, then continuously trails to nearest swing level on every candle.",
+      "trailing_sl_activation_pct": "Percentage of entry→TP distance price must reach before trailing SL activates. E.g., 50.0 means trailing starts when price has moved 50% of the way to TP.",
       "trailing_sl_swing_length": "Swing detection lookback for the low TF trailing SL. Smaller = more sensitive (more swing points found).",
       "min_profit_percent": "Skip trades where expected profit (entry to TP) is below this percentage. Set to 0 to disable.",
       "min_rr_ratio": "Minimum reward-to-risk ratio (TP distance / SL distance) required to enter a trade. E.g., 2.0 means potential reward must be at least 2x the risk. Set to 0 to disable.",

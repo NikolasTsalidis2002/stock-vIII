@@ -28,6 +28,7 @@ class SkipReason(Enum):
     INSUFFICIENT_RR = "insufficient_rr"  # Below min_rr_ratio threshold
     AGAINST_TREND = "against_trend"        # Trade direction opposes ARMA trend
     NO_LOW_TF_DATA = "no_low_tf_data"      # No low-timeframe data for backtesting
+    OB_A_REPEATED_FAILURE = "ob_a_repeated_failure"  # OB-A zone has 2+ prior losses
 
 
 # Human-readable messages for skip reasons
@@ -42,6 +43,7 @@ SKIP_REASON_MESSAGES = {
     SkipReason.INSUFFICIENT_RR: "Skipped - reward-to-risk ratio below minimum threshold",
     SkipReason.AGAINST_TREND: "Skipped - trade direction opposes ARMA trend",
     SkipReason.NO_LOW_TF_DATA: "Skipped - no low-timeframe data for backtesting",
+    SkipReason.OB_A_REPEATED_FAILURE: "Skipped - OB-A zone has 2+ prior losing trades",
 }
 
 
@@ -51,6 +53,7 @@ class SkippedTrade:
     signal_entry_time: datetime
     skip_reason: SkipReason
     details: Optional[str] = None  # Additional context (e.g., failure reason for partials)
+    ob_a_failure_dates: Optional[List[str]] = None  # Dates of prior OB-A losses
 
 
 class ExitType(Enum):
@@ -128,6 +131,9 @@ class TradeResult:
 
     # Candle-by-candle unrealized P&L series: [(timestamp, unrealized_pnl_dollars), ...]
     unrealized_pnl_series: List[Tuple[datetime, float]] = None
+
+    # Stop loss history: [(timestamp, sl_price, reason_string), ...]
+    sl_history: List[Tuple[datetime, float, str]] = None
 
     def risk_amount(self) -> float:
         """Calculate the dollar risk on this trade."""

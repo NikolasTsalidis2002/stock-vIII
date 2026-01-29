@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.strategy.models import ThreeOBSignalContext
-from src.backtesting.models import TradeResult, PerformanceMetrics, SkippedTrade, SKIP_REASON_MESSAGES
+from src.backtesting.models import TradeResult, PerformanceMetrics, SkippedTrade, SkipReason, SKIP_REASON_MESSAGES
 from .core import NumpyEncoder, generate_candle_data, generate_bos_lines, generate_fvg_zones, generate_liquidity_lines
 from src.indicators.smc_custom import smc_custom
 from src.indicators.smc import smc
@@ -37,8 +37,10 @@ class ThreeOBSignalViewer:
         df_entry: Optional[pd.DataFrame] = None,
         skipped_trades: Optional[List[SkippedTrade]] = None,
         bars_around: int = 50,
+        trailing_sl_activation_pct: float = 50.0,
     ):
         self.symbol = symbol
+        self.trailing_sl_activation_pct = trailing_sl_activation_pct
         self.signal_contexts = signal_contexts
         self.trade_results = trade_results or []
         self.skipped_trades = skipped_trades or []
@@ -101,12 +103,16 @@ class ThreeOBSignalViewer:
             tab_15m = self._generate_tab_15m(ctx, trade_result)
             tab_5m_entry = self._generate_tab_5m_entry(ctx, trade_result)
             tab_pnl = self._generate_tab_pnl(trade_result)
+            tab_sl_history = self._generate_tab_sl_history(trade_result, ctx)
 
             # Determine if signal was skipped (based on backtester, NOT 5min data availability)
             if not trade_result and skipped_trade:
                 skipped = True
                 skip_msg = SKIP_REASON_MESSAGES.get(skipped_trade.skip_reason, str(skipped_trade.skip_reason))
-                if skipped_trade.details:
+                if skipped_trade.skip_reason == SkipReason.OB_A_REPEATED_FAILURE and skipped_trade.ob_a_failure_dates:
+                    dates_str = ', '.join(skipped_trade.ob_a_failure_dates)
+                    skip_msg = f"{skip_msg} (losses on: {dates_str})"
+                elif skipped_trade.details:
                     skip_msg = f"{skip_msg}: {skipped_trade.details}"
                 skipped_reason = skip_msg
             elif not trade_result and not skipped_trade:
@@ -146,6 +152,7 @@ class ThreeOBSignalViewer:
                 'tab15m': tab_15m,
                 'tab5mEntry': tab_5m_entry,
                 'tabPnL': tab_pnl,
+                'tabSLHistory': tab_sl_history,
                 'direction': ctx.direction,
                 'entryPrice': float(sig.price_entry),
                 'tpPrice': float(sig.take_profit_price) if sig.take_profit_price else None,
@@ -336,6 +343,63 @@ class ThreeOBSignalViewer:
             'direction': trade_result.entry_direction,
             'outcome': trade_result.outcome.value if trade_result.outcome else None,
             'exitType': trade_result.exit_type.value if trade_result.exit_type else None
+        }
+
+    def _generate_tab_sl_history(self, trade_result: Optional[TradeResult], ctx: ThreeOBSignalContext) -> Optional[Dict]:
+        if not trade_result:
+            return None
+        if not trade_result.sl_history or len(trade_result.sl_history) == 0:
+            return None
+
+        sl_entries = []
+        for i, (ts, price, reason) in enumerate(trade_result.sl_history):
+            is_last = (i == len(trade_result.sl_history) - 1)
+            sl_entries.append({
+                'time': int(ts.timestamp()),
+                'price': float(price),
+                'reason': reason,
+                'isActive': is_last,
+            })
+
+        # End time for the last SL line
+        exit_time_unix = int(trade_result.exit_time.timestamp()) if trade_result.exit_time else None
+
+        # Generate candle data for the SL tab (entry to exit with padding)
+        entry_time = ctx.signal.timestamp_entry
+        entry_idx = self.df.index.get_indexer([entry_time], method='nearest')[0]
+        pre_padding = 5
+        start_idx = max(0, entry_idx - pre_padding)
+
+        if trade_result.exit_time:
+            exit_idx = self.df.index.get_indexer([trade_result.exit_time], method='nearest')[0]
+            post_padding = 5
+            end_idx = min(len(self.df), exit_idx + post_padding)
+        else:
+            end_idx = min(len(self.df), entry_idx + 30)
+
+        end_idx = max(end_idx, entry_idx + 10)
+        df_slice = self.df.iloc[start_idx:end_idx]
+        candle_data = generate_candle_data(df_slice)
+
+        # Compute trailing SL activation price
+        entry_price = trade_result.entry_price
+        tp_price = trade_result.take_profit_price
+        if trade_result.entry_direction == 'long':
+            activation_price = entry_price + (tp_price - entry_price) * (self.trailing_sl_activation_pct / 100.0)
+        else:
+            activation_price = entry_price - (entry_price - tp_price) * (self.trailing_sl_activation_pct / 100.0)
+
+        return {
+            'tabName': 'Stop Loss',
+            'slHistory': sl_entries,
+            'entryPrice': float(trade_result.entry_price),
+            'direction': trade_result.entry_direction,
+            'exitTime': exit_time_unix,
+            'exitType': trade_result.exit_type.value if trade_result.exit_type else None,
+            'candleData': candle_data,
+            'activationPrice': float(activation_price),
+            'activationPct': self.trailing_sl_activation_pct,
+            'tpPrice': float(tp_price),
         }
 
     def _generate_performance_data(self) -> Optional[Dict]:
@@ -829,6 +893,7 @@ class ThreeOBSignalViewer:
             <div class="tab" data-tab="15M" onclick="switchTab('15M')">15min</div>
             <div class="tab" data-tab="5M_ENTRY" onclick="switchTab('5M_ENTRY')">5min Entry</div>
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
+            <div class="tab" data-tab="SL_HISTORY" onclick="switchTab('SL_HISTORY')">Stop Loss</div>
             <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
         </div>
 
@@ -920,7 +985,7 @@ class ThreeOBSignalViewer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1 2 3 4</span>
+                        <span class="shortcut-key">1 2 3 4 5</span>
                     </div>
                 </div>
             </div>
@@ -1013,7 +1078,8 @@ class ThreeOBSignalViewer:
                 if (e.key === '1') switchTab('15M');
                 if (e.key === '2') switchTab('5M_ENTRY');
                 if (e.key === '3') switchTab('PNL');
-                if (e.key === '4') switchTab('DASHBOARD');
+                if (e.key === '4') switchTab('SL_HISTORY');
+                if (e.key === '5') switchTab('DASHBOARD');
             }});
 
             // Resize handler
@@ -1141,6 +1207,7 @@ class ThreeOBSignalViewer:
                 if (tabId === '15M' && sig.tab15m) hasData = true;
                 if (tabId === '5M_ENTRY' && sig.tab5mEntry) hasData = true;
                 if (tabId === 'PNL' && sig.tabPnL) hasData = true;
+                if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
                 if (tabId === 'DASHBOARD') hasData = true;
 
                 if (!hasData) tab.classList.add('disabled');
@@ -1155,6 +1222,7 @@ class ThreeOBSignalViewer:
             if (tabId === '15M' && sig.tab15m) hasData = true;
             if (tabId === '5M_ENTRY' && sig.tab5mEntry) hasData = true;
             if (tabId === 'PNL' && sig.tabPnL) hasData = true;
+            if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
             if (tabId === 'DASHBOARD') hasData = true;
             if (!hasData) return;
 
@@ -1217,11 +1285,19 @@ class ThreeOBSignalViewer:
             else if (currentTab === '5M_ENTRY') tabData = sig.tab5mEntry;
             else if (currentTab === 'PNL') tabData = sig.tabPnL;
 
+            if (currentTab === 'SL_HISTORY') tabData = sig.tabSLHistory;
+
             if (!tabData) return;
 
             // P&L tab: line chart
             if (currentTab === 'PNL') {{
                 showPnLChart(tabData);
+                return;
+            }}
+
+            // SL History tab
+            if (currentTab === 'SL_HISTORY') {{
+                showSLHistoryChart(tabData);
                 return;
             }}
 
@@ -1401,8 +1477,111 @@ class ThreeOBSignalViewer:
             chart.priceScale('right').applyOptions({{ autoScale: true }});
         }}
 
+        function showSLHistoryChart(slData) {{
+            clearLineSeries();
+            d3.select('#svg-overlay').selectAll('*').remove();
+            candlestickSeries.setData(slData && slData.candleData ? slData.candleData : []);
+            candlestickSeries.setMarkers([]);
+
+            if (!slData || !slData.slHistory || slData.slHistory.length === 0) return;
+
+            const history = slData.slHistory;
+            const exitTime = slData.exitTime;
+            const isLong = slData.direction === 'long';
+            const dimColor = isLong ? 'rgba(242,54,69,0.25)' : 'rgba(8,153,129,0.25)';
+            const activeColor = isLong ? '#f23645' : '#089981';
+
+            // Entry price reference line
+            const firstTime = history[0].time;
+            const lastTime = exitTime || history[history.length - 1].time;
+            const entryLine = chart.addLineSeries({{
+                color: '#787b86', lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dotted,
+                priceLineVisible: false, lastValueVisible: true, title: 'Entry',
+            }});
+            entryLine.setData([
+                {{ time: firstTime, value: slData.entryPrice }},
+                {{ time: lastTime, value: slData.entryPrice }}
+            ]);
+            activeLineSeries.push(entryLine);
+
+            // Trailing SL activation price line
+            if (slData.activationPrice) {{
+                const actLine = chart.addLineSeries({{
+                    color: '#ff9800', lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                    priceLineVisible: false, lastValueVisible: true,
+                    title: 'Activation (' + slData.activationPct + '%)',
+                }});
+                actLine.setData([
+                    {{ time: firstTime, value: slData.activationPrice }},
+                    {{ time: lastTime, value: slData.activationPrice }}
+                ]);
+                activeLineSeries.push(actLine);
+            }}
+
+            // TP price reference line
+            if (slData.tpPrice) {{
+                const tpLine = chart.addLineSeries({{
+                    color: '#089981', lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                    priceLineVisible: false, lastValueVisible: true,
+                    title: 'TP',
+                }});
+                tpLine.setData([
+                    {{ time: firstTime, value: slData.tpPrice }},
+                    {{ time: lastTime, value: slData.tpPrice }}
+                ]);
+                activeLineSeries.push(tpLine);
+            }}
+
+            // Draw each SL level as a horizontal line segment
+            for (let i = 0; i < history.length; i++) {{
+                const sl = history[i];
+                const startTime = sl.time;
+                // End time: next SL change, or exit time
+                const endTime = (i < history.length - 1) ? history[i + 1].time : (exitTime || sl.time + 3600);
+                const isActive = sl.isActive;
+
+                const color = isActive ? activeColor : dimColor;
+                const lineWidth = isActive ? 3 : 1;
+
+                const slLine = chart.addLineSeries({{
+                    color: color,
+                    lineWidth: lineWidth,
+                    lineStyle: isActive ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: isActive,
+                    title: isActive ? 'SL (active)' : '',
+                }});
+                slLine.setData([
+                    {{ time: startTime, value: sl.price }},
+                    {{ time: endTime, value: sl.price }}
+                ]);
+                activeLineSeries.push(slLine);
+
+                // Add marker with reason at each SL change
+                const markerSeries = chart.addLineSeries({{
+                    color: color, lineWidth: 0,
+                    priceLineVisible: false, lastValueVisible: false,
+                }});
+                markerSeries.setData([{{ time: startTime, value: sl.price }}]);
+                markerSeries.setMarkers([{{
+                    time: startTime,
+                    position: isLong ? 'belowBar' : 'aboveBar',
+                    color: isActive ? activeColor : (isLong ? 'rgba(242,54,69,0.6)' : 'rgba(8,153,129,0.6)'),
+                    shape: 'circle',
+                    text: sl.reason,
+                }}]);
+                activeLineSeries.push(markerSeries);
+            }}
+
+            chart.timeScale().fitContent();
+            chart.priceScale('right').applyOptions({{ autoScale: true }});
+        }}
+
         function redrawOverlays() {{
-            if (currentTab === 'PNL' || currentTab === 'DASHBOARD') return;
+            if (currentTab === 'PNL' || currentTab === 'SL_HISTORY' || currentTab === 'DASHBOARD') return;
 
             const sig = signalsData[currentSignalIdx];
             let tabData = null;

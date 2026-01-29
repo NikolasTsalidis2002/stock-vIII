@@ -43,7 +43,7 @@ class TradeSimulator:
         trend_filter: str = None,
         bos_1h_trend_filter_enabled: bool = False,
         trailing_sl_enabled: bool = False,
-        trailing_sl_step_pct: float = 0.5,
+        trailing_sl_activation_pct: float = 50.0,
         trailing_sl_swing_length: int = 5
     ) -> None:
         """
@@ -58,8 +58,8 @@ class TradeSimulator:
             min_profit_percent: Minimum profit % to accept a trade (default 0.0, disabled)
             trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
             bos_1h_trend_filter_enabled: If True, filter trades to follow 1H BOS trend direction
-            trailing_sl_enabled: If True, trail SL to swing levels as profit milestones are reached
-            trailing_sl_step_pct: Profit % step that triggers trailing SL update
+            trailing_sl_enabled: If True, trail SL to swing levels once activation threshold is reached
+            trailing_sl_activation_pct: Percentage of entry→TP distance price must reach before trailing activates (default 50%)
             trailing_sl_swing_length: Swing detection lookback for trailing SL
         """
         self.df_low = df_low
@@ -74,7 +74,7 @@ class TradeSimulator:
 
         # Trailing SL configuration
         self.trailing_sl_enabled = trailing_sl_enabled
-        self.trailing_sl_step_pct = trailing_sl_step_pct
+        self.trailing_sl_activation_pct = trailing_sl_activation_pct
 
         # Store data date range for validation
         self.data_start = df_low.index.min()
@@ -189,12 +189,14 @@ class TradeSimulator:
 
         # Trailing SL state
         current_sl = sl_price
+        sl_history = [(entry_time, sl_price, "Initial SL")]
+        trailing_activated = False
         if self.trailing_sl_enabled:
-            step_count = 0
+            # Activation price = X% of the way from entry to TP
             if direction == 'long':
-                next_step_threshold = entry_price * (1 + self.trailing_sl_step_pct / 100.0)
+                activation_price = entry_price + (tp_price - entry_price) * (self.trailing_sl_activation_pct / 100.0)
             else:
-                next_step_threshold = entry_price * (1 - self.trailing_sl_step_pct / 100.0)
+                activation_price = entry_price - (entry_price - tp_price) * (self.trailing_sl_activation_pct / 100.0)
 
         # Find starting point in 1M data
         start_idx = self._find_start_index(entry_time)
@@ -309,27 +311,24 @@ class TradeSimulator:
                 exit_type = ExitType.TRAILING_SL if current_sl != sl_price else ExitType.SL_HIT
                 break
 
-            # Trailing SL: check if price reached next profit milestone
+            # Trailing SL: activate once price reaches threshold, then trail continuously
             if self.trailing_sl_enabled:
-                threshold_hit = False
-                if direction == 'long':
-                    threshold_hit = candle_high >= next_step_threshold
-                else:
-                    threshold_hit = candle_low <= next_step_threshold
+                # Check activation
+                if not trailing_activated:
+                    if direction == 'long' and candle_high >= activation_price:
+                        trailing_activated = True
+                        sl_history.append((candle_time, current_sl, "Trailing activated"))
+                    elif direction == 'short' and candle_low <= activation_price:
+                        trailing_activated = True
+                        sl_history.append((candle_time, current_sl, "Trailing activated"))
 
-                if threshold_hit:
-                    step_count += 1
-                    # Find nearest swing level to move SL to
-                    new_sl = self._find_trailing_sl_level(
-                        idx, entry_price, current_sl, direction
-                    )
-                    if new_sl is not None:
+                # Once activated, check every candle for a better swing level
+                if trailing_activated:
+                    new_sl = self._find_trailing_sl_level(idx, entry_price, current_sl, direction)
+                    if new_sl is not None and new_sl != current_sl:
+                        swing_type = "swing low" if direction == 'long' else "swing high"
+                        sl_history.append((candle_time, new_sl, f"Trailing: {swing_type}"))
                         current_sl = new_sl
-                    # Calculate next threshold
-                    if direction == 'long':
-                        next_step_threshold = entry_price * (1 + self.trailing_sl_step_pct * (step_count + 1) / 100.0)
-                    else:
-                        next_step_threshold = entry_price * (1 - self.trailing_sl_step_pct * (step_count + 1) / 100.0)
 
             # Check for market close - exit at end of trading day
             # Only applies if intraday_only is True
@@ -404,7 +403,8 @@ class TradeSimulator:
             entry_candle_idx=start_idx,
             exit_candle_idx=exit_candle_idx,
             total_candles_in_trade=candles_scanned,
-            unrealized_pnl_series=unrealized_pnl_series
+            unrealized_pnl_series=unrealized_pnl_series,
+            sl_history=sl_history
         )
 
     def _find_start_index(self, entry_time: datetime) -> Optional[int]:
@@ -571,6 +571,7 @@ class TradeSimulator:
         results = []
         skipped_trades = []
         current_capital = self.initial_capital
+        ob_a_loss_tracker: Dict[tuple, List[str]] = {}  # OB-A id -> list of loss date strings
 
         # Sort signals by entry time
         sorted_signals = sorted(signals, key=lambda s: s.timestamp_entry)
@@ -581,6 +582,19 @@ class TradeSimulator:
         print("-" * 60)
 
         for i, signal in enumerate(sorted_signals):
+            # Skip signals from OB-A zones with 2+ prior losses
+            if signal.ob_a_id and signal.ob_a_id in ob_a_loss_tracker:
+                failure_dates = ob_a_loss_tracker[signal.ob_a_id]
+                if len(failure_dates) >= 2:
+                    print(f"  Trade {i+1}: SKIPPED - OB-A zone has {len(failure_dates)} prior losses")
+                    skipped_trades.append(SkippedTrade(
+                        signal_entry_time=signal.timestamp_entry,
+                        skip_reason=SkipReason.OB_A_REPEATED_FAILURE,
+                        details=f"OB-A zone losses on: {', '.join(failure_dates)}",
+                        ob_a_failure_dates=failure_dates.copy(),
+                    ))
+                    continue
+
             # Skip signals without TP/SL
             if signal.take_profit_price is None or signal.stop_loss_price is None:
                 print(f"  Trade {i+1}: SKIPPED - Missing TP or SL")
@@ -719,6 +733,11 @@ class TradeSimulator:
                 continue
 
             results.append(result)
+
+            # Track OB-A losses for failure filtering
+            if result.outcome == TradeOutcome.LOSS and signal.ob_a_id:
+                loss_date = result.entry_time.strftime('%Y-%m-%d')
+                ob_a_loss_tracker.setdefault(signal.ob_a_id, []).append(loss_date)
 
             # Update capital for next trade (compounding)
             current_capital = result.capital_after

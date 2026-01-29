@@ -700,6 +700,7 @@ class ThreeOBEngine:
                 sig = snapshot['signal']
                 ctx = self._context_from_snapshot(sig, snapshot)
                 if ctx is not None:
+                    sig.ob_a_id = (ctx.ob_a_top, ctx.ob_a_bottom, ctx.ob_a_start_idx)
                     contexts.append(ctx)
                 continue
 
@@ -758,6 +759,7 @@ class ThreeOBEngine:
                 stop_loss_price=pc['sl'],
             )
             ctx = self._context_from_pending(sig, pc, direction)
+            sig.ob_a_id = (ctx.ob_a_top, ctx.ob_a_bottom, ctx.ob_a_start_idx)
             contexts.append(ctx)
 
         return contexts

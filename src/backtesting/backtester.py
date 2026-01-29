@@ -46,7 +46,7 @@ class Backtester:
         trend_filter: str = None,
         bos_1h_trend_filter_enabled: bool = False,
         trailing_sl_enabled: bool = False,
-        trailing_sl_step_pct: float = 0.5,
+        trailing_sl_activation_pct: float = 50.0,
         trailing_sl_swing_length: int = 5
     ) -> None:
         """
@@ -62,7 +62,7 @@ class Backtester:
             trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
             bos_1h_trend_filter_enabled: If True, filter trades to follow 1H BOS trend direction
             trailing_sl_enabled: If True, trail SL to swing levels as profit milestones are reached
-            trailing_sl_step_pct: Profit % step that triggers trailing SL update
+            trailing_sl_activation_pct: Percentage of entry→TP distance price must reach before trailing activates
             trailing_sl_swing_length: Swing detection lookback for trailing SL
         """
         self.df_low = df_low
@@ -82,7 +82,7 @@ class Backtester:
             trend_filter=trend_filter,
             bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled,
             trailing_sl_enabled=trailing_sl_enabled,
-            trailing_sl_step_pct=trailing_sl_step_pct,
+            trailing_sl_activation_pct=trailing_sl_activation_pct,
             trailing_sl_swing_length=trailing_sl_swing_length
         )
         self._tracker = PerformanceTracker(initial_capital=initial_capital)
@@ -107,7 +107,7 @@ class Backtester:
         trend_filter: str = None,
         bos_1h_trend_filter_enabled: bool = False,
         trailing_sl_enabled: bool = False,
-        trailing_sl_step_pct: float = 0.5,
+        trailing_sl_activation_pct: float = 50.0,
         trailing_sl_swing_length: int = 5
     ) -> "Backtester":
         """
@@ -123,7 +123,7 @@ class Backtester:
             trend_filter: ARMA trend direction ('bullish', 'bearish', 'neutral', or None to disable)
             bos_1h_trend_filter_enabled: If True, filter trades to follow 1H BOS trend direction
             trailing_sl_enabled: If True, trail SL to swing levels as profit milestones are reached
-            trailing_sl_step_pct: Profit % step that triggers trailing SL update
+            trailing_sl_activation_pct: Percentage of entry→TP distance price must reach before trailing activates
             trailing_sl_swing_length: Swing detection lookback for trailing SL
 
         Returns:
@@ -140,7 +140,7 @@ class Backtester:
             trend_filter=trend_filter,
             bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled,
             trailing_sl_enabled=trailing_sl_enabled,
-            trailing_sl_step_pct=trailing_sl_step_pct,
+            trailing_sl_activation_pct=trailing_sl_activation_pct,
             trailing_sl_swing_length=trailing_sl_swing_length
         )
 

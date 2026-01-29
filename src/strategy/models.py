@@ -171,6 +171,9 @@ class TradeSignal:
     # GMM zone info for debug visualization (set by strategy engine when GMM enabled)
     gmm_zone_info: Optional[Any] = None  # GMMZoneInfo from gmm_zone_detector
 
+    # OB-A identity for failure tracking: (top, bottom, start_idx)
+    ob_a_id: Optional[Tuple[float, float, int]] = None
+
     def calculate_stop_loss(self) -> None:
         """Calculate stop loss based on 2:1 R/R from take profit."""
         if self.take_profit_price is None or self.price_entry is None:

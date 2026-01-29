@@ -160,7 +160,7 @@ def run_single_symbol(symbol, config, args):
     initial_capital = backtest_cfg.get('initial_capital', 10000.0)
     hold_overnight = backtest_cfg.get('hold_overnight', False)
     trailing_sl_enabled = backtest_cfg.get('trailing_sl_enabled', False)
-    trailing_sl_step_pct = backtest_cfg.get('trailing_sl_step_pct', 0.5)
+    trailing_sl_activation_pct = backtest_cfg.get('trailing_sl_activation_pct', 50.0)
     trailing_sl_swing_length = backtest_cfg.get('trailing_sl_swing_length', 5)
     min_profit_percent = backtest_cfg.get('min_profit_percent', 0.0)
     min_rr_ratio = backtest_cfg.get('min_rr_ratio', 0.0)
@@ -248,7 +248,7 @@ def run_single_symbol(symbol, config, args):
         trend_filter=trend_signal if trend_filter_enabled else None,
         bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled,
         trailing_sl_enabled=trailing_sl_enabled,
-        trailing_sl_step_pct=trailing_sl_step_pct,
+        trailing_sl_activation_pct=trailing_sl_activation_pct,
         trailing_sl_swing_length=trailing_sl_swing_length
     )
     _results = backtester.run(signals)
@@ -733,7 +733,7 @@ def main():
             no_backtest=not backtest_cfg.get('enabled', True),
             hold_overnight=backtest_cfg.get('hold_overnight', False),
             trailing_sl_enabled=backtest_cfg.get('trailing_sl_enabled', False),
-            trailing_sl_step_pct=backtest_cfg.get('trailing_sl_step_pct', 0.5),
+            trailing_sl_activation_pct=backtest_cfg.get('trailing_sl_activation_pct', 50.0),
             trailing_sl_swing_length=backtest_cfg.get('trailing_sl_swing_length', 5),
             min_profit_percent=backtest_cfg.get('min_profit_percent', 0.0),
             min_rr_ratio=backtest_cfg.get('min_rr_ratio', 0.0),
@@ -782,7 +782,7 @@ def main():
 
     # Resolve trailing SL and other settings from config/CLI
     trailing_sl_enabled = getattr(args, 'trailing_sl_enabled', False)
-    trailing_sl_step_pct = getattr(args, 'trailing_sl_step_pct', 0.5)
+    trailing_sl_activation_pct = getattr(args, 'trailing_sl_activation_pct', 50.0)
     trailing_sl_swing_length = getattr(args, 'trailing_sl_swing_length', 5)
     min_profit_percent = getattr(args, 'min_profit_percent', 0.0)
     min_rr_ratio = getattr(args, 'min_rr_ratio', 0.0)
@@ -827,7 +827,7 @@ def main():
     print(f"  Backtest:         {'Disabled' if args.no_backtest else 'Enabled'}")
     print(f"  Hold Overnight:   {'Yes' if args.hold_overnight else 'No (intraday only)'}")
     if trailing_sl_enabled:
-        print(f"  Trailing SL:      Enabled (step={trailing_sl_step_pct}%, swing_length={trailing_sl_swing_length})")
+        print(f"  Trailing SL:      Enabled (activation={trailing_sl_activation_pct}% of entry→TP, swing_length={trailing_sl_swing_length})")
     else:
         print(f"  Trailing SL:      Disabled")
     if min_profit_percent > 0:
@@ -978,7 +978,7 @@ def main():
                 min_profit_percent=min_profit_percent,
                 min_rr_ratio=min_rr_ratio,
                 trailing_sl_enabled=trailing_sl_enabled,
-                trailing_sl_step_pct=trailing_sl_step_pct,
+                trailing_sl_activation_pct=trailing_sl_activation_pct,
                 trailing_sl_swing_length=trailing_sl_swing_length,
             )
 
@@ -1028,6 +1028,7 @@ def main():
                 performance_metrics=perf_metrics,
                 df_entry=df_confirmation,
                 skipped_trades=skipped_trades,
+                trailing_sl_activation_pct=trailing_sl_activation_pct,
             )
             viz_path = viewer.generate_html()
             print(f"\n✅ Signal viewer: {viz_path}")
@@ -1126,7 +1127,7 @@ def main():
             trend_filter=trend_signal if trend_filter_enabled else None,
             bos_1h_trend_filter_enabled=bos_1h_trend_filter_enabled,
             trailing_sl_enabled=trailing_sl_enabled,
-            trailing_sl_step_pct=trailing_sl_step_pct,
+            trailing_sl_activation_pct=trailing_sl_activation_pct,
             trailing_sl_swing_length=trailing_sl_swing_length
         )
         _results = backtester.run(signals)
