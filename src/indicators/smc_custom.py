@@ -284,6 +284,7 @@ class smc_custom:
                 'BOS': bos,
                 'Level': bos_level,
                 'BrokenIndex': broken_index,
+                'BrokenInflexionIndex': broken_inflexion_index,
                 'Trend': trend,
                 'TrendStartIndex': trend_start_index
             })

@@ -85,11 +85,82 @@ class ThreeOBEngine:
         Run the 3-state machine across all bars.
         OBs are activated at their BOS bar and removed on invalidation.
         Keys are StartIndex values (stable, never shift).
+
+        This is the non-LTF fallback path: when a pending_confirmation is
+        emitted and the bar has a matching close color, the signal fires
+        directly (green close for long, red close for short).
         """
+        df = self.df
+        close = df['close'].values
+        open_ = df['open'].values
+        times = df['time'].values
+
         signals: List[TradeSignal] = []
-        for _bar, snapshot in self.scan_with_snapshots(max_signals=max_signals):
+        # Track OB-B keys that already fired to avoid duplicate signals
+        # (State 3 persists and emits pending_confirmation every bar)
+        fired_ob_b_keys: set = set()
+        for bar, snapshot in self.scan_with_snapshots(max_signals=max_signals):
             if snapshot['signal'] is not None:
                 signals.append(snapshot['signal'])
+                continue
+
+            pc = snapshot.get('pending_confirmation')
+            if pc is None:
+                continue
+
+            if pc['ob_b_key'] in fired_ob_b_keys:
+                continue
+
+            bar_close = close[bar]
+            bar_open = open_[bar]
+            direction = pc['direction']
+
+            # Check close-break: green for long, red for short
+            if direction == 'long' and bar_close <= bar_open:
+                continue
+            if direction == 'short' and bar_close >= bar_open:
+                continue
+
+            # Determine TP from OB-C
+            ob_c_key = pc['ob_c_key']
+            if ob_c_key is None:
+                continue
+
+            if direction == 'long':
+                tp = pc['ob_c_bottom']
+                if tp <= bar_close:
+                    continue
+            else:
+                tp = pc['ob_c_top']
+                if tp >= bar_close:
+                    continue
+
+            fired_ob_b_keys.add(pc['ob_b_key'])
+            entry_time = pd.Timestamp(times[bar])
+            sig = TradeSignal(
+                timestamp_1h_sweep=entry_time,
+                timestamp_5m_event_b=entry_time,
+                timestamp_5m_validation=entry_time,
+                timestamp_1m_confirmation=entry_time,
+                timestamp_entry=entry_time,
+                trend_1h_before_sweep='n/a',
+                entry_direction=direction,
+                price_1h_sweep=bar_close,
+                price_5m_event_b=bar_close,
+                price_5m_validation=bar_close,
+                price_1m_confirmation=bar_close,
+                price_entry=bar_close,
+                condition_liquidity_sweep='3-OB State Machine',
+                condition_event_b='OB-A touch',
+                condition_validation='OB-C distance',
+                condition_confirmation='OB-B close break',
+                indices_1h=(bar, bar),
+                indices_5m=(bar, bar),
+                indices_1m=(bar, bar),
+                take_profit_price=tp,
+                stop_loss_price=pc['sl'],
+            )
+            signals.append(sig)
         return signals
 
     def scan_with_snapshots(self, max_signals: int = 10):
@@ -126,6 +197,7 @@ class ThreeOBEngine:
         long_ob_b_bottom: Optional[float] = None
         long_ob_b_top: Optional[float] = None
         long_ob_b_retouched: bool = False
+        long_ob_b_retouch_bar: Optional[int] = None
         long_ob_c_key: Optional[int] = None
         long_ob_c_bottom: Optional[float] = None
         long_ob_c_top: Optional[float] = None
@@ -140,13 +212,47 @@ class ThreeOBEngine:
         short_ob_b_bottom: Optional[float] = None
         short_ob_b_top: Optional[float] = None
         short_ob_b_retouched: bool = False
+        short_ob_b_retouch_bar: Optional[int] = None
         short_ob_c_key: Optional[int] = None
         short_ob_c_top: Optional[float] = None
         short_ob_c_bottom: Optional[float] = None
 
+        reset_cmd = None
         for bar in range(n):
             if len(signals) >= max_signals:
                 break
+
+            # Handle reset commands sent via .send()
+            if reset_cmd:
+                if reset_cmd in ('reset_long', 'reset_both'):
+                    long_state = 0
+                    long_ob_a_key = None
+                    long_ob_a_bottom = None
+                    long_ob_a_top = None
+                    long_ob_a_confirmed_bar = None
+                    long_ob_b_key = None
+                    long_ob_b_bottom = None
+                    long_ob_b_top = None
+                    long_ob_b_retouched = False
+                    long_ob_b_retouch_bar = None
+                    long_ob_c_key = None
+                    long_ob_c_bottom = None
+                    long_ob_c_top = None
+                if reset_cmd in ('reset_short', 'reset_both'):
+                    short_state = 0
+                    short_ob_a_key = None
+                    short_ob_a_top = None
+                    short_ob_a_bottom = None
+                    short_ob_a_confirmed_bar = None
+                    short_ob_b_key = None
+                    short_ob_b_bottom = None
+                    short_ob_b_top = None
+                    short_ob_b_retouched = False
+                    short_ob_b_retouch_bar = None
+                    short_ob_c_key = None
+                    short_ob_c_top = None
+                    short_ob_c_bottom = None
+                reset_cmd = None
 
             bar_low = low[bar]
             bar_high = high[bar]
@@ -190,6 +296,7 @@ class ThreeOBEngine:
                             long_ob_b_bottom = None
                             long_ob_b_top = None
                             long_ob_b_retouched = False
+                            long_ob_b_retouch_bar = None
                         if long_state in (2, 3) and key == long_ob_b_key:
                             long_status = "OB-B invalidated — back to state 1"
                             long_state = 1
@@ -197,6 +304,7 @@ class ThreeOBEngine:
                             long_ob_b_bottom = None
                             long_ob_b_top = None
                             long_ob_b_retouched = False
+                            long_ob_b_retouch_bar = None
                     if ob.direction == -1:
                         if short_state in (1, 2, 3) and key == short_ob_a_key:
                             short_status = "OB-A invalidated — resetting to state 0"
@@ -209,6 +317,7 @@ class ThreeOBEngine:
                             short_ob_b_bottom = None
                             short_ob_b_top = None
                             short_ob_b_retouched = False
+                            short_ob_b_retouch_bar = None
                         if short_state in (2, 3) and key == short_ob_b_key:
                             short_status = "OB-B invalidated — back to state 1"
                             short_state = 1
@@ -216,6 +325,7 @@ class ThreeOBEngine:
                             short_ob_b_bottom = None
                             short_ob_b_top = None
                             short_ob_b_retouched = False
+                            short_ob_b_retouch_bar = None
                     if key == long_ob_c_key:
                         long_status = "OB-C invalidated — resetting to state 0"
                         long_ob_c_key = None
@@ -230,6 +340,7 @@ class ThreeOBEngine:
                         long_ob_b_bottom = None
                         long_ob_b_top = None
                         long_ob_b_retouched = False
+                        long_ob_b_retouch_bar = None
                     if key == short_ob_c_key:
                         short_status = "OB-C invalidated — resetting to state 0"
                         short_ob_c_key = None
@@ -244,6 +355,7 @@ class ThreeOBEngine:
                         short_ob_b_bottom = None
                         short_ob_b_top = None
                         short_ob_b_retouched = False
+                        short_ob_b_retouch_bar = None
 
                     to_remove.append(key)
                     continue
@@ -315,15 +427,12 @@ class ThreeOBEngine:
                             long_status = f"[State 2] OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) active, waiting for price to leave"
                         if b_was_away and touching:
                             long_ob_b_retouched = True
+                            long_ob_b_retouch_bar = bar
                             long_state = 3
-                            long_status = f"[State 2→3] OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) retouched — waiting for green close, close=${bar_close:.2f}"
+                            long_status = f"[State 2→3] OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) retouched — waiting for LTF confirmation (BOS/IFVG), close=${bar_close:.2f}"
 
                     elif long_state == 3 and key == long_ob_b_key:
-                        # OB-B was re-touched; now check for green candle (fallback)
-                        if bar_close > bar_open:
-                            long_signal = True
-                            long_sl = long_ob_a_bottom
-                            long_status = f"[State 3] Green close on OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) → LONG signal — SL=${long_ob_a_bottom:.2f}"
+                        long_status = f"[State 3] OB-B (${long_ob_b_bottom:.2f}–${long_ob_b_top:.2f}) retouched — waiting for confirmation"
 
                 # --- Invalidate long setup if price touches OB-C ---
                 if ob.direction == -1 and long_state in (1, 2, 3) and key == long_ob_c_key:
@@ -338,6 +447,7 @@ class ThreeOBEngine:
                         long_ob_b_bottom = None
                         long_ob_b_top = None
                         long_ob_b_retouched = False
+                        long_ob_b_retouch_bar = None
                         long_ob_c_key = None
                         long_ob_c_bottom = None
                         long_ob_c_top = None
@@ -395,15 +505,12 @@ class ThreeOBEngine:
                             short_status = f"[State 2] OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) active, waiting for price to leave"
                         if b_was_away and touching:
                             short_ob_b_retouched = True
+                            short_ob_b_retouch_bar = bar
                             short_state = 3
-                            short_status = f"[State 2→3] OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) retouched — waiting for red close, close=${bar_close:.2f}"
+                            short_status = f"[State 2→3] OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) retouched — waiting for LTF confirmation (BOS/IFVG), close=${bar_close:.2f}"
 
                     elif short_state == 3 and key == short_ob_b_key:
-                        # OB-B was re-touched; now check for red candle
-                        if bar_close < bar_open:
-                            short_signal = True
-                            short_sl = short_ob_a_top
-                            short_status = f"[State 3] Red close on OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) → SHORT signal — SL=${short_ob_a_top:.2f}"
+                        short_status = f"[State 3] OB-B (${short_ob_b_bottom:.2f}–${short_ob_b_top:.2f}) retouched — waiting for confirmation"
 
                 # --- Invalidate short setup if price touches OB-C ---
                 if self.enable_shorts and ob.direction == 1 and short_state in (1, 2, 3) and key == short_ob_c_key:
@@ -416,6 +523,7 @@ class ThreeOBEngine:
                         short_ob_a_confirmed_bar = None
                         short_ob_b_key = None
                         short_ob_b_retouched = False
+                        short_ob_b_retouch_bar = None
                         short_ob_b_bottom = None
                         short_ob_b_top = None
                         short_ob_c_key = None
@@ -431,10 +539,7 @@ class ThreeOBEngine:
             # --- Execute long entry ---
             bar_signal = None
             if long_signal and long_ob_c_key is not None and long_ob_c_key in active_obs:
-                ob_c = active_obs[long_ob_c_key]
-                ob_c_start = ob_c.start_idx
-                lowest_low = np.min(low[ob_c_start:bar + 1]) if ob_c_start <= bar else bar_low
-                tp = (lowest_low + long_ob_c_bottom) / 2.0
+                tp = long_ob_c_bottom
                 if tp > bar_close:
                     entry_time = pd.Timestamp(times[bar])
                     sig = TradeSignal(
@@ -471,16 +576,14 @@ class ThreeOBEngine:
                 long_ob_b_bottom = None
                 long_ob_b_top = None
                 long_ob_b_retouched = False
+                long_ob_b_retouch_bar = None
                 long_ob_c_key = None
                 long_ob_c_bottom = None
                 long_ob_c_top = None
 
             # --- Execute short entry ---
             if self.enable_shorts and short_signal and short_ob_c_key is not None and short_ob_c_key in active_obs:
-                ob_c = active_obs[short_ob_c_key]
-                ob_c_start = ob_c.start_idx
-                highest_high = np.max(high[ob_c_start:bar + 1]) if ob_c_start <= bar else bar_high
-                tp = (highest_high + short_ob_c_top) / 2.0
+                tp = short_ob_c_top
                 if tp < bar_close:
                     entry_time = pd.Timestamp(times[bar])
                     sig = TradeSignal(
@@ -517,6 +620,7 @@ class ThreeOBEngine:
                 short_ob_b_bottom = None
                 short_ob_b_top = None
                 short_ob_b_retouched = False
+                short_ob_b_retouch_bar = None
                 short_ob_c_key = None
                 short_ob_c_top = None
                 short_ob_c_bottom = None
@@ -524,13 +628,14 @@ class ThreeOBEngine:
             # --- Build pending_confirmation info ---
             # Emitted on the bar where State 2→3 fires (OB-B retouched)
             pending_confirmation = None
-            if long_state == 3 and long_ob_b_retouched and not long_signal:
+            if long_state == 3 and long_ob_b_retouched:
                 pending_confirmation = {
                     'direction': 'long',
-                    'ob_b_retouch_bar': bar,
+                    'ob_b_retouch_bar': long_ob_b_retouch_bar,
                     'ob_a_bottom': long_ob_a_bottom,
                     'ob_a_top': long_ob_a_top,
                     'ob_a_key': long_ob_a_key,
+                    'ob_a_confirmed_bar': long_ob_a_confirmed_bar,
                     'ob_b_bottom': long_ob_b_bottom,
                     'ob_b_top': long_ob_b_top,
                     'ob_b_key': long_ob_b_key,
@@ -539,13 +644,14 @@ class ThreeOBEngine:
                     'ob_c_key': long_ob_c_key,
                     'sl': long_ob_a_bottom,
                 }
-            if self.enable_shorts and short_state == 3 and short_ob_b_retouched and not short_signal:
+            if self.enable_shorts and short_state == 3 and short_ob_b_retouched:
                 pending_confirmation = {
                     'direction': 'short',
-                    'ob_b_retouch_bar': bar,
+                    'ob_b_retouch_bar': short_ob_b_retouch_bar,
                     'ob_a_bottom': short_ob_a_bottom,
                     'ob_a_top': short_ob_a_top,
                     'ob_a_key': short_ob_a_key,
+                    'ob_a_confirmed_bar': short_ob_a_confirmed_bar,
                     'ob_b_bottom': short_ob_b_bottom,
                     'ob_b_top': short_ob_b_top,
                     'ob_b_key': short_ob_b_key,
@@ -573,4 +679,4 @@ class ThreeOBEngine:
                 'short_status': short_status,
                 'pending_confirmation': pending_confirmation,
             }
-            yield bar, snapshot
+            reset_cmd = yield bar, snapshot

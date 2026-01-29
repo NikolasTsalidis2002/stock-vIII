@@ -759,8 +759,10 @@ class TradeSimulator:
             }
             outcome_symbol = "WIN " if result.outcome == TradeOutcome.WIN else "LOSS"
 
+            entry_dt = result.entry_time.strftime('%m/%d %H:%M')
+            exit_dt = result.exit_time.strftime('%m/%d %H:%M') if result.exit_time else '??'
             print(
-                f"  Trade {i+1}: {result.entry_direction.upper():5} "
+                f"  Trade {i+1}: {entry_dt}->{exit_dt} {result.entry_direction.upper():5} "
                 f"${result.entry_price:>7.2f} -> ${result.exit_price:>7.2f} "
                 f"[{outcome_symbol}|{exit_symbol[result.exit_type]}] "
                 f"P&L: ${result.pnl_dollars:>+8.2f} "

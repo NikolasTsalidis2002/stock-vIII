@@ -1,5 +1,5 @@
 {
-  "symbol": "META",
+  "symbol": "MSFT",
   "timeframes_copy": {
     "high": "1h",
     "mid": "15min",
@@ -93,7 +93,7 @@
     "timeframe": "15min",
     "confirmation_timeframe": "5min",
     "close_break": true,
-    "min_dist_pct": 2.0,
+    "min_dist_pct": 1.0,
     "enable_shorts": true,
     "_descriptions": {
       "timeframe": "Single timeframe used for 3-OB strategy. Should match one of the available TFs.",

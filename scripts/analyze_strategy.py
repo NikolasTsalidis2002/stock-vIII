@@ -907,7 +907,7 @@ def main():
 
         print(f"\n🔧 Initializing 3-OB strategy engine (TF: {three_ob_tf})...")
         df_3ob = loader.get_data(three_ob_tf, force_refresh=False)
-        df_3ob = df_3ob[df_3ob.shape[0] * 3 // 2:] # take last ~750 rows for faster iteration
+        # df_3ob = df_3ob[df_3ob.shape[0] * 2 // 3:].reset_index(drop=True)  # take last ~1/3 for faster iteration
         print(f"  ✓ {three_ob_tf.upper()}: {len(df_3ob)} candles")
 
         # Load lower TF confirmation data if configured
@@ -928,6 +928,24 @@ def main():
 
         print("\n🔍 Scanning for 3-OB trade setups...")
         signals = strategy_3ob.scan_for_signals(max_signals=5)
+
+        # Generate walkthrough if requested (before signal check so it runs even with 0 signals)
+        if args.walkthrough_3ob:
+            print("\n" + "="*80)
+            print("GENERATING 3-OB WALKTHROUGH")
+            print("="*80)
+            walkthrough = ThreeOBWalkthrough()
+            output_path = walkthrough.run(
+                df_3ob,
+                close_break=three_ob_close_break,
+                min_dist_pct=three_ob_min_dist,
+                max_signals=5,
+                enable_shorts=three_ob_enable_shorts,
+                df_confirmation=df_confirmation,
+                confirmation_timeframe=three_ob_conf_tf,
+            )
+            print(f"\n  Open {output_path} in your browser")
+            print("  Use arrow keys to step through candles")
 
         if len(signals) == 0:
             print("\n⚠️  No 3-OB signals found.")
@@ -954,22 +972,6 @@ def main():
                 os.makedirs("results/trades", exist_ok=True)
                 journal_path = f"results/trades/{symbol.lower()}_3ob_trades.csv" if args.export_journal == 'auto' else args.export_journal
                 backtester.export_journal(journal_path)
-
-        # Generate walkthrough if requested
-        if args.walkthrough_3ob:
-            print("\n" + "="*80)
-            print("GENERATING 3-OB WALKTHROUGH")
-            print("="*80)
-            walkthrough = ThreeOBWalkthrough()
-            output_path = walkthrough.run(
-                df_3ob,
-                close_break=three_ob_close_break,
-                min_dist_pct=three_ob_min_dist,
-                max_signals=5,
-                enable_shorts=three_ob_enable_shorts,
-            )
-            print(f"\n  Open {output_path} in your browser")
-            print("  Use arrow keys to step through candles")
 
         # Summary
         print("\n" + "="*80)

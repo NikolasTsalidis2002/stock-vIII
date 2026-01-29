@@ -9,18 +9,15 @@ Uses the same LightweightCharts + D3.js stack as TradingViewVisualizer.
 """
 
 import json
-import sys
-import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-
 from src.strategy.three_ob_engine import ThreeOBEngine, OBRecord
-from src.visualization.core import NumpyEncoder, generate_candle_data
+from src.strategy.three_ob_strategy import ThreeOBStrategy
+from .core import NumpyEncoder, generate_candle_data
 
 
 class ThreeOBWalkthrough:
@@ -41,6 +38,8 @@ class ThreeOBWalkthrough:
         min_dist_pct: float = 0.10,
         max_signals: int = 10,
         enable_shorts: bool = False,
+        df_confirmation: Optional[pd.DataFrame] = None,
+        confirmation_timeframe: Optional[str] = None,
     ) -> Path:
         """Generate the walkthrough HTML.
 
@@ -49,12 +48,27 @@ class ThreeOBWalkthrough:
             close_break: Whether close break is required for BOS.
             min_dist_pct: Minimum distance percentage for OB-C.
             max_signals: Maximum signals before stopping.
+            df_confirmation: Optional LTF DataFrame for confirmation detection.
+            confirmation_timeframe: Label for the confirmation timeframe (e.g. '5min').
 
         Returns:
             Path to the generated HTML file.
         """
         print("\nInitializing 3-OB engine for walkthrough...")
-        engine = ThreeOBEngine(df, close_break=close_break, min_dist_pct=min_dist_pct, enable_shorts=enable_shorts)
+        self._strategy = None
+        self._confirmed_retouch_bars = {}  # Cache: retouch_bar -> confirmation result
+        self._signaled_retouch_bars = set()  # Track which retouch bars have fired signals
+        self._ltf_signals_fired = 0
+        if df_confirmation is not None and confirmation_timeframe is not None:
+            self._strategy = ThreeOBStrategy(
+                df, close_break=close_break, min_dist_pct=min_dist_pct,
+                enable_shorts=enable_shorts,
+                df_confirmation=df_confirmation,
+                confirmation_timeframe=confirmation_timeframe,
+            )
+            engine = self._strategy._engine
+        else:
+            engine = ThreeOBEngine(df, close_break=close_break, min_dist_pct=min_dist_pct, enable_shorts=enable_shorts)
 
         # Prepare the working df with datetime index for candle data generation
         df_work = engine.df.copy()
@@ -65,11 +79,22 @@ class ThreeOBWalkthrough:
         all_frames = []
         total_bars = len(engine.df)
 
-        for bar, snapshot in engine.scan_with_snapshots(max_signals=max_signals):
+        gen = engine.scan_with_snapshots(max_signals=max_signals)
+        bar, snapshot = next(gen)
+        while True:
             frame = self._build_frame(engine, df_work, bar, snapshot)
             all_frames.append(frame)
             if (bar + 1) % 100 == 0:
                 print(f"  Processed {bar + 1}/{total_bars} bars")
+            # Determine if we need to reset the engine after an LTF signal
+            reset_cmd = None
+            if frame['signalFired'] and frame['signalInfo']:
+                direction = frame['signalInfo']['direction']
+                reset_cmd = f'reset_{direction}'
+            try:
+                bar, snapshot = gen.send(reset_cmd)
+            except StopIteration:
+                break
 
         print(f"Collected {len(all_frames)} frames")
         print("Generating HTML...")
@@ -194,7 +219,77 @@ class ThreeOBWalkthrough:
                 'price': float(sig.price_entry),
                 'tp': float(sig.take_profit_price) if sig.take_profit_price else None,
                 'sl': float(sig.stop_loss_price) if sig.stop_loss_price else None,
+                'confirmation': sig.condition_confirmation,
             }
+
+        # Suppress pending_confirmation if this retouch_bar already fired a signal
+        pc = snapshot.get('pending_confirmation')
+        if pc and pc.get('ob_b_retouch_bar') in self._signaled_retouch_bars:
+            pc = None
+
+        # LTF confirmation detail when pending_confirmation exists and strategy is available
+        ltf_detail = None
+        pending = pc
+        if pending is not None and self._strategy is not None and self._strategy._confirmation_detector is not None:
+            direction = pending['direction']
+            retouch_bar = pending['ob_b_retouch_bar']
+            engine_df = engine.df
+            times = engine_df['time'].values
+
+            retouch_time = pd.Timestamp(times[retouch_bar])
+
+            # Window: from retouch bar's close to CURRENT bar's close
+            window_start = pd.Timestamp(times[retouch_bar + 1]) if retouch_bar + 1 < len(times) else retouch_time
+            window_end = pd.Timestamp(times[bar + 1]) if bar + 1 < len(times) else pd.Timestamp(times[bar])
+
+            # Check cache first to avoid re-scanning confirmed retouches
+            if retouch_bar in self._confirmed_retouch_bars:
+                confirmation = self._confirmed_retouch_bars[retouch_bar]
+            elif bar <= retouch_bar:
+                # Haven't passed the retouch bar yet — can't scan future candles
+                confirmation = None
+            else:
+                # Scan for confirmation up to current bar's close
+                confirmation = self._strategy._scan_confirmation_window(
+                    window_start, window_end, direction,
+                )
+                if confirmation is not None:
+                    self._confirmed_retouch_bars[retouch_bar] = confirmation
+
+            ltf_detail = {
+                'direction': direction,
+                'inflexionTime': None,
+                'inflexionPrice': None,
+                'windowStart': window_start.isoformat(),
+                'windowEnd': window_end.isoformat(),
+                'confirmationType': None,
+                'confirmationTime': None,
+                'confirmationPrice': None,
+                'alreadyConfirmed': retouch_bar in self._confirmed_retouch_bars and confirmation is not None,
+            }
+
+            if confirmation is not None:
+                conf_time, conf_type, conf_price = confirmation
+                ltf_detail['confirmationType'] = conf_type
+                ltf_detail['confirmationTime'] = conf_time.isoformat() if hasattr(conf_time, 'isoformat') else str(conf_time)
+                ltf_detail['confirmationPrice'] = float(conf_price)
+
+        # Check if LTF confirmation was found — fire a signal if so
+        ltf_signal_info = None
+        ltf_signal_fired = False
+        if ltf_detail and ltf_detail.get('confirmationType') and pending is not None:
+            retouch_bar = pending['ob_b_retouch_bar']
+            if bar > retouch_bar and retouch_bar not in self._signaled_retouch_bars:
+                self._signaled_retouch_bars.add(retouch_bar)
+                self._ltf_signals_fired += 1
+                ltf_signal_fired = True
+                ltf_signal_info = {
+                    'direction': pending['direction'],
+                    'price': float(ltf_detail['confirmationPrice']),
+                    'tp': float(pending['ob_c_bottom']) if pending['direction'] == 'long' else float(pending['ob_c_top']),
+                    'sl': float(pending['sl']),
+                    'confirmation': f"{ltf_detail['confirmationType']} ({self._strategy._confirmation_timeframe})",
+                }
 
         return {
             'candleIdx': bar,
@@ -206,12 +301,14 @@ class ThreeOBWalkthrough:
             'currentTime': current_time,
             'longState': snapshot['long_state'],
             'shortState': snapshot['short_state'],
-            'signalFired': sig is not None,
-            'signalInfo': signal_info,
-            'signalsSoFar': snapshot['signals_so_far'],
+            'signalFired': sig is not None or ltf_signal_fired,
+            'signalInfo': signal_info if sig is not None else ltf_signal_info,
+            'signalsSoFar': snapshot['signals_so_far'] + self._ltf_signals_fired,
             'activeOBCount': len(snapshot['active_ob_keys']),
             'longStatusText': snapshot.get('long_status', ''),
             'shortStatusText': snapshot.get('short_status', ''),
+            'pendingConfirmation': None if ltf_signal_fired else pc,
+            'ltfDetail': ltf_detail,
         }
 
     def _create_html(self, all_frames: list) -> str:
@@ -342,6 +439,31 @@ class ThreeOBWalkthrough:
         .checklist-label {{ color: #d1d4dc; }}
         .checklist-label.done {{ color: #089981; }}
         .checklist-label.pending {{ color: #787b86; }}
+        #ltf-detail {{
+            display: none;
+            margin: 15px 0;
+            padding: 12px;
+            background-color: #131722;
+            border-left: 3px solid #ff9800;
+            border-radius: 4px;
+        }}
+        #ltf-detail h2 {{
+            margin: 0 0 8px 0;
+            font-size: 13px;
+            color: #ff9800;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .ltf-row {{
+            display: flex;
+            justify-content: space-between;
+            margin: 4px 0;
+            font-size: 12px;
+        }}
+        .ltf-label {{ color: #787b86; }}
+        .ltf-value {{ color: #d1d4dc; font-weight: 600; text-align: right; max-width: 60%; word-break: break-all; }}
+        .ltf-value.found {{ color: #089981; }}
+        .ltf-value.not-found {{ color: #f23645; }}
         .signal-counter {{
             margin-top: 15px;
             padding: 12px;
@@ -480,7 +602,7 @@ class ThreeOBWalkthrough:
                 </div>
                 <div class="checklist-item" id="long-check-4">
                     <span class="check-icon pending">&#9744;</span>
-                    <span class="checklist-label pending">Close break past OB-B</span>
+                    <span class="checklist-label pending">Confirmation (BOS/IFVG)</span>
                 </div>
                 <div class="status-text" id="long-status-text"></div>
             </div>
@@ -505,9 +627,33 @@ class ThreeOBWalkthrough:
                 </div>
                 <div class="checklist-item" id="short-check-4">
                     <span class="check-icon pending">&#9744;</span>
-                    <span class="checklist-label pending">Close break past OB-B</span>
+                    <span class="checklist-label pending">Confirmation (BOS/IFVG)</span>
                 </div>
                 <div class="status-text" id="short-status-text"></div>
+            </div>
+
+            <div id="ltf-detail">
+                <h2>LTF Confirmation</h2>
+                <div class="ltf-row">
+                    <span class="ltf-label">Direction</span>
+                    <span class="ltf-value" id="ltf-direction">-</span>
+                </div>
+                <div class="ltf-row">
+                    <span class="ltf-label">Inflexion</span>
+                    <span class="ltf-value" id="ltf-inflexion">-</span>
+                </div>
+                <div class="ltf-row">
+                    <span class="ltf-label">Window Start</span>
+                    <span class="ltf-value" id="ltf-window-start">-</span>
+                </div>
+                <div class="ltf-row">
+                    <span class="ltf-label">Window End</span>
+                    <span class="ltf-value" id="ltf-window-end">-</span>
+                </div>
+                <div class="ltf-row">
+                    <span class="ltf-label">Result</span>
+                    <span class="ltf-value" id="ltf-result">-</span>
+                </div>
             </div>
 
             <div class="signal-counter">
@@ -693,14 +839,8 @@ class ThreeOBWalkthrough:
             }}
         }}
 
-        function updateChecklist(prefix, state, signalFired) {{
-            // States: 0 = nothing, 1 = OB-A+C found, 2 = OB-B found, 3 = OB-B retouched
-            // Check 0: OB-A touched & left (state >= 1)
-            // Check 1: OB-C found (state >= 1)
-            // Check 2: OB-B formed (state >= 2)
-            // Check 3: OB-B retouched (state >= 3)
-            // Check 4: Close break past OB-B (signal fired)
-            const thresholds = [1, 1, 2, 3, 99];  // 99 = signal check
+        function updateChecklist(prefix, state, signalFired, confirmation) {{
+            const thresholds = [1, 1, 2, 3, 99];
             for (let i = 0; i < 5; i++) {{
                 const el = document.getElementById(prefix + '-check-' + i);
                 const icon = el.querySelector('.check-icon');
@@ -717,6 +857,10 @@ class ThreeOBWalkthrough:
                     icon.innerHTML = '&#9744;';
                     icon.className = 'check-icon pending';
                     label.className = 'checklist-label pending';
+                }}
+
+                if (i === 4 && confirmation) {{
+                    label.textContent = confirmation;
                 }}
             }}
         }}
@@ -740,8 +884,10 @@ class ThreeOBWalkthrough:
             const longSignalFired = f.signalFired && f.signalInfo && f.signalInfo.direction === 'long';
             const shortSignalFired = f.signalFired && f.signalInfo && f.signalInfo.direction === 'short';
 
-            updateChecklist('long', f.longState, longSignalFired);
-            updateChecklist('short', f.shortState, shortSignalFired);
+            const longConfirm = longSignalFired && f.signalInfo ? f.signalInfo.confirmation : (f.pendingConfirmation && f.pendingConfirmation.direction === 'long' ? 'Pending...' : null);
+            const shortConfirm = shortSignalFired && f.signalInfo ? f.signalInfo.confirmation : (f.pendingConfirmation && f.pendingConfirmation.direction === 'short' ? 'Pending...' : null);
+            updateChecklist('long', f.longState, longSignalFired, longConfirm);
+            updateChecklist('short', f.shortState, shortSignalFired, shortConfirm);
 
             document.getElementById('long-status-text').textContent = f.longStatusText || '';
             document.getElementById('short-status-text').textContent = f.shortStatusText || '';
@@ -755,9 +901,38 @@ class ThreeOBWalkthrough:
                 let text = si.direction.toUpperCase() + ' SIGNAL @ $' + si.price.toFixed(2);
                 if (si.tp) text += ' | TP: $' + si.tp.toFixed(2);
                 if (si.sl) text += ' | SL: $' + si.sl.toFixed(2);
+                if (si.confirmation) text += ' | ' + si.confirmation;
                 alertEl.textContent = text;
             }} else {{
                 alertEl.style.display = 'none';
+            }}
+
+            // LTF confirmation detail box
+            const ltfBox = document.getElementById('ltf-detail');
+            if (f.ltfDetail) {{
+                ltfBox.style.display = 'block';
+                const d = f.ltfDetail;
+                document.getElementById('ltf-direction').textContent = d.direction ? d.direction.toUpperCase() : '-';
+
+                if (d.inflexionPrice != null && d.inflexionTime) {{
+                    document.getElementById('ltf-inflexion').textContent = '$' + d.inflexionPrice.toFixed(2) + ' @ ' + d.inflexionTime.replace('T', ' ').slice(0, 16);
+                }} else {{
+                    document.getElementById('ltf-inflexion').textContent = 'N/A';
+                }}
+
+                document.getElementById('ltf-window-start').textContent = d.windowStart ? d.windowStart.replace('T', ' ').slice(0, 16) : '-';
+                document.getElementById('ltf-window-end').textContent = d.windowEnd ? d.windowEnd.replace('T', ' ').slice(0, 16) : '-';
+
+                const resultEl = document.getElementById('ltf-result');
+                if (d.confirmationType) {{
+                    resultEl.textContent = d.confirmationType + ' @ $' + d.confirmationPrice.toFixed(2);
+                    resultEl.className = 'ltf-value found';
+                }} else {{
+                    resultEl.textContent = 'No confirmation found';
+                    resultEl.className = 'ltf-value not-found';
+                }}
+            }} else {{
+                ltfBox.style.display = 'none';
             }}
 
             // Navigation buttons

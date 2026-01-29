@@ -5,7 +5,7 @@ Provides shared visualization utilities for generating TradingView-style charts
 with SMC indicators like FVG, BOS, Order Blocks, and liquidity levels.
 """
 
-from src.visualization.core import (
+from .core import (
     NumpyEncoder,
     generate_candle_data,
     generate_fvg_zones,

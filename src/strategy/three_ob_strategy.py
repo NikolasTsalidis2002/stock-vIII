@@ -4,13 +4,15 @@
 Supports optional lower-timeframe BOS/IFVG confirmation via ConfirmationDetector.
 """
 
+import logging
 from typing import List, Optional
-import numpy as np
 import pandas as pd
 
 from .models import TradeSignal
 from .three_ob_engine import ThreeOBEngine
 from .confirmation_detector import ConfirmationDetector
+
+logger = logging.getLogger(__name__)
 
 
 class ThreeOBStrategy:
@@ -61,7 +63,7 @@ class ThreeOBStrategy:
             self._df_confirmation = df_confirmation.copy()
             # Compute SMC indicators on confirmation TF
             from src.indicators.smc_custom import smc_custom
-            from smartmoneyconcepts import smc
+            from src.indicators import smc
 
             df_conf_work = self._df_confirmation.copy()
             if 'time' in df_conf_work.columns:
@@ -97,85 +99,97 @@ class ThreeOBStrategy:
         high = engine_df['high'].values
         low = engine_df['low'].values
 
-        # Track which pending_confirmation retouch bars we've already processed
-        processed_retouch_bars = set()
+        # Track which retouch bars have already been confirmed (skip further scanning)
+        confirmed_retouch_bars = set()
 
         for bar, snapshot in self._engine.scan_with_snapshots(max_signals=max_signals * 5):
-            # If the engine produced a signal via green/red close, skip it —
-            # we want lower TF confirmation instead
             pending = snapshot.get('pending_confirmation')
             if pending is None:
                 continue
 
             retouch_bar = pending['ob_b_retouch_bar']
-            if retouch_bar in processed_retouch_bars:
+            if retouch_bar in confirmed_retouch_bars:
                 continue
-            processed_retouch_bars.add(retouch_bar)
+
+            # Don't scan until we're past the retouch bar
+            if bar <= retouch_bar:
+                continue
 
             direction = pending['direction']
             retouch_time = pd.Timestamp(times[retouch_bar])
 
-            # Determine the confirmation window:
-            # From retouch candle time to the close of the next higher-TF candle
-            if retouch_bar + 1 < len(times):
-                window_end = pd.Timestamp(times[retouch_bar + 1])
-            else:
-                window_end = retouch_time
+            # Window: from retouch bar's close to CURRENT bar's close
+            window_start = pd.Timestamp(times[retouch_bar + 1]) if retouch_bar + 1 < len(times) else retouch_time
+            window_end = pd.Timestamp(times[bar + 1]) if bar + 1 < len(times) else pd.Timestamp(times[bar])
+
+            logger.info(
+                "Pending confirmation: %s @ bar %d (%s), scanning window %s to %s",
+                direction, retouch_bar, retouch_time, window_start, window_end,
+            )
 
             # Scan lower TF candles in this window
             confirmation = self._scan_confirmation_window(
-                retouch_time, window_end, direction
+                window_start, window_end, direction,
             )
 
-            if confirmation is not None:
-                conf_time, conf_type, conf_price = confirmation
-                # Build TP the same way the engine does
-                ob_c_key = pending['ob_c_key']
-                ob_c_bottom = pending['ob_c_bottom']
-                ob_c_top = pending['ob_c_top']
-                sl = pending['sl']
+            if confirmation is None:
+                continue
 
-                if direction == 'long':
-                    ob_c_rec = self._engine.ob_records.get(ob_c_key)
-                    ob_c_start = ob_c_rec.start_idx if ob_c_rec else retouch_bar
-                    lowest_low = np.min(low[ob_c_start:retouch_bar + 1]) if ob_c_start <= retouch_bar else low[retouch_bar]
-                    tp = (lowest_low + ob_c_bottom) / 2.0
-                    if tp <= conf_price:
-                        continue
-                else:
-                    ob_c_rec = self._engine.ob_records.get(ob_c_key)
-                    ob_c_start = ob_c_rec.start_idx if ob_c_rec else retouch_bar
-                    highest_high = np.max(high[ob_c_start:retouch_bar + 1]) if ob_c_start <= retouch_bar else high[retouch_bar]
-                    tp = (highest_high + ob_c_top) / 2.0
-                    if tp >= conf_price:
-                        continue
+            confirmed_retouch_bars.add(retouch_bar)
 
-                sig = TradeSignal(
-                    timestamp_1h_sweep=retouch_time,
-                    timestamp_5m_event_b=retouch_time,
-                    timestamp_5m_validation=retouch_time,
-                    timestamp_1m_confirmation=conf_time,
-                    timestamp_entry=conf_time,
-                    trend_1h_before_sweep='n/a',
-                    entry_direction=direction,
-                    price_1h_sweep=conf_price,
-                    price_5m_event_b=conf_price,
-                    price_5m_validation=conf_price,
-                    price_1m_confirmation=conf_price,
-                    price_entry=conf_price,
-                    condition_liquidity_sweep='3-OB State Machine',
-                    condition_event_b='OB-A touch',
-                    condition_validation='OB-C distance',
-                    condition_confirmation=f'{conf_type} ({self._confirmation_timeframe})',
-                    indices_1h=(retouch_bar, retouch_bar),
-                    indices_5m=(retouch_bar, retouch_bar),
-                    indices_1m=(retouch_bar, retouch_bar),
-                    take_profit_price=tp,
-                    stop_loss_price=sl,
-                )
-                signals.append(sig)
-                if len(signals) >= max_signals:
-                    break
+            conf_time, conf_type, conf_price = confirmation
+            logger.info(
+                "  Confirmation FOUND: %s @ %s, price=%.2f",
+                conf_type, conf_time, conf_price,
+            )
+
+            # Build TP the same way the engine does
+            ob_c_bottom = pending['ob_c_bottom']
+            ob_c_top = pending['ob_c_top']
+            sl = pending['sl']
+
+            if direction == 'long':
+                tp = ob_c_bottom
+                if tp <= conf_price:
+                    logger.info("  TP %.2f <= entry %.2f — skipping", tp, conf_price)
+                    continue
+            else:
+                tp = ob_c_top
+                if tp >= conf_price:
+                    logger.info("  TP %.2f >= entry %.2f — skipping", tp, conf_price)
+                    continue
+
+            logger.info(
+                "  SIGNAL: %s entry=%.2f, TP=%.2f, SL=%.2f",
+                direction, conf_price, tp, sl,
+            )
+
+            sig = TradeSignal(
+                timestamp_1h_sweep=retouch_time,
+                timestamp_5m_event_b=retouch_time,
+                timestamp_5m_validation=retouch_time,
+                timestamp_1m_confirmation=conf_time,
+                timestamp_entry=conf_time,
+                trend_1h_before_sweep='n/a',
+                entry_direction=direction,
+                price_1h_sweep=conf_price,
+                price_5m_event_b=conf_price,
+                price_5m_validation=conf_price,
+                price_1m_confirmation=conf_price,
+                price_entry=conf_price,
+                condition_liquidity_sweep='3-OB State Machine',
+                condition_event_b='OB-A touch',
+                condition_validation='OB-C distance',
+                condition_confirmation=f'{conf_type} ({self._confirmation_timeframe})',
+                indices_1h=(retouch_bar, retouch_bar),
+                indices_5m=(retouch_bar, retouch_bar),
+                indices_1m=(retouch_bar, retouch_bar),
+                take_profit_price=tp,
+                stop_loss_price=sl,
+            )
+            signals.append(sig)
+            if len(signals) >= max_signals:
+                break
 
         return signals
 
@@ -189,6 +203,8 @@ class ThreeOBStrategy:
         df_conf = self._confirmation_detector.df_low
         mask = (df_conf.index >= window_start) & (df_conf.index <= window_end)
         candle_times = df_conf.index[mask]
+
+        logger.debug("  Scanning %d lower-TF candles in window", len(candle_times))
 
         for t in candle_times:
             result = self._confirmation_detector.detect_confirmation_at_candle(t, direction)
