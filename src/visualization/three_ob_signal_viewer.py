@@ -415,9 +415,9 @@ class ThreeOBSignalViewer:
         entry_time = sig.timestamp_entry
         entry_idx = self.df.index.get_indexer([entry_time], method='nearest')[0]
 
-        # Window: start 200 candles before the oldest OB origin
+        # Window: start ~10 candles before the oldest OB origin
         oldest_ob_idx = min(ctx.ob_a_start_idx, ctx.ob_b_start_idx, ctx.ob_c_start_idx)
-        start_idx = max(0, oldest_ob_idx - 200)
+        start_idx = max(0, oldest_ob_idx - 10)
 
         # End: entry + some bars (or trade exit)
         if trade_result and trade_result.exit_time:
@@ -494,6 +494,16 @@ class ThreeOBSignalViewer:
             'direction': ctx.direction,
         }
 
+        # Compute focus window boundaries (same start as context zoomed-in view)
+        focus_start_idx = max(0, oldest_ob_idx - 10)
+        if trade_result and trade_result.exit_time:
+            focus_exit_idx = self.df.index.get_indexer([trade_result.exit_time], method='nearest')[0]
+            focus_end_idx = min(len(self.df) - 1, focus_exit_idx + 5)
+        else:
+            focus_end_idx = min(len(self.df) - 1, entry_idx + self.bars_around)
+        focus_end_idx = max(focus_end_idx, entry_idx + 10)
+        focus_end_idx = min(focus_end_idx, len(self.df) - 1)
+
         return {
             'candleData': candle_data,
             'allOBs': all_obs,
@@ -503,6 +513,10 @@ class ThreeOBSignalViewer:
             'slPrice': float(sig.stop_loss_price) if sig.stop_loss_price else None,
             'focusTime': int(entry_time.timestamp()) if hasattr(entry_time, 'timestamp') else int(pd.Timestamp(entry_time).timestamp()),
             'contextCandles': end_idx - start_idx,
+            'focusWindow': {
+                'startTime': int(self.df.index[focus_start_idx].timestamp()),
+                'endTime': int(self.df.index[focus_end_idx].timestamp()),
+            },
         }
 
     def _generate_tab_htf_trades(self) -> Optional[Dict]:
@@ -1123,12 +1137,12 @@ class ThreeOBSignalViewer:
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
             <div class="tab" data-tab="SL_HISTORY" onclick="switchTab('SL_HISTORY')">Stop Loss</div>
             <div class="tab" data-tab="CONTEXT" onclick="switchTab('CONTEXT')">Context</div>
-            <div class="tab" data-tab="HTF_TRADES" onclick="switchTab('HTF_TRADES')">HTF Trades</div>
             <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
         </div>
 
         <div id="main">
             <div id="chart-area">
+                <button id="context-zoom-toggle" style="display:none; position:absolute; top:8px; right:8px; z-index:10; padding:4px 12px; cursor:pointer; background:#2a2a3e; color:#e0e0e0; border:1px solid #555; border-radius:4px; font-size:13px;" onclick="toggleContextZoom()">🔍 Zoom Out</button>
                 <div id="chart-container"></div>
                 <div id="dashboard-container"></div>
             </div>
@@ -1242,6 +1256,7 @@ class ThreeOBSignalViewer:
         let candlestickSeries = null;
         let activeLineSeries = [];
         let dashboardRendered = false;
+        let contextZoomedOut = false;
 
         const roleColors = {{
             'A': {{ fill: 'rgba(76,175,80,0.25)', stroke: '#4caf50' }},
@@ -1319,8 +1334,7 @@ class ThreeOBSignalViewer:
                 if (e.key === '3') switchTab('PNL');
                 if (e.key === '4') switchTab('SL_HISTORY');
                 if (e.key === '5') switchTab('CONTEXT');
-                if (e.key === '6') switchTab('HTF_TRADES');
-                if (e.key === '7') switchTab('DASHBOARD');
+                if (e.key === '6') switchTab('DASHBOARD');
             }});
 
             // Resize handler
@@ -1452,7 +1466,6 @@ class ThreeOBSignalViewer:
                 if (tabId === 'PNL' && sig.tabPnL) hasData = true;
                 if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
                 if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
-                if (tabId === 'HTF_TRADES' && htfTradesData) hasData = true;
                 if (tabId === 'DASHBOARD') hasData = true;
 
                 if (!hasData) tab.classList.add('disabled');
@@ -1469,7 +1482,6 @@ class ThreeOBSignalViewer:
             if (tabId === 'PNL' && sig.tabPnL) hasData = true;
             if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
             if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
-            if (tabId === 'HTF_TRADES' && htfTradesData) hasData = true;
             if (tabId === 'DASHBOARD') hasData = true;
             if (!hasData) return;
 
@@ -1479,6 +1491,10 @@ class ThreeOBSignalViewer:
             }});
 
             currentTab = tabId;
+            contextZoomedOut = false;
+            const zoomBtn = document.getElementById('context-zoom-toggle');
+            zoomBtn.style.display = (tabId === 'CONTEXT' && htfTradesData) ? 'block' : 'none';
+            zoomBtn.textContent = '🔍 Zoom Out';
 
             if (tabId === 'DASHBOARD') {{
                 showDashboard();
@@ -1534,11 +1550,6 @@ class ThreeOBSignalViewer:
             else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
 
             if (currentTab === 'SL_HISTORY') tabData = sig.tabSLHistory;
-
-            if (currentTab === 'HTF_TRADES') {{
-                showHTFTradesChart();
-                return;
-            }}
 
             if (!tabData) return;
 
@@ -1833,6 +1844,19 @@ class ThreeOBSignalViewer:
             chart.priceScale('right').applyOptions({{ autoScale: true }});
         }}
 
+        function toggleContextZoom() {{
+            contextZoomedOut = !contextZoomedOut;
+            const btn = document.getElementById('context-zoom-toggle');
+            btn.textContent = contextZoomedOut ? '🔍 Zoom In' : '🔍 Zoom Out';
+
+            if (contextZoomedOut) {{
+                showHTFTradesChart();
+            }} else {{
+                const sig = signalsData[currentSignalIdx];
+                showChart(sig);
+            }}
+        }}
+
         function showHTFTradesChart() {{
             if (!htfTradesData) return;
             clearLineSeries();
@@ -1908,8 +1932,12 @@ class ThreeOBSignalViewer:
             if (currentTab === 'PNL' || currentTab === 'SL_HISTORY' || currentTab === 'DASHBOARD') return;
 
             let tabData = null;
-            if (currentTab === 'HTF_TRADES') {{
+            if (currentTab === 'CONTEXT' && contextZoomedOut) {{
                 tabData = htfTradesData;
+                const sig = signalsData[currentSignalIdx];
+                if (sig && sig.tabContext && sig.tabContext.focusWindow) {{
+                    tabData = Object.assign({{}}, tabData, {{ focusWindow: sig.tabContext.focusWindow }});
+                }}
             }} else {{
                 const sig = signalsData[currentSignalIdx];
                 if (currentTab === '15M') tabData = sig.tab15m;
@@ -2011,6 +2039,29 @@ class ThreeOBSignalViewer:
                         .attr('font-family', 'sans-serif')
                         .text('OB-' + zone.role);
                 }});
+            }}
+
+            // Draw focus window rectangle (Context tab)
+            if (tabData.focusWindow) {{
+                const x1 = ts.timeToCoordinate(tabData.focusWindow.startTime);
+                const x2 = ts.timeToCoordinate(tabData.focusWindow.endTime);
+                if (x1 != null && x2 != null) {{
+                    const x = Math.min(x1, x2);
+                    const w = Math.abs(x2 - x1);
+                    svg.append('rect')
+                        .attr('x', x).attr('y', 0)
+                        .attr('width', w).attr('height', rect.height)
+                        .attr('fill', 'rgba(100,180,255,0.08)')
+                        .attr('stroke', 'rgba(100,180,255,0.5)')
+                        .attr('stroke-width', 2)
+                        .attr('stroke-dasharray', '6,4');
+                    svg.append('text')
+                        .attr('x', x + 4).attr('y', 16)
+                        .attr('fill', 'rgba(100,180,255,0.7)')
+                        .attr('font-size', '11px').attr('font-weight', 'bold')
+                        .attr('font-family', 'sans-serif')
+                        .text('15min view');
+                }}
             }}
 
             // Draw OB zones (15M/5M tabs)
