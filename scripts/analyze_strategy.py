@@ -923,6 +923,13 @@ def main():
                 df_confirmation = loader.update_cache(three_ob_conf_tf)
                 print(f"  ✓ {three_ob_conf_tf.upper()}: {len(df_confirmation)} candles (refreshed)")
 
+        # Detect and fill gaps in confirmation data
+        if df_confirmation is not None:
+            gaps = loader.detect_gaps(df_confirmation, three_ob_conf_tf)
+            if gaps:
+                print(f"  ⚠️  Found {len(gaps)} gap(s) in {three_ob_conf_tf} data, filling...")
+                df_confirmation = loader.fill_gaps(three_ob_conf_tf, gaps)
+
         # Align primary TF data to confirmation data coverage
         if df_confirmation is not None and len(df_confirmation) > 0:
             conf_start = df_confirmation['time'].min()
@@ -979,8 +986,10 @@ def main():
             print("RUNNING BACKTEST SIMULATION (3-OB)")
             print("="*80)
 
+            df_conf_indexed = df_confirmation.set_index('time') if 'time' in df_confirmation.columns else df_confirmation
+
             backtester = Backtester(
-                df_low=strategy_3ob.df_low,
+                df_low=df_conf_indexed,
                 initial_capital=args.initial_capital,
                 symbol=symbol,
                 intraday_only=not args.hold_overnight,
@@ -998,6 +1007,13 @@ def main():
                 conf_end = df_confirmation['time'].max()
                 tradeable_signals = []
                 for s in signals:
+                    if s.condition_confirmation == 'No confirmation found':
+                        no_data_skipped.append(SkippedTrade(
+                            signal_entry_time=s.timestamp_entry,
+                            skip_reason=SkipReason.NO_LOW_TF_DATA,
+                            details=f"Signal at {s.timestamp_entry} has no 5m confirmation"
+                        ))
+                        continue
                     if conf_start <= s.timestamp_entry <= conf_end:
                         tradeable_signals.append(s)
                     else:

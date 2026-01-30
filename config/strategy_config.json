@@ -1,5 +1,5 @@
 {
-  "symbol": "TSLA",
+  "symbol": "NVDA",
   "timeframes": {
     "high": "1h",
     "mid": "15min",
@@ -112,7 +112,7 @@
     "trailing_sl_activation_pct": 50.0,
     "trailing_sl_swing_length": 5,
     "min_profit_percent": 0.5,
-    "min_rr_ratio": 2.0,
+    "min_rr_ratio": 1.5,
     "trend_filter_enabled": false,
     "trend_filter_lookback": 500,
     "bos_1h_trend_filter_enabled": false,

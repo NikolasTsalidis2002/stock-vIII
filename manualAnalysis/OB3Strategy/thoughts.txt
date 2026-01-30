@@ -1,0 +1,4 @@
+How can we minimise loss?
+
+- Bias and variance tradeoff: find a balance between filtering singals and not. We also need to be able to enter
+- Figure A shows that there were many more and closer order blocks on the oppsoite diretion of our long

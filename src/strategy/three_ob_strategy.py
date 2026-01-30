@@ -110,32 +110,43 @@ class ThreeOBStrategy:
         engine_df = self._engine.df
         times = engine_df['time'].values
 
-        # --- Pass 1: collect pending retouches with widest window ----------------
-        # Key: retouch_bar → dict with pending snapshot & last_bar seen
+        # --- Pass 1: collect all pending retouches with widest window -------------
+        # Key: (retouch_bar, ob_b_key) → dict with pending snapshot & last_bar seen
         pending_map: dict = {}
 
         for bar, snapshot in self._engine.scan_with_snapshots(max_signals=999_999):
-            pending = snapshot.get('pending_confirmation')
-            if pending is None:
-                continue
+            all_pendings = snapshot.get('pending_confirmations', [])
+            # Fallback for backward compat
+            if not all_pendings:
+                single = snapshot.get('pending_confirmation')
+                if single is not None:
+                    all_pendings = [single]
 
-            retouch_bar = pending['ob_b_retouch_bar']
-            if bar <= retouch_bar:
-                continue
+            for pending in all_pendings:
+                retouch_bar = pending['ob_b_retouch_bar']
+                if bar <= retouch_bar:
+                    continue
 
-            if retouch_bar not in pending_map:
-                pending_map[retouch_bar] = {'pending': pending, 'last_bar': bar}
-            else:
-                # Update to widen the window
-                pending_map[retouch_bar]['last_bar'] = bar
+                map_key = (retouch_bar, pending['ob_b_key'])
+                if map_key not in pending_map:
+                    pending_map[map_key] = {'pending': pending, 'last_bar': bar}
+                else:
+                    pending_map[map_key]['last_bar'] = bar
 
         # --- Pass 2: scan confirmation once per retouch --------------------------
         contexts: List[ThreeOBSignalContext] = []
+        seen_ob_b_keys: set = set()
 
-        for retouch_bar in sorted(pending_map.keys()):
-            entry = pending_map[retouch_bar]
+        for map_key in sorted(pending_map.keys()):
+            entry = pending_map[map_key]
             pending = entry['pending']
             last_bar = entry['last_bar']
+            retouch_bar = map_key[0]
+
+            # Deduplicate by ob_b_key
+            if pending['ob_b_key'] in seen_ob_b_keys:
+                continue
+            seen_ob_b_keys.add(pending['ob_b_key'])
 
             direction = pending['direction']
             retouch_time = pd.Timestamp(times[retouch_bar])
@@ -209,30 +220,40 @@ class ThreeOBStrategy:
         engine_df = self._engine.df
         times = engine_df['time'].values
 
-        # --- Pass 1: collect pending retouches with widest window ----------------
+        # --- Pass 1: collect all pending retouches with widest window -------------
         pending_map: dict = {}
 
         for bar, snapshot in self._engine.scan_with_snapshots(max_signals=999_999):
-            pending = snapshot.get('pending_confirmation')
-            if pending is None:
-                continue
+            all_pendings = snapshot.get('pending_confirmations', [])
+            if not all_pendings:
+                single = snapshot.get('pending_confirmation')
+                if single is not None:
+                    all_pendings = [single]
 
-            retouch_bar = pending['ob_b_retouch_bar']
-            if bar <= retouch_bar:
-                continue
+            for pending in all_pendings:
+                retouch_bar = pending['ob_b_retouch_bar']
+                if bar <= retouch_bar:
+                    continue
 
-            if retouch_bar not in pending_map:
-                pending_map[retouch_bar] = {'pending': pending, 'last_bar': bar}
-            else:
-                pending_map[retouch_bar]['last_bar'] = bar
+                map_key = (retouch_bar, pending['ob_b_key'])
+                if map_key not in pending_map:
+                    pending_map[map_key] = {'pending': pending, 'last_bar': bar}
+                else:
+                    pending_map[map_key]['last_bar'] = bar
 
         # --- Pass 2: scan confirmation once per retouch --------------------------
         signals: List[TradeSignal] = []
+        seen_ob_b_keys: set = set()
 
-        for retouch_bar in sorted(pending_map.keys()):
-            entry = pending_map[retouch_bar]
+        for map_key in sorted(pending_map.keys()):
+            entry = pending_map[map_key]
             pending = entry['pending']
             last_bar = entry['last_bar']
+            retouch_bar = map_key[0]
+
+            if pending['ob_b_key'] in seen_ob_b_keys:
+                continue
+            seen_ob_b_keys.add(pending['ob_b_key'])
 
             direction = pending['direction']
             retouch_time = pd.Timestamp(times[retouch_bar])

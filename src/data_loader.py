@@ -7,7 +7,7 @@ Supports any stock symbol (default: TSLA)
 import os
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -305,6 +305,149 @@ class DataLoader:
         print(f"✅ Added {len(new_rows)} new candles. Total: {len(updated_df)} candles")
 
         return updated_df
+
+    def detect_gaps(self, df, timeframe):
+        """
+        Detect internal gaps in cached data that exceed expected intervals.
+
+        For intraday US stock data, overnight gaps (~16h for Madrid timezone)
+        and weekend gaps are normal and ignored.
+
+        Args:
+            df (pd.DataFrame): Data to check
+            timeframe (str): Timeframe string (e.g. '5min', '15min', '1h')
+
+        Returns:
+            list: List of (gap_start, gap_end) tuples for abnormal gaps
+        """
+        if df is None or len(df) < 2:
+            return []
+
+        # Parse timeframe to timedelta
+        tf_map = {
+            '1min': timedelta(minutes=1),
+            '5min': timedelta(minutes=5),
+            '15min': timedelta(minutes=5),
+            '30min': timedelta(minutes=30),
+            '1h': timedelta(hours=1),
+            '4h': timedelta(hours=4),
+            '1day': timedelta(days=1),
+        }
+        candle_delta = tf_map.get(timeframe)
+        if candle_delta is None:
+            print(f"⚠️ Unknown timeframe '{timeframe}' for gap detection, skipping")
+            return []
+
+        # For intraday timeframes, gaps up to ~18h are normal (overnight + early close days)
+        # Weekend gaps can be up to ~65h (Fri close to Mon open).
+        # We flag gaps that exceed the weekend threshold significantly.
+        if timeframe in ('1day',):
+            max_normal_gap = timedelta(days=4)  # handles weekends + holidays
+        else:
+            max_normal_gap = timedelta(hours=70)  # covers weekends for intraday
+
+        times = df['time'].sort_values().reset_index(drop=True)
+        gaps = []
+        for i in range(1, len(times)):
+            delta = times.iloc[i] - times.iloc[i - 1]
+            if delta > max_normal_gap:
+                gaps.append((times.iloc[i - 1], times.iloc[i]))
+
+        return gaps
+
+    def fetch_data_range(self, timeframe, start_date, end_date, outputsize=5000):
+        """
+        Fetch data for a specific date range from Twelve Data API.
+
+        Args:
+            timeframe (str): Time interval
+            start_date (str or datetime): Start datetime
+            end_date (str or datetime): End datetime
+            outputsize (int): Max candles to fetch
+
+        Returns:
+            pd.DataFrame: OHLCV data for the range
+        """
+        if isinstance(start_date, datetime):
+            start_date = start_date.strftime('%Y-%m-%d %H:%M:%S')
+        if isinstance(end_date, datetime):
+            end_date = end_date.strftime('%Y-%m-%d %H:%M:%S')
+
+        print(f"📥 Fetching {timeframe} data for {self.symbol} from {start_date} to {end_date}...")
+
+        params = {
+            'symbol': self.symbol,
+            'interval': timeframe,
+            'outputsize': outputsize,
+            'apikey': self.api_key,
+            'timezone': self.timezone,
+            'start_date': start_date,
+            'end_date': end_date,
+        }
+
+        response = requests.get(self.base_url, params=params)
+        if response.status_code != 200:
+            raise Exception(f"❌ Failed to fetch data. Status: {response.status_code}")
+
+        data = response.json()
+        if 'status' in data and data['status'] == 'error':
+            raise Exception(f"❌ API Error: {data.get('message', 'Unknown error')}")
+
+        if 'values' not in data or len(data['values']) == 0:
+            print(f"⚠️ No data returned for range {start_date} to {end_date}")
+            return pd.DataFrame()
+
+        df = pd.DataFrame(data['values'])
+        cols_to_convert = ['open', 'high', 'low', 'close']
+        if 'volume' in df.columns:
+            cols_to_convert.append('volume')
+        else:
+            df['volume'] = 0
+        df[cols_to_convert] = df[cols_to_convert].astype(float)
+
+        df = df.rename(columns={'datetime': 'time'})
+        df['time'] = pd.to_datetime(df['time'])
+        df = df.iloc[::-1].reset_index(drop=True)
+
+        df['time_interval'] = timeframe
+        df['name'] = self.symbol
+
+        print(f"✅ Fetched {len(df)} candles for gap fill")
+        return df
+
+    def fill_gaps(self, timeframe, gaps):
+        """
+        Fill detected gaps by fetching missing data and merging into cache.
+
+        Args:
+            timeframe (str): Timeframe to fill
+            gaps (list): List of (gap_start, gap_end) tuples
+
+        Returns:
+            pd.DataFrame: Updated data with gaps filled
+        """
+        cached_df = self.load_cache(timeframe)
+        if cached_df is None:
+            return None
+
+        filled_any = False
+        for gap_start, gap_end in gaps:
+            print(f"  Filling gap: {gap_start} → {gap_end}")
+            try:
+                chunk = self.fetch_data_range(timeframe, gap_start, gap_end)
+                if len(chunk) > 0:
+                    cached_df = pd.concat([cached_df, chunk], ignore_index=True)
+                    filled_any = True
+            except Exception as e:
+                print(f"  ⚠️ Failed to fill gap {gap_start} → {gap_end}: {e}")
+
+        if filled_any:
+            # Deduplicate and sort
+            cached_df = cached_df.drop_duplicates(subset='time').sort_values('time').reset_index(drop=True)
+            self.save_cache(cached_df, timeframe)
+            print(f"✅ Gap filling complete. Total: {len(cached_df)} candles")
+
+        return cached_df
 
     def validate_data(self, df, timeframe):
         """

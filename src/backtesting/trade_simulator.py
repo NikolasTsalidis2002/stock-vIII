@@ -326,6 +326,10 @@ class TradeSimulator:
                 if trailing_activated:
                     new_sl = self._find_trailing_sl_level(idx, entry_price, current_sl, direction)
                     if new_sl is not None and new_sl != current_sl:
+                        # Ensure SL only moves in the profitable direction
+                        if (direction == 'long' and new_sl < current_sl) or (direction == 'short' and new_sl > current_sl):
+                            new_sl = None
+                    if new_sl is not None and new_sl != current_sl:
                         swing_type = "swing low" if direction == 'long' else "swing high"
                         sl_history.append((candle_time, new_sl, f"Trailing: {swing_type}"))
                         current_sl = new_sl

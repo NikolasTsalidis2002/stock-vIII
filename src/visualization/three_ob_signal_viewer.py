@@ -172,6 +172,7 @@ class ThreeOBSignalViewer:
                 'skippedReason': skipped_reason,
                 'entryTime': trade_result.entry_time.strftime('%Y-%m-%d %H:%M') if trade_result else None,
                 'exitTime': trade_result.exit_time.strftime('%Y-%m-%d %H:%M') if trade_result and trade_result.exit_time else None,
+                'exitPrice': float(trade_result.exit_price) if trade_result and trade_result.exit_price else None,
             })
 
         return signals_data
@@ -369,20 +370,22 @@ class ThreeOBSignalViewer:
         exit_time_unix = int(trade_result.exit_time.timestamp()) if trade_result.exit_time else None
 
         # Generate candle data for the SL tab (entry to exit with padding)
+        # Use 5min confirmation data for finer-grained SL visualization
+        sl_df = self.df_entry if self.df_entry is not None else self.df
         entry_time = ctx.signal.timestamp_entry
-        entry_idx = self.df.index.get_indexer([entry_time], method='nearest')[0]
-        pre_padding = 5
+        entry_idx = sl_df.index.get_indexer([entry_time], method='nearest')[0]
+        pre_padding = 10
         start_idx = max(0, entry_idx - pre_padding)
 
         if trade_result.exit_time:
-            exit_idx = self.df.index.get_indexer([trade_result.exit_time], method='nearest')[0]
-            post_padding = 5
-            end_idx = min(len(self.df), exit_idx + post_padding)
+            exit_idx = sl_df.index.get_indexer([trade_result.exit_time], method='nearest')[0]
+            post_padding = 10
+            end_idx = min(len(sl_df), exit_idx + post_padding)
         else:
-            end_idx = min(len(self.df), entry_idx + 30)
+            end_idx = min(len(sl_df), entry_idx + 60)
 
-        end_idx = max(end_idx, entry_idx + 10)
-        df_slice = self.df.iloc[start_idx:end_idx]
+        end_idx = max(end_idx, entry_idx + 20)
+        df_slice = sl_df.iloc[start_idx:end_idx]
         candle_data = generate_candle_data(df_slice)
 
         # Compute trailing SL activation price
@@ -412,10 +415,9 @@ class ThreeOBSignalViewer:
         entry_time = sig.timestamp_entry
         entry_idx = self.df.index.get_indexer([entry_time], method='nearest')[0]
 
-        # Window: start from OB-C origin (or 200 bars before entry), whichever is earlier
-        ob_c_start = ctx.ob_c_start_idx
-        window_start = min(ob_c_start, entry_idx - 200)
-        start_idx = max(0, window_start - 10)  # small pre-padding
+        # Window: start 200 candles before the oldest OB origin
+        oldest_ob_idx = min(ctx.ob_a_start_idx, ctx.ob_b_start_idx, ctx.ob_c_start_idx)
+        start_idx = max(0, oldest_ob_idx - 200)
 
         # End: entry + some bars (or trade exit)
         if trade_result and trade_result.exit_time:
@@ -501,6 +503,118 @@ class ThreeOBSignalViewer:
             'slPrice': float(sig.stop_loss_price) if sig.stop_loss_price else None,
             'focusTime': int(entry_time.timestamp()) if hasattr(entry_time, 'timestamp') else int(pd.Timestamp(entry_time).timestamp()),
             'contextCandles': end_idx - start_idx,
+        }
+
+    def _generate_tab_htf_trades(self) -> Optional[Dict]:
+        """Generate HTF Trades tab: full 15min chart with ALL trades marked."""
+        if not self.trade_results:
+            return None
+
+        candle_data = generate_candle_data(self.df)
+        if not candle_data:
+            return None
+
+        markers = []
+        trade_lines = []
+
+        for tr in self.trade_results:
+            is_long = tr.entry_direction == 'long'
+            is_win = tr.pnl_dollars >= 0 if tr.pnl_dollars is not None else False
+            win_color = '#089981'
+            loss_color = '#f23645'
+            outcome_color = win_color if is_win else loss_color
+
+            entry_ts = int(tr.entry_time.timestamp()) if hasattr(tr.entry_time, 'timestamp') else int(pd.Timestamp(tr.entry_time).timestamp())
+
+            # Entry marker
+            markers.append({
+                'time': entry_ts,
+                'position': 'belowBar' if is_long else 'aboveBar',
+                'color': win_color if is_long else loss_color,
+                'shape': 'arrowUp' if is_long else 'arrowDown',
+                'text': f'${tr.entry_price:.0f}',
+            })
+
+            # Exit marker + trade line
+            if tr.exit_time and tr.exit_price:
+                exit_ts = int(tr.exit_time.timestamp()) if hasattr(tr.exit_time, 'timestamp') else int(pd.Timestamp(tr.exit_time).timestamp())
+
+                exit_label = ''
+                if tr.exit_type:
+                    etype = tr.exit_type.value
+                    label_map = {'tp_hit': 'TP', 'sl_hit': 'SL', 'trailing_sl': 'TSL', 'timeout': 'TIME'}
+                    exit_label = label_map.get(etype, etype.upper())
+
+                markers.append({
+                    'time': exit_ts,
+                    'position': 'aboveBar' if is_long else 'belowBar',
+                    'color': outcome_color,
+                    'shape': 'circle',
+                    'text': exit_label,
+                })
+
+                trade_lines.append({
+                    'entryTime': entry_ts,
+                    'exitTime': exit_ts,
+                    'entryPrice': float(tr.entry_price),
+                    'exitPrice': float(tr.exit_price),
+                    'color': outcome_color,
+                    'isWin': is_win,
+                })
+
+        # Sort markers by time (required by LightweightCharts)
+        markers.sort(key=lambda m: m['time'])
+
+        # Compute SMC indicators on full df for overlay
+        bos_lines = []
+        liquidity_lines = []
+        all_obs = []
+        try:
+            inflexions = smc_custom.inflexion_points(self.df)
+            bos_data = smc_custom.bos(self.df, inflexions, close_break=True)
+            ob_data = smc_custom.ob(self.df, bos_data)
+
+            bos_lines = generate_bos_lines(self.df, bos_data, inflexions)
+            liquidity_lines = generate_liquidity_lines(self.df, inflexions)
+
+            ob_vals = ob_data['OB'].values
+            ob_tops = ob_data['Top'].values
+            ob_bottoms = ob_data['Bottom'].values
+            ob_starts = ob_data['StartIndex'].values
+            ob_mitigated = ob_data['MitigatedIndex'].values
+
+            for j in range(len(ob_data)):
+                if np.isnan(ob_vals[j]):
+                    continue
+                s_idx = int(ob_starts[j])
+                mit_idx = int(ob_mitigated[j]) if ob_mitigated[j] and not np.isnan(float(ob_mitigated[j])) else 0
+
+                ob_start_abs = max(0, min(s_idx, len(self.df) - 1))
+                if mit_idx > 0 and mit_idx < len(self.df):
+                    ob_end_abs = mit_idx
+                else:
+                    ob_end_abs = len(self.df) - 1
+
+                satisfied = bool(mit_idx > 0)
+
+                all_obs.append({
+                    'topPrice': float(ob_tops[j]),
+                    'bottomPrice': float(ob_bottoms[j]),
+                    'startTime': int(self.df.index[ob_start_abs].timestamp()),
+                    'endTime': int(self.df.index[ob_end_abs].timestamp()),
+                    'satisfied': satisfied,
+                    'direction': int(ob_vals[j]),
+                })
+        except Exception:
+            pass
+
+        return {
+            'candleData': candle_data,
+            'markers': markers,
+            'tradeLines': trade_lines,
+            'bosLines': bos_lines,
+            'liquidityLines': liquidity_lines,
+            'allOBs': all_obs,
         }
 
     def _generate_performance_data(self) -> Optional[Dict]:
@@ -591,6 +705,8 @@ class ThreeOBSignalViewer:
     def _create_html(self, signals_data: List[Dict], performance_data: Optional[Dict]) -> str:
         data_json = json.dumps(signals_data, cls=NumpyEncoder)
         performance_json = json.dumps(performance_data, cls=NumpyEncoder) if performance_data else 'null'
+        htf_trades_data = self._generate_tab_htf_trades()
+        htf_trades_json = json.dumps(htf_trades_data, cls=NumpyEncoder) if htf_trades_data else 'null'
 
         return f"""<!DOCTYPE html>
 <html>
@@ -1007,6 +1123,7 @@ class ThreeOBSignalViewer:
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
             <div class="tab" data-tab="SL_HISTORY" onclick="switchTab('SL_HISTORY')">Stop Loss</div>
             <div class="tab" data-tab="CONTEXT" onclick="switchTab('CONTEXT')">Context</div>
+            <div class="tab" data-tab="HTF_TRADES" onclick="switchTab('HTF_TRADES')">HTF Trades</div>
             <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
         </div>
 
@@ -1048,8 +1165,16 @@ class ThreeOBSignalViewer:
                         <span class="info-value" id="entry-time">-</span>
                     </div>
                     <div class="info-row">
+                        <span class="info-label">Entry Price</span>
+                        <span class="info-value" id="entry-price-detail">-</span>
+                    </div>
+                    <div class="info-row">
                         <span class="info-label">Exit Time</span>
                         <span class="info-value" id="exit-time">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Exit Price</span>
+                        <span class="info-value" id="exit-price-detail">-</span>
                     </div>
                 </div>
 
@@ -1098,7 +1223,7 @@ class ThreeOBSignalViewer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1-6</span>
+                        <span class="shortcut-key">1-7</span>
                     </div>
                 </div>
             </div>
@@ -1108,6 +1233,7 @@ class ThreeOBSignalViewer:
     <script>
         const signalsData = {data_json};
         const performanceData = {performance_json};
+        const htfTradesData = {htf_trades_json};
 
         let currentSignalIdx = 0;
         let currentTab = '15M';
@@ -1193,7 +1319,8 @@ class ThreeOBSignalViewer:
                 if (e.key === '3') switchTab('PNL');
                 if (e.key === '4') switchTab('SL_HISTORY');
                 if (e.key === '5') switchTab('CONTEXT');
-                if (e.key === '6') switchTab('DASHBOARD');
+                if (e.key === '6') switchTab('HTF_TRADES');
+                if (e.key === '7') switchTab('DASHBOARD');
             }});
 
             // Resize handler
@@ -1234,7 +1361,9 @@ class ThreeOBSignalViewer:
                 document.getElementById('tp-price').textContent = sig.tpPrice ? '$' + sig.tpPrice.toFixed(2) : '-';
                 document.getElementById('sl-price').textContent = sig.slPrice ? '$' + sig.slPrice.toFixed(2) : '-';
                 document.getElementById('entry-time').textContent = sig.entryTime || '-';
+                document.getElementById('entry-price-detail').textContent = sig.entryPrice ? '$' + sig.entryPrice.toFixed(2) : '-';
                 document.getElementById('exit-time').textContent = sig.exitTime || '-';
+                document.getElementById('exit-price-detail').textContent = sig.exitPrice ? '$' + sig.exitPrice.toFixed(2) : '-';
             }} else {{
                 tradeInfo.style.display = 'none';
             }}
@@ -1323,6 +1452,7 @@ class ThreeOBSignalViewer:
                 if (tabId === 'PNL' && sig.tabPnL) hasData = true;
                 if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
                 if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
+                if (tabId === 'HTF_TRADES' && htfTradesData) hasData = true;
                 if (tabId === 'DASHBOARD') hasData = true;
 
                 if (!hasData) tab.classList.add('disabled');
@@ -1339,6 +1469,7 @@ class ThreeOBSignalViewer:
             if (tabId === 'PNL' && sig.tabPnL) hasData = true;
             if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
             if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
+            if (tabId === 'HTF_TRADES' && htfTradesData) hasData = true;
             if (tabId === 'DASHBOARD') hasData = true;
             if (!hasData) return;
 
@@ -1403,6 +1534,11 @@ class ThreeOBSignalViewer:
             else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
 
             if (currentTab === 'SL_HISTORY') tabData = sig.tabSLHistory;
+
+            if (currentTab === 'HTF_TRADES') {{
+                showHTFTradesChart();
+                return;
+            }}
 
             if (!tabData) return;
 
@@ -1697,14 +1833,89 @@ class ThreeOBSignalViewer:
             chart.priceScale('right').applyOptions({{ autoScale: true }});
         }}
 
+        function showHTFTradesChart() {{
+            if (!htfTradesData) return;
+            clearLineSeries();
+            d3.select('#svg-overlay').selectAll('*').remove();
+
+            candlestickSeries.setData(htfTradesData.candleData);
+            candlestickSeries.setMarkers(htfTradesData.markers || []);
+
+            chart.priceScale('right').applyOptions({{
+                autoScale: true,
+                scaleMargins: {{ top: 0.15, bottom: 0.15 }},
+            }});
+
+            // Draw entry-to-exit trade lines
+            if (htfTradesData.tradeLines) {{
+                htfTradesData.tradeLines.forEach(tl => {{
+                    const lineSeries = chart.addLineSeries({{
+                        color: tl.color,
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                    }});
+                    lineSeries.setData([
+                        {{ time: tl.entryTime, value: tl.entryPrice }},
+                        {{ time: tl.exitTime, value: tl.exitPrice }}
+                    ]);
+                    activeLineSeries.push(lineSeries);
+                }});
+            }}
+
+            // BOS lines
+            if (htfTradesData.bosLines) {{
+                htfTradesData.bosLines.forEach(bos => {{
+                    const lineSeries = chart.addLineSeries({{
+                        color: bos.color,
+                        lineWidth: bos.lineWidth || 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                    }});
+                    lineSeries.setData([
+                        {{ time: bos.startTime, value: bos.price }},
+                        {{ time: bos.endTime, value: bos.price }}
+                    ]);
+                    activeLineSeries.push(lineSeries);
+                }});
+            }}
+
+            // Liquidity lines
+            if (htfTradesData.liquidityLines) {{
+                htfTradesData.liquidityLines.forEach(liq => {{
+                    const lineSeries = chart.addLineSeries({{
+                        color: liq.color,
+                        lineWidth: liq.lineWidth,
+                        lineStyle: liq.swept ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dotted,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                    }});
+                    lineSeries.setData([
+                        {{ time: liq.startTime, value: liq.price }},
+                        {{ time: liq.endTime, value: liq.price }}
+                    ]);
+                    activeLineSeries.push(lineSeries);
+                }});
+            }}
+
+            chart.timeScale().fitContent();
+            setTimeout(redrawOverlays, 50);
+        }}
+
         function redrawOverlays() {{
             if (currentTab === 'PNL' || currentTab === 'SL_HISTORY' || currentTab === 'DASHBOARD') return;
 
-            const sig = signalsData[currentSignalIdx];
             let tabData = null;
-            if (currentTab === '15M') tabData = sig.tab15m;
-            else if (currentTab === '5M_ENTRY') tabData = sig.tab5mEntry;
-            else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
+            if (currentTab === 'HTF_TRADES') {{
+                tabData = htfTradesData;
+            }} else {{
+                const sig = signalsData[currentSignalIdx];
+                if (currentTab === '15M') tabData = sig.tab15m;
+                else if (currentTab === '5M_ENTRY') tabData = sig.tab5mEntry;
+                else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
+            }}
             if (!tabData) return;
 
             const chartContainer = document.getElementById('chart-container');
