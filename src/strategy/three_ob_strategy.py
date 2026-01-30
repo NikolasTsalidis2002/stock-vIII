@@ -93,101 +93,209 @@ class ThreeOBStrategy:
 
     def scan_for_signals_with_context(self, max_signals: int = 10) -> List[ThreeOBSignalContext]:
         """Scan for signals and return ThreeOBSignalContext objects with OB zone data."""
-        return self._engine.scan_for_signals_with_context(max_signals=max_signals)
+        if self._confirmation_detector is None:
+            return self._engine.scan_for_signals_with_context(max_signals=max_signals)
+        return self._scan_with_confirmation_and_context(max_signals=max_signals)
 
-    def _scan_with_confirmation(self, max_signals: int = 10) -> List[TradeSignal]:
-        """Scan using lower TF BOS/IFVG confirmation instead of green/red close."""
-        signals: List[TradeSignal] = []
+    def _scan_with_confirmation_and_context(self, max_signals: int = 10) -> List[ThreeOBSignalContext]:
+        """Like _scan_with_confirmation but returns ThreeOBSignalContext.
+
+        Two-pass approach:
+          Pass 1 — collect all pending retouches, tracking the last bar seen per
+                   retouch_bar (widest confirmation window).
+          Pass 2 — for each retouch, scan confirmation once with the full window.
+                   If confirmed → use conf price/time.
+                   If not → include as unconfirmed with a valid fallback timestamp.
+        """
         engine_df = self._engine.df
         times = engine_df['time'].values
-        high = engine_df['high'].values
-        low = engine_df['low'].values
 
-        # Track which retouch bars have already been confirmed (skip further scanning)
-        confirmed_retouch_bars = set()
+        # --- Pass 1: collect pending retouches with widest window ----------------
+        # Key: retouch_bar → dict with pending snapshot & last_bar seen
+        pending_map: dict = {}
 
-        for bar, snapshot in self._engine.scan_with_snapshots(max_signals=max_signals * 5):
+        for bar, snapshot in self._engine.scan_with_snapshots(max_signals=999_999):
             pending = snapshot.get('pending_confirmation')
             if pending is None:
                 continue
 
             retouch_bar = pending['ob_b_retouch_bar']
-            if retouch_bar in confirmed_retouch_bars:
-                continue
-
-            # Don't scan until we're past the retouch bar
             if bar <= retouch_bar:
                 continue
 
+            if retouch_bar not in pending_map:
+                pending_map[retouch_bar] = {'pending': pending, 'last_bar': bar}
+            else:
+                # Update to widen the window
+                pending_map[retouch_bar]['last_bar'] = bar
+
+        # --- Pass 2: scan confirmation once per retouch --------------------------
+        contexts: List[ThreeOBSignalContext] = []
+
+        for retouch_bar in sorted(pending_map.keys()):
+            entry = pending_map[retouch_bar]
+            pending = entry['pending']
+            last_bar = entry['last_bar']
+
             direction = pending['direction']
             retouch_time = pd.Timestamp(times[retouch_bar])
-
-            # Window: from retouch bar's close to CURRENT bar's close
             window_start = pd.Timestamp(times[retouch_bar + 1]) if retouch_bar + 1 < len(times) else retouch_time
-            window_end = pd.Timestamp(times[bar + 1]) if bar + 1 < len(times) else pd.Timestamp(times[bar])
+            window_end = pd.Timestamp(times[last_bar + 1]) if last_bar + 1 < len(times) else pd.Timestamp(times[last_bar])
+
+            confirmation = self._scan_confirmation_window(window_start, window_end, direction)
+
+            ob_c_bottom = pending['ob_c_bottom']
+            ob_c_top = pending['ob_c_top']
+            sl = pending['sl']
+
+            if confirmation is not None:
+                conf_time, conf_type, conf_price = confirmation
+                condition_confirmation = f'{conf_type} ({self._confirmation_timeframe})'
+                entry_price = conf_price
+                entry_time = conf_time
+            else:
+                # No lower-TF confirmation — still include for display
+                condition_confirmation = 'No confirmation found'
+                # Use 15min bar AFTER retouch as fallback (stays within data range)
+                fallback_bar = retouch_bar + 1 if retouch_bar + 1 < len(engine_df) else retouch_bar
+                entry_price = float(engine_df['close'].iloc[fallback_bar])
+                entry_time = pd.Timestamp(times[fallback_bar])
+
+            if direction == 'long':
+                tp = ob_c_bottom
+                if tp <= entry_price:
+                    continue
+            else:
+                tp = ob_c_top
+                if tp >= entry_price:
+                    continue
+
+            sig = TradeSignal(
+                timestamp_1h_sweep=retouch_time,
+                timestamp_5m_event_b=retouch_time,
+                timestamp_5m_validation=retouch_time,
+                timestamp_1m_confirmation=entry_time,
+                timestamp_entry=entry_time,
+                trend_1h_before_sweep='n/a',
+                entry_direction=direction,
+                price_1h_sweep=entry_price,
+                price_5m_event_b=entry_price,
+                price_5m_validation=entry_price,
+                price_1m_confirmation=entry_price,
+                price_entry=entry_price,
+                condition_liquidity_sweep='3-OB State Machine',
+                condition_event_b='OB-A touch',
+                condition_validation='OB-C distance',
+                condition_confirmation=condition_confirmation,
+                indices_1h=(last_bar, last_bar),
+                indices_5m=(last_bar, last_bar),
+                indices_1m=(last_bar, last_bar),
+                take_profit_price=tp,
+                stop_loss_price=sl,
+            )
+            ctx = self._engine._context_from_pending(sig, pending, direction)
+            sig.ob_a_id = (ctx.ob_a_top, ctx.ob_a_bottom, ctx.ob_a_start_idx)
+            contexts.append(ctx)
+            if len(contexts) >= max_signals:
+                break
+
+        return contexts
+
+    def _scan_with_confirmation(self, max_signals: int = 10) -> List[TradeSignal]:
+        """Scan using lower TF BOS/IFVG confirmation instead of green/red close.
+
+        Two-pass approach matching _scan_with_confirmation_and_context().
+        """
+        engine_df = self._engine.df
+        times = engine_df['time'].values
+
+        # --- Pass 1: collect pending retouches with widest window ----------------
+        pending_map: dict = {}
+
+        for bar, snapshot in self._engine.scan_with_snapshots(max_signals=999_999):
+            pending = snapshot.get('pending_confirmation')
+            if pending is None:
+                continue
+
+            retouch_bar = pending['ob_b_retouch_bar']
+            if bar <= retouch_bar:
+                continue
+
+            if retouch_bar not in pending_map:
+                pending_map[retouch_bar] = {'pending': pending, 'last_bar': bar}
+            else:
+                pending_map[retouch_bar]['last_bar'] = bar
+
+        # --- Pass 2: scan confirmation once per retouch --------------------------
+        signals: List[TradeSignal] = []
+
+        for retouch_bar in sorted(pending_map.keys()):
+            entry = pending_map[retouch_bar]
+            pending = entry['pending']
+            last_bar = entry['last_bar']
+
+            direction = pending['direction']
+            retouch_time = pd.Timestamp(times[retouch_bar])
+            window_start = pd.Timestamp(times[retouch_bar + 1]) if retouch_bar + 1 < len(times) else retouch_time
+            window_end = pd.Timestamp(times[last_bar + 1]) if last_bar + 1 < len(times) else pd.Timestamp(times[last_bar])
 
             logger.info(
                 "Pending confirmation: %s @ bar %d (%s), scanning window %s to %s",
                 direction, retouch_bar, retouch_time, window_start, window_end,
             )
 
-            # Scan lower TF candles in this window
-            confirmation = self._scan_confirmation_window(
-                window_start, window_end, direction,
-            )
+            confirmation = self._scan_confirmation_window(window_start, window_end, direction)
 
-            if confirmation is None:
-                continue
-
-            confirmed_retouch_bars.add(retouch_bar)
-
-            conf_time, conf_type, conf_price = confirmation
-            logger.info(
-                "  Confirmation FOUND: %s @ %s, price=%.2f",
-                conf_type, conf_time, conf_price,
-            )
-
-            # Build TP the same way the engine does
             ob_c_bottom = pending['ob_c_bottom']
             ob_c_top = pending['ob_c_top']
             sl = pending['sl']
 
+            if confirmation is not None:
+                conf_time, conf_type, conf_price = confirmation
+                condition_confirmation = f'{conf_type} ({self._confirmation_timeframe})'
+                entry_price = conf_price
+                entry_time = conf_time
+                logger.info("  Confirmation FOUND: %s @ %s, price=%.2f", conf_type, conf_time, conf_price)
+            else:
+                condition_confirmation = 'No confirmation found'
+                fallback_bar = retouch_bar + 1 if retouch_bar + 1 < len(engine_df) else retouch_bar
+                entry_price = float(engine_df['close'].iloc[fallback_bar])
+                entry_time = pd.Timestamp(times[fallback_bar])
+                logger.info("  No confirmation — fallback entry at bar %d", fallback_bar)
+
             if direction == 'long':
                 tp = ob_c_bottom
-                if tp <= conf_price:
-                    logger.info("  TP %.2f <= entry %.2f — skipping", tp, conf_price)
+                if tp <= entry_price:
+                    logger.info("  TP %.2f <= entry %.2f — skipping", tp, entry_price)
                     continue
             else:
                 tp = ob_c_top
-                if tp >= conf_price:
-                    logger.info("  TP %.2f >= entry %.2f — skipping", tp, conf_price)
+                if tp >= entry_price:
+                    logger.info("  TP %.2f >= entry %.2f — skipping", tp, entry_price)
                     continue
 
-            logger.info(
-                "  SIGNAL: %s entry=%.2f, TP=%.2f, SL=%.2f",
-                direction, conf_price, tp, sl,
-            )
+            logger.info("  SIGNAL: %s entry=%.2f, TP=%.2f, SL=%.2f", direction, entry_price, tp, sl)
 
             sig = TradeSignal(
                 timestamp_1h_sweep=retouch_time,
                 timestamp_5m_event_b=retouch_time,
                 timestamp_5m_validation=retouch_time,
-                timestamp_1m_confirmation=conf_time,
-                timestamp_entry=conf_time,
+                timestamp_1m_confirmation=entry_time,
+                timestamp_entry=entry_time,
                 trend_1h_before_sweep='n/a',
                 entry_direction=direction,
-                price_1h_sweep=conf_price,
-                price_5m_event_b=conf_price,
-                price_5m_validation=conf_price,
-                price_1m_confirmation=conf_price,
-                price_entry=conf_price,
+                price_1h_sweep=entry_price,
+                price_5m_event_b=entry_price,
+                price_5m_validation=entry_price,
+                price_1m_confirmation=entry_price,
+                price_entry=entry_price,
                 condition_liquidity_sweep='3-OB State Machine',
                 condition_event_b='OB-A touch',
                 condition_validation='OB-C distance',
-                condition_confirmation=f'{conf_type} ({self._confirmation_timeframe})',
-                indices_1h=(retouch_bar, retouch_bar),
-                indices_5m=(retouch_bar, retouch_bar),
-                indices_1m=(retouch_bar, retouch_bar),
+                condition_confirmation=condition_confirmation,
+                indices_1h=(last_bar, last_bar),
+                indices_5m=(last_bar, last_bar),
+                indices_1m=(last_bar, last_bar),
                 take_profit_price=tp,
                 stop_loss_price=sl,
             )

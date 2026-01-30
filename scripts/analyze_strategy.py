@@ -202,7 +202,7 @@ def run_single_symbol(symbol, config, args):
     )
 
     # Scan for signals
-    signals = strategy.scan_for_signals(max_signals=5)
+    signals = strategy.scan_for_signals(max_signals=999_999)
 
     if len(signals) == 0:
         print(f"  No signals found for {symbol}")
@@ -923,6 +923,15 @@ def main():
                 df_confirmation = loader.update_cache(three_ob_conf_tf)
                 print(f"  ✓ {three_ob_conf_tf.upper()}: {len(df_confirmation)} candles (refreshed)")
 
+        # Align primary TF data to confirmation data coverage
+        if df_confirmation is not None and len(df_confirmation) > 0:
+            conf_start = df_confirmation['time'].min()
+            primary_start = df_3ob['time'].min()
+            if primary_start < conf_start:
+                original_len = len(df_3ob)
+                df_3ob = df_3ob[df_3ob['time'] >= conf_start].reset_index(drop=True)
+                print(f"  ⚠️ Trimmed {three_ob_tf} data from {original_len} to {len(df_3ob)} candles to align with {three_ob_conf_tf} coverage ({conf_start})")
+
         strategy_3ob = ThreeOBStrategy(
             df_3ob,
             close_break=three_ob_close_break,
@@ -935,10 +944,10 @@ def main():
         print("\n🔍 Scanning for 3-OB trade setups...")
         signal_contexts = None
         if args.visualize:
-            signal_contexts = strategy_3ob.scan_for_signals_with_context(max_signals=5)
+            signal_contexts = strategy_3ob.scan_for_signals_with_context(max_signals=999_999)
             signals = [ctx.signal for ctx in signal_contexts]
         else:
-            signals = strategy_3ob.scan_for_signals(max_signals=5)
+            signals = strategy_3ob.scan_for_signals(max_signals=999_999)
 
         # Generate walkthrough if requested (before signal check so it runs even with 0 signals)
         if args.walkthrough_3ob:
@@ -950,7 +959,7 @@ def main():
                 df_3ob,
                 close_break=three_ob_close_break,
                 min_dist_pct=three_ob_min_dist,
-                max_signals=5,
+                max_signals=999_999,
                 enable_shorts=three_ob_enable_shorts,
                 df_confirmation=df_confirmation,
                 confirmation_timeframe=three_ob_conf_tf,
@@ -1039,8 +1048,9 @@ def main():
         print("✅ 3-OB ANALYSIS COMPLETE!")
         print("="*80)
         for i, sig in enumerate(signals, 1):
-            print(f"\n  Signal #{i}: {sig.entry_direction.upper()}")
-            print(f"    Entry: ${sig.price_entry:.2f}")
+            conf_tag = " [NO CONF]" if "No confirmation" in (sig.condition_confirmation or "") else ""
+            print(f"\n  Signal #{i}: {sig.entry_direction.upper()}{conf_tag}")
+            print(f"    Entry: ${sig.price_entry:.2f} @ {sig.timestamp_entry}")
             print(f"    TP: ${sig.take_profit_price:.2f}" if sig.take_profit_price else "    TP: N/A")
             print(f"    SL: ${sig.stop_loss_price:.2f}" if sig.stop_loss_price else "    SL: N/A")
         print("="*80 + "\n")
@@ -1062,7 +1072,7 @@ def main():
 
     # Step 3: Scan for signals
     print("\n🔍 Scanning for trade setups...")
-    signals = strategy.scan_for_signals(max_signals=5)
+    signals = strategy.scan_for_signals(max_signals=999_999)
 
     # Handle complete signals
     if len(signals) > 0:

@@ -1,9 +1,0 @@
-- Improve selling strategy. Sometimes we aere too ambtious, and we should be happy with the profit we culd be making when we are having a profit
-
-- right now for every liquidity we just find one entry. 
-But for every liquidity we should find as many entries as event b validations there are. 
-We should see all the fvgs that could give as an entry, as well as one equlibrium if there is. 
-This way if we end up selling early, but we find another entry we shold take it. 
-This should be enabled thorugh a boolean in the configuration
-
-- consiuder making transactions that only go with the asset's trend

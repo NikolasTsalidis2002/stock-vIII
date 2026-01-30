@@ -104,6 +104,7 @@ class ThreeOBSignalViewer:
             tab_5m_entry = self._generate_tab_5m_entry(ctx, trade_result)
             tab_pnl = self._generate_tab_pnl(trade_result)
             tab_sl_history = self._generate_tab_sl_history(trade_result, ctx)
+            tab_context = self._generate_tab_context(ctx, trade_result)
 
             # Determine if signal was skipped (based on backtester, NOT 5min data availability)
             if not trade_result and skipped_trade:
@@ -137,14 +138,16 @@ class ThreeOBSignalViewer:
                 pnl_label = f" | ${pnl_dollars:+.2f} ({trade_outcome or ''})"
 
             skip_prefix = f'[{skipped_trade.skip_reason.value.upper()}] ' if skipped_trade else ('[SKIP] ' if skipped else '')
-            label = f"#{i+1} {skip_prefix}{direction_label} @ ${sig.price_entry:.2f} — {time_label}{pnl_label}"
+            no_conf = getattr(sig, 'condition_confirmation', '') == 'No confirmation found'
+            conf_prefix = '[NO CONF] ' if no_conf else ''
+            label = f"#{i+1} {skip_prefix}{conf_prefix}{direction_label} @ ${sig.price_entry:.2f} — {time_label}{pnl_label}"
 
             # Conditions checklist
             conditions = [
                 {'label': 'OB-A (Trigger)', 'met': True, 'value': f'${ctx.ob_a_top:.2f}-${ctx.ob_a_bottom:.2f}'},
                 {'label': 'OB-B (Reaction)', 'met': True, 'value': f'${ctx.ob_b_top:.2f}-${ctx.ob_b_bottom:.2f}'},
                 {'label': 'OB-C (Entry)', 'met': True, 'value': f'${ctx.ob_c_top:.2f}-${ctx.ob_c_bottom:.2f}'},
-                {'label': 'Confirmation', 'met': True, 'value': sig.condition_confirmation if hasattr(sig, 'condition_confirmation') else 'BOS'},
+                {'label': 'Confirmation', 'met': getattr(sig, 'condition_confirmation', '') != 'No confirmation found', 'value': sig.condition_confirmation if hasattr(sig, 'condition_confirmation') else 'BOS'},
             ]
 
             signals_data.append({
@@ -153,6 +156,7 @@ class ThreeOBSignalViewer:
                 'tab5mEntry': tab_5m_entry,
                 'tabPnL': tab_pnl,
                 'tabSLHistory': tab_sl_history,
+                'tabContext': tab_context,
                 'direction': ctx.direction,
                 'entryPrice': float(sig.price_entry),
                 'tpPrice': float(sig.take_profit_price) if sig.take_profit_price else None,
@@ -400,6 +404,103 @@ class ThreeOBSignalViewer:
             'activationPrice': float(activation_price),
             'activationPct': self.trailing_sl_activation_pct,
             'tpPrice': float(tp_price),
+        }
+
+    def _generate_tab_context(self, ctx: ThreeOBSignalContext, trade_result: Optional[TradeResult]) -> Dict:
+        """Generate a wide-context view (~200 candles) showing ALL SMC order blocks."""
+        sig = ctx.signal
+        entry_time = sig.timestamp_entry
+        entry_idx = self.df.index.get_indexer([entry_time], method='nearest')[0]
+
+        # Window: start from OB-C origin (or 200 bars before entry), whichever is earlier
+        ob_c_start = ctx.ob_c_start_idx
+        window_start = min(ob_c_start, entry_idx - 200)
+        start_idx = max(0, window_start - 10)  # small pre-padding
+
+        # End: entry + some bars (or trade exit)
+        if trade_result and trade_result.exit_time:
+            exit_idx = self.df.index.get_indexer([trade_result.exit_time], method='nearest')[0]
+            end_idx = min(len(self.df), exit_idx + 5)
+        else:
+            end_idx = min(len(self.df), entry_idx + 20)
+        end_idx = max(end_idx, entry_idx + 10)
+
+        df_slice = self.df.iloc[start_idx:end_idx]
+        candle_data = generate_candle_data(df_slice)
+
+        # Compute all OBs on the visible slice using SMC indicators
+        all_obs = []
+        try:
+            inflexions_slice = smc_custom.inflexion_points(df_slice)
+            bos_slice = smc_custom.bos(df_slice, inflexions_slice, close_break=True)
+            ob_data = smc_custom.ob(df_slice, bos_slice)
+
+            ob_vals = ob_data['OB'].values
+            ob_tops = ob_data['Top'].values
+            ob_bottoms = ob_data['Bottom'].values
+            ob_starts = ob_data['StartIndex'].values
+            ob_mitigated = ob_data['MitigatedIndex'].values
+            ob_respected = ob_data['Respected'].values
+
+            for j in range(len(ob_data)):
+                if np.isnan(ob_vals[j]):
+                    continue
+                s_idx = int(ob_starts[j])
+                mit_idx = int(ob_mitigated[j]) if ob_mitigated[j] and not np.isnan(float(ob_mitigated[j])) else 0
+
+                # Map local indices to absolute df_slice indices
+                ob_start_abs = max(0, min(s_idx, len(df_slice) - 1))
+                if mit_idx > 0 and mit_idx < len(df_slice):
+                    ob_end_abs = mit_idx
+                else:
+                    ob_end_abs = len(df_slice) - 1
+
+                satisfied = bool(mit_idx > 0)
+
+                all_obs.append({
+                    'topPrice': float(ob_tops[j]),
+                    'bottomPrice': float(ob_bottoms[j]),
+                    'startTime': int(df_slice.index[ob_start_abs].timestamp()),
+                    'endTime': int(df_slice.index[ob_end_abs].timestamp()),
+                    'satisfied': satisfied,
+                    'direction': int(ob_vals[j]),  # 1=bullish, -1=bearish
+                })
+        except Exception:
+            pass
+
+        # Signal OB zones (A/B/C) — same as 15M tab
+        signal_obs = []
+        for role, top, bottom, s_idx in [
+            ('A', ctx.ob_a_top, ctx.ob_a_bottom, ctx.ob_a_start_idx),
+            ('B', ctx.ob_b_top, ctx.ob_b_bottom, ctx.ob_b_start_idx),
+            ('C', ctx.ob_c_top, ctx.ob_c_bottom, ctx.ob_c_start_idx),
+        ]:
+            ob_start = max(s_idx, start_idx)
+            ob_start = min(ob_start, len(self.df) - 1)
+            ob_end = min(end_idx - 1, len(self.df) - 1)
+            signal_obs.append({
+                'role': role,
+                'topPrice': float(top),
+                'bottomPrice': float(bottom),
+                'startTime': int(self.df.index[ob_start].timestamp()),
+                'endTime': int(self.df.index[ob_end].timestamp()),
+            })
+
+        entry_marker = {
+            'time': int(entry_time.timestamp()) if hasattr(entry_time, 'timestamp') else int(pd.Timestamp(entry_time).timestamp()),
+            'price': float(sig.price_entry),
+            'direction': ctx.direction,
+        }
+
+        return {
+            'candleData': candle_data,
+            'allOBs': all_obs,
+            'signalOBs': signal_obs,
+            'entryMarker': entry_marker,
+            'tpPrice': float(sig.take_profit_price) if sig.take_profit_price else None,
+            'slPrice': float(sig.stop_loss_price) if sig.stop_loss_price else None,
+            'focusTime': int(entry_time.timestamp()) if hasattr(entry_time, 'timestamp') else int(pd.Timestamp(entry_time).timestamp()),
+            'contextCandles': end_idx - start_idx,
         }
 
     def _generate_performance_data(self) -> Optional[Dict]:
@@ -905,6 +1006,7 @@ class ThreeOBSignalViewer:
             <div class="tab" data-tab="5M_ENTRY" onclick="switchTab('5M_ENTRY')">5min Entry</div>
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
             <div class="tab" data-tab="SL_HISTORY" onclick="switchTab('SL_HISTORY')">Stop Loss</div>
+            <div class="tab" data-tab="CONTEXT" onclick="switchTab('CONTEXT')">Context</div>
             <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
         </div>
 
@@ -996,7 +1098,7 @@ class ThreeOBSignalViewer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1 2 3 4 5</span>
+                        <span class="shortcut-key">1-6</span>
                     </div>
                 </div>
             </div>
@@ -1090,7 +1192,8 @@ class ThreeOBSignalViewer:
                 if (e.key === '2') switchTab('5M_ENTRY');
                 if (e.key === '3') switchTab('PNL');
                 if (e.key === '4') switchTab('SL_HISTORY');
-                if (e.key === '5') switchTab('DASHBOARD');
+                if (e.key === '5') switchTab('CONTEXT');
+                if (e.key === '6') switchTab('DASHBOARD');
             }});
 
             // Resize handler
@@ -1219,6 +1322,7 @@ class ThreeOBSignalViewer:
                 if (tabId === '5M_ENTRY' && sig.tab5mEntry) hasData = true;
                 if (tabId === 'PNL' && sig.tabPnL) hasData = true;
                 if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
+                if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
                 if (tabId === 'DASHBOARD') hasData = true;
 
                 if (!hasData) tab.classList.add('disabled');
@@ -1234,6 +1338,7 @@ class ThreeOBSignalViewer:
             if (tabId === '5M_ENTRY' && sig.tab5mEntry) hasData = true;
             if (tabId === 'PNL' && sig.tabPnL) hasData = true;
             if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
+            if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
             if (tabId === 'DASHBOARD') hasData = true;
             if (!hasData) return;
 
@@ -1295,6 +1400,7 @@ class ThreeOBSignalViewer:
             if (currentTab === '15M') tabData = sig.tab15m;
             else if (currentTab === '5M_ENTRY') tabData = sig.tab5mEntry;
             else if (currentTab === 'PNL') tabData = sig.tabPnL;
+            else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
 
             if (currentTab === 'SL_HISTORY') tabData = sig.tabSLHistory;
 
@@ -1598,6 +1704,7 @@ class ThreeOBSignalViewer:
             let tabData = null;
             if (currentTab === '15M') tabData = sig.tab15m;
             else if (currentTab === '5M_ENTRY') tabData = sig.tab5mEntry;
+            else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
             if (!tabData) return;
 
             const chartContainer = document.getElementById('chart-container');
@@ -1633,7 +1740,69 @@ class ThreeOBSignalViewer:
                 }});
             }}
 
-            // Draw OB zones
+            // Draw all OBs (Context tab) — background layer
+            if (tabData.allOBs) {{
+                tabData.allOBs.forEach(ob => {{
+                    const x1 = ts.timeToCoordinate(ob.startTime);
+                    const x2 = ts.timeToCoordinate(ob.endTime);
+                    const y1 = candlestickSeries.priceToCoordinate(ob.topPrice);
+                    const y2 = candlestickSeries.priceToCoordinate(ob.bottomPrice);
+                    if (x1 == null || x2 == null || y1 == null || y2 == null) return;
+
+                    const x = Math.min(x1, x2);
+                    const y = Math.min(y1, y2);
+                    const w = Math.max(Math.abs(x2 - x1), 4);
+                    const h = Math.max(Math.abs(y2 - y1), 2);
+
+                    const isBull = ob.direction === 1;
+                    const sat = ob.satisfied;
+                    const fillColor = sat
+                        ? (isBull ? 'rgba(0,188,212,0.07)' : 'rgba(255,87,34,0.07)')
+                        : (isBull ? 'rgba(0,188,212,0.20)' : 'rgba(255,87,34,0.20)');
+                    const strokeColor = isBull ? '#00bcd4' : '#ff5722';
+                    const strokeOpacity = sat ? 0.3 : 1.0;
+                    const dashArray = sat ? '4,3' : 'none';
+
+                    svg.append('rect')
+                        .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
+                        .attr('fill', fillColor)
+                        .attr('stroke', strokeColor)
+                        .attr('stroke-opacity', strokeOpacity)
+                        .attr('stroke-width', 1)
+                        .attr('stroke-dasharray', dashArray);
+                }});
+            }}
+
+            // Draw signal OBs (Context tab) — on top of allOBs
+            if (tabData.signalOBs) {{
+                tabData.signalOBs.forEach(zone => {{
+                    const x1 = ts.timeToCoordinate(zone.startTime);
+                    const x2 = ts.timeToCoordinate(zone.endTime);
+                    const y1 = candlestickSeries.priceToCoordinate(zone.topPrice);
+                    const y2 = candlestickSeries.priceToCoordinate(zone.bottomPrice);
+                    if (x1 == null || x2 == null || y1 == null || y2 == null) return;
+
+                    const x = Math.min(x1, x2);
+                    const y = Math.min(y1, y2);
+                    const w = Math.max(Math.abs(x2 - x1), 4);
+                    const h = Math.max(Math.abs(y2 - y1), 2);
+                    const colors = roleColors[zone.role];
+
+                    svg.append('rect')
+                        .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
+                        .attr('fill', colors.fill).attr('stroke', colors.stroke)
+                        .attr('stroke-width', 2);
+
+                    svg.append('text')
+                        .attr('x', x + 4).attr('y', y + 14)
+                        .attr('fill', colors.stroke)
+                        .attr('font-size', '12px').attr('font-weight', 'bold')
+                        .attr('font-family', 'sans-serif')
+                        .text('OB-' + zone.role);
+                }});
+            }}
+
+            // Draw OB zones (15M/5M tabs)
             if (tabData.obZones) {{
                 tabData.obZones.forEach(zone => {{
                     const x1 = ts.timeToCoordinate(zone.startTime);

@@ -1,5 +1,5 @@
 {
-  "symbol": "NVDA",
+  "symbol": "TSLA",
   "timeframes": {
     "high": "1h",
     "mid": "15min",
@@ -90,8 +90,8 @@
     }
   },
   "three_ob": {    
-    "timeframe": "5min",
-    "confirmation_timeframe": "1min",
+    "timeframe": "15min",
+    "confirmation_timeframe": "5min",
     "timeframe_copy": "5min",
     "confirmation_timeframe_copy": "1min",
     "close_break": true,
