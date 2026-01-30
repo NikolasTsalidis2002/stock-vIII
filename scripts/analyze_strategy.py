@@ -986,7 +986,9 @@ def main():
             print("RUNNING BACKTEST SIMULATION (3-OB)")
             print("="*80)
 
-            df_conf_indexed = df_confirmation.set_index('time') if 'time' in df_confirmation.columns else df_confirmation
+            # When no LTF confirmation data, fall back to primary TF for backtesting
+            df_conf_src = df_confirmation if df_confirmation is not None else df_3ob
+            df_conf_indexed = df_conf_src.set_index('time') if 'time' in df_conf_src.columns else df_conf_src
 
             backtester = Backtester(
                 df_low=df_conf_indexed,

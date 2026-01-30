@@ -1,5 +1,5 @@
 {
-  "symbol": "NVDA",
+  "symbol": "GOOGL",
   "timeframes": {
     "high": "1h",
     "mid": "15min",
@@ -90,16 +90,16 @@
     }
   },
   "three_ob": {    
-    "timeframe": "15min",
-    "confirmation_timeframe": "5min",
+    "timeframe": "5min",
+    "confirmation_timeframe": null,
     "timeframe_copy": "5min",
     "confirmation_timeframe_copy": "1min",
     "close_break": true,
-    "min_dist_pct": 1.0,
+    "min_dist_pct": 0.5,
     "enable_shorts": true,
     "_descriptions": {
       "timeframe": "Single timeframe used for 3-OB strategy. Should match one of the available TFs.",
-      "confirmation_timeframe": "Lower timeframe for BOS/IFVG confirmation after OB-B retouch. Set to null or remove to use old green/red close behavior.",
+      "confirmation_timeframe": "Lower timeframe for BOS/IFVG confirmation after OB-B retouch (e.g. '5min'). Set to null to disable LTF confirmation and use simple green/red candle close on the primary timeframe instead.",
       "close_break": "Require close/open break for BOS detection (true = conservative, matches Pine default).",
       "min_dist_pct": "Minimum distance (%) between OB A and opposite OB C to qualify a setup."
     }
@@ -109,10 +109,10 @@
     "initial_capital": 10000.0,
     "hold_overnight": true,
     "trailing_sl_enabled": true,
-    "trailing_sl_activation_pct": 50.0,
+    "trailing_sl_activation_pct": 40.0,
     "trailing_sl_swing_length": 5,
     "min_profit_percent": 0.5,
-    "min_rr_ratio": 1.5,
+    "min_rr_ratio": 2,
     "trend_filter_enabled": false,
     "trend_filter_lookback": 500,
     "bos_1h_trend_filter_enabled": false,

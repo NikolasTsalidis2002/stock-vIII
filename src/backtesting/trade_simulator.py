@@ -211,6 +211,7 @@ class TradeSimulator:
         tp_hit_on_entry, sl_hit_on_entry = self._check_candle_crosses(
             entry_candle['high'],
             entry_candle['low'],
+            entry_candle['close'],
             tp_price,
             sl_price,
             direction
@@ -288,7 +289,7 @@ class TradeSimulator:
 
             # Normal candle processing: check high/low for TP/SL
             tp_hit, sl_hit = self._check_candle_crosses(
-                candle_high, candle_low, tp_price, current_sl, direction
+                candle_high, candle_low, candle['close'], tp_price, current_sl, direction
             )
 
             if tp_hit and sl_hit:
@@ -448,17 +449,18 @@ class TradeSimulator:
         self,
         high: float,
         low: float,
+        close: float,
         tp: float,
         sl: float,
         direction: str
     ) -> Tuple[bool, bool]:
-        """Check if candle high/low crossed TP or SL."""
+        """Check if candle high/low crossed TP or SL (SL uses close price)."""
         if direction == 'long':
             tp_hit = high >= tp
-            sl_hit = low <= sl
+            sl_hit = close <= sl
         else:  # short
             tp_hit = low <= tp
-            sl_hit = high >= sl
+            sl_hit = close >= sl
 
         return (tp_hit, sl_hit)
 

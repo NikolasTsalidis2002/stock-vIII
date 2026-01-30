@@ -579,6 +579,35 @@ class ThreeOBSignalViewer:
         # Sort markers by time (required by LightweightCharts)
         markers.sort(key=lambda m: m['time'])
 
+        # Compute consecutive win/loss clusters
+        trade_clusters = []
+        if trade_lines:
+            # Build ordered list of (entryTime, exitTime, isWin)
+            sorted_trades = sorted(trade_lines, key=lambda t: t['entryTime'])
+            streak_type = sorted_trades[0]['isWin']
+            streak_start = 0
+            for i in range(1, len(sorted_trades)):
+                if sorted_trades[i]['isWin'] != streak_type:
+                    streak_len = i - streak_start
+                    if streak_len >= 1:  # threshold applied on JS side
+                        trade_clusters.append({
+                            'startTime': sorted_trades[streak_start]['entryTime'],
+                            'endTime': sorted_trades[i - 1]['exitTime'],
+                            'isWin': streak_type,
+                            'count': streak_len,
+                        })
+                    streak_type = sorted_trades[i]['isWin']
+                    streak_start = i
+            # Final streak
+            streak_len = len(sorted_trades) - streak_start
+            if streak_len >= 1:
+                trade_clusters.append({
+                    'startTime': sorted_trades[streak_start]['entryTime'],
+                    'endTime': sorted_trades[-1]['exitTime'],
+                    'isWin': streak_type,
+                    'count': streak_len,
+                })
+
         # Compute SMC indicators on full df for overlay
         bos_lines = []
         liquidity_lines = []
@@ -629,6 +658,7 @@ class ThreeOBSignalViewer:
             'bosLines': bos_lines,
             'liquidityLines': liquidity_lines,
             'allOBs': all_obs,
+            'tradeClusters': trade_clusters,
         }
 
     def _generate_performance_data(self) -> Optional[Dict]:
@@ -1143,6 +1173,9 @@ class ThreeOBSignalViewer:
         <div id="main">
             <div id="chart-area">
                 <button id="context-zoom-toggle" style="display:none; position:absolute; top:8px; right:8px; z-index:10; padding:4px 12px; cursor:pointer; background:#2a2a3e; color:#e0e0e0; border:1px solid #555; border-radius:4px; font-size:13px;" onclick="toggleContextZoom()">🔍 Zoom Out</button>
+                <div id="cluster-threshold-control" style="display:none; position:absolute; top:8px; right:140px; z-index:10; background:#2a2a3e; color:#e0e0e0; border:1px solid #555; border-radius:4px; padding:4px 8px; font-size:13px;">
+                    Cluster ≥ <input id="cluster-threshold" type="number" min="2" max="20" value="3" style="width:36px; background:#1a1a2e; color:#e0e0e0; border:1px solid #555; border-radius:3px; text-align:center; font-size:13px;" onchange="onClusterThresholdChange()">
+                </div>
                 <div id="chart-container"></div>
                 <div id="dashboard-container"></div>
             </div>
@@ -1257,6 +1290,7 @@ class ThreeOBSignalViewer:
         let activeLineSeries = [];
         let dashboardRendered = false;
         let contextZoomedOut = false;
+        let clusterThreshold = 3;
 
         const roleColors = {{
             'A': {{ fill: 'rgba(76,175,80,0.25)', stroke: '#4caf50' }},
@@ -1495,6 +1529,7 @@ class ThreeOBSignalViewer:
             const zoomBtn = document.getElementById('context-zoom-toggle');
             zoomBtn.style.display = (tabId === 'CONTEXT' && htfTradesData) ? 'block' : 'none';
             zoomBtn.textContent = '🔍 Zoom Out';
+            document.getElementById('cluster-threshold-control').style.display = 'none';
 
             if (tabId === 'DASHBOARD') {{
                 showDashboard();
@@ -1848,12 +1883,20 @@ class ThreeOBSignalViewer:
             contextZoomedOut = !contextZoomedOut;
             const btn = document.getElementById('context-zoom-toggle');
             btn.textContent = contextZoomedOut ? '🔍 Zoom In' : '🔍 Zoom Out';
+            document.getElementById('cluster-threshold-control').style.display = contextZoomedOut ? 'block' : 'none';
 
             if (contextZoomedOut) {{
                 showHTFTradesChart();
             }} else {{
                 const sig = signalsData[currentSignalIdx];
                 showChart(sig);
+            }}
+        }}
+
+        function onClusterThresholdChange() {{
+            clusterThreshold = parseInt(document.getElementById('cluster-threshold').value) || 3;
+            if (contextZoomedOut) {{
+                redrawOverlays();
             }}
         }}
 
@@ -2062,6 +2105,32 @@ class ThreeOBSignalViewer:
                         .attr('font-family', 'sans-serif')
                         .text('15min view');
                 }}
+            }}
+
+            // Draw trade clusters (consecutive win/loss streaks)
+            if (tabData.tradeClusters) {{
+                tabData.tradeClusters.forEach(cl => {{
+                    if (cl.count < clusterThreshold) return;
+                    const x1 = ts.timeToCoordinate(cl.startTime);
+                    const x2 = ts.timeToCoordinate(cl.endTime);
+                    if (x1 == null || x2 == null) return;
+                    const x = Math.min(x1, x2);
+                    const w = Math.max(Math.abs(x2 - x1), 4);
+                    const color = cl.isWin ? 'rgba(8,153,129,' : 'rgba(242,54,69,';
+                    svg.append('rect')
+                        .attr('x', x).attr('y', 0)
+                        .attr('width', w).attr('height', rect.height)
+                        .attr('fill', color + '0.07)')
+                        .attr('stroke', color + '0.4)')
+                        .attr('stroke-width', 2)
+                        .attr('stroke-dasharray', '6,4');
+                    svg.append('text')
+                        .attr('x', x + 4).attr('y', 32)
+                        .attr('fill', color + '0.8)')
+                        .attr('font-size', '11px').attr('font-weight', 'bold')
+                        .attr('font-family', 'sans-serif')
+                        .text((cl.isWin ? 'W' : 'L') + '×' + cl.count);
+                }});
             }}
 
             // Draw OB zones (15M/5M tabs)
