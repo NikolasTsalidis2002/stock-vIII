@@ -75,6 +75,18 @@ A 4-state order block state machine tracking OB-A, OB-B, and OB-C:
 
 When `confirmation_timeframe` is configured (e.g. `"1min"`), the engine drops to the lower timeframe for precise entry at the OB-B retouch window.
 
+### Magnet Chase Strategy (`--strategy magnet-chase`)
+
+A zone-proximity targeting strategy that chases the closest active FVG or OB zone:
+
+1. Scans all active (unmitigated) FVG and OB zones on the configured timeframe
+2. Ranks zones by distance from current price, filtering by `max_distance_pct`
+3. Prefers OB zones over FVG zones when equidistant (OBs have stronger institutional backing)
+4. Enters when price approaches the nearest qualifying zone with LTF confirmation
+
+- Configurable via `magnet_chase` section in `config/strategy_config.json`
+- Visualization: `src/visualization/magnet_chase_viewer.py`
+
 ---
 
 ## TradingView Walkthroughs
@@ -106,7 +118,7 @@ python3 scripts/analyze_strategy.py --walkthrough-3ob
 Usage: python3 scripts/analyze_strategy.py [OPTIONS]
 
 Options:
-  --strategy {multi-tf,3-ob}    Strategy to run (default: 3-ob)
+  --strategy {multi-tf,3-ob,magnet-chase}  Strategy to run (default: 3-ob)
   --symbol SYMBOL               Asset symbol (default: TSLA)
   --high-tf TF                  High timeframe (default: 1h)
   --mid-tf TF                   Mid timeframe (default: 5min)
@@ -129,6 +141,9 @@ python3 scripts/analyze_strategy.py --symbol NVDA --visualize
 
 # Multi-TF with custom timeframes
 python3 scripts/analyze_strategy.py --strategy multi-tf --high-tf 4h --mid-tf 15min --low-tf 5min
+
+# Magnet Chase strategy with visualization
+python3 scripts/analyze_strategy.py --strategy magnet-chase --visualize
 
 # Batch across all configured symbols
 python3 scripts/analyze_strategy.py --all-symbols --summary-output results/summary/batch.csv
@@ -208,11 +223,7 @@ Gaussian Mixture Model for price distribution regime detection with Fibonacci le
 4. Calculates Fibonacci levels within the detected zone
 5. Classifies price position: premium (0.786-1.0) → SHORT bias, discount (0.0-0.236) → LONG bias
 
-Enable via `gmm_zones.enabled` in config. Standalone analysis available:
-
-```bash
-python3 scripts/curr.py --symbol BTC/USD --timeframe 1h --require-normality
-```
+Enable via `gmm_zones.enabled` in config.
 
 ---
 
@@ -253,6 +264,7 @@ All settings live in `config/strategy_config.json`. Key sections:
 | `liquidity` | `sweep_proximity_threshold_percent`, `high_tf_lookback_candles`, `use_fvg_trigger` |
 | `validation` | `use_fvg_validation`, `use_equilibrium_validation`, `require_fvg_in_equilibrium` |
 | `gmm_zones` | `enabled`, `lookback_candles`, `max_components`, `selection_method`, `take_profit_method` |
+| `magnet_chase` | `timeframe`, `confirmation_timeframe`, `max_distance_pct`, zone preference settings |
 | `backtest` | `initial_capital`, `trailing_sl_enabled`, `trailing_sl_activation_pct`, `min_rr_ratio`, `trend_filter_enabled` |
 | `output` | `visualize`, `export_journal` |
 
@@ -283,7 +295,8 @@ smart-money-concepts/
 ├── scripts/
 │   ├── analyze_strategy.py            # Main strategy analyzer (multi-tf & 3-ob)
 │   ├── batch_3ob_comparison.py        # Batch comparison across all symbols
-│   ├── curr.py                        # GMM price distribution analyzer
+│   ├── ob_mfe_viewer.py               # OB MFE highlight chart
+│   ├── price_distribution_indicators.py # Split-view walkthrough
 │   ├── analyze_1h_tv.py               # 1H TradingView walkthrough
 │   └── analyze_5m_tv.py               # 5M TradingView walkthrough
 │
@@ -308,7 +321,9 @@ smart-money-concepts/
 │   │   ├── exit_target_finder.py      # TP/SL calculation
 │   │   ├── gmm_zone_detector.py       # GMM-based zone detection
 │   │   ├── three_ob_strategy.py       # 3-OB strategy wrapper
-│   │   └── three_ob_engine.py         # 3-OB state machine
+│   │   ├── three_ob_engine.py         # 3-OB state machine
+│   │   ├── magnet_chase_engine.py     # Magnet Chase strategy engine
+│   │   └── zone_proximity.py          # Zone proximity ranking
 │   │
 │   ├── backtesting/
 │   │   ├── backtester.py              # Backtest orchestrator
@@ -320,7 +335,8 @@ smart-money-concepts/
 │   └── visualization/
 │       ├── core.py                    # Shared visualization utilities
 │       ├── three_ob_walkthrough.py    # 3-OB candle walkthrough
-│       └── three_ob_signal_viewer.py  # 3-OB signal dashboard
+│       ├── three_ob_signal_viewer.py  # 3-OB signal dashboard
+│       └── magnet_chase_viewer.py     # Magnet Chase visualization
 │
 ├── config/
 │   └── strategy_config.json           # All strategy & backtest settings

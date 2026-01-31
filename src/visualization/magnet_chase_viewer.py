@@ -1160,10 +1160,6 @@ class MagnetChaseSignalViewer:
                         <span class="info-label">Level</span>
                         <span class="info-value" id="confirm-level">-</span>
                     </div>
-                    <div class="info-row">
-                        <span class="info-label">Min Wait</span>
-                        <span class="info-value" id="confirm-min-wait">-</span>
-                    </div>
                 </div>
 
                 <div class="sidebar-section" id="pnl-info" style="display: none;">
@@ -1357,7 +1353,6 @@ class MagnetChaseSignalViewer:
             document.getElementById('confirm-type').textContent = sig.confirmationType;
             document.getElementById('confirm-time').textContent = sig.confirmationTime;
             document.getElementById('confirm-level').textContent = '$' + sig.confirmationLevel.toFixed(2);
-            document.getElementById('confirm-min-wait').textContent = sig.impulseAvgCandles > 0 ? sig.impulseAvgCandles + ' bars' : 'N/A';
 
             // P&L info
             const pnlInfo = document.getElementById('pnl-info');

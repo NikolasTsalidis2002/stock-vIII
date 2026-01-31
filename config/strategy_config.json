@@ -1,5 +1,5 @@
 {
-  "symbol": "BTC/USD",
+  "symbol": "SPY",
   "timeframes": {
     "high": "1h",
     "mid": "15min",
@@ -91,7 +91,7 @@
   },
   "magnet_chase": {
     "timeframe": "5min",
-    "confirmation_timeframe": "5min",
+    "confirmation_timeframe": "1min",
     "max_distance_pct": 1.0,
     "min_distance_pct": 0.0,
     "min_rr_ratio": 2,

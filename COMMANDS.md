@@ -17,7 +17,8 @@ pip install -r requirements.txt
 | **Multi-Timeframe** — 1H sweep → 5M Event B → 5M FVG → 1M confirm | `mds/STRATEGY.md` | `python3 scripts/analyze_strategy.py --strategy multi-tf` |
 | **Equilibrium Premium/Discount** — 1H sweep → 5M Event B → equilibrium zone → 1M confirm | `mds/STRATEGYII.md` | `python3 scripts/analyze_strategy.py --strategy multi-tf` (with equilibrium validation in config) |
 | **3-OB LTF Confirmation** — 3 order block confluence with LTF entry | `mds/THREE_OB_LTF_CONFIRMATION.md` | `python3 scripts/analyze_strategy.py --strategy 3-ob` |
-| **GMM Fibonacci** — GMM distribution + Fibonacci zones | `mds/gmm_fib_strategy.md` | `python3 scripts/curr.py` |
+| **Magnet Chase** — Zone proximity targeting (closest active FVG/OB) | `mds/STRATEGY.md` | `python3 scripts/analyze_strategy.py --strategy magnet-chase` |
+| **GMM Fibonacci** — GMM distribution + Fibonacci zones | `mds/gmm_fib_strategy.md` | Enable via `gmm_zones.enabled` in config, runs within `analyze_strategy.py` |
 
 ---
 
@@ -49,11 +50,14 @@ python3 scripts/analyze_strategy.py --hold-overnight
 
 # Export trade journal
 python3 scripts/analyze_strategy.py --export-journal results/trades/my_trades.csv
+
+# Magnet Chase strategy with visualization
+python3 scripts/analyze_strategy.py --strategy magnet-chase --visualize
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--strategy` | `3-ob` | `multi-tf` or `3-ob` |
+| `--strategy` | `3-ob` | `multi-tf`, `3-ob`, or `magnet-chase` |
 | `--symbol` | `TSLA` | Stock symbol |
 | `--high-tf` | `1h` | High timeframe |
 | `--mid-tf` | `5min` | Mid timeframe |
@@ -86,31 +90,6 @@ python3 scripts/smc_dashboard.py --no-open
 | `--no-open` | off | Don't auto-open browser |
 
 **Output:** `results/charts/smc_dashboard.html` — 3 tabs: zone lifecycle stats, reversal quality, OB analysis
-
----
-
-### `curr.py` — GMM price distribution detector
-
-```bash
-python3 scripts/curr.py
-python3 scripts/curr.py --symbol AAPL --timeframe 1h
-python3 scripts/curr.py --save-plot results/charts/gmm.png --no-plot
-python3 scripts/curr.py --require-normality --alpha 0.01 --confidence 0.95
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--symbol` | `TSLA` | Symbol |
-| `--timeframe` | `1h` | Timeframe |
-| `--step` | auto | Price level step |
-| `--initial-window` | `30` | Initial window (candles) |
-| `--max-iterations` | `200` | Max iterations |
-| `--min-tests` | `2` | Min normality tests to pass |
-| `--alpha` | `0.05` | Significance level |
-| `--confidence` | `0.9` | Confidence threshold |
-| `--require-normality` | off | Only stop on normality pass |
-| `--save-plot` | none | Save plot to file |
-| `--no-plot` | off | Skip visualization |
 
 ---
 
@@ -219,6 +198,7 @@ Candle-by-candle replay using TradingView Lightweight Charts. Single self-contai
 | `liquidity` | Sweep proximity threshold, lookback, FVG trigger toggle |
 | `validation` | FVG/equilibrium validation toggles |
 | `three_ob` | 3-OB timeframe, close break, min distance, shorts toggle |
+| `magnet_chase` | Magnet Chase timeframe, confirmation TF, max distance %, zone preferences |
 | `backtest` | Capital, overnight hold, trailing SL, min profit/RR, trend filters |
 | `output` | Visualize toggle, journal export mode |
 | `asset_options` | Symbol lists by category (stocks, forex, crypto, ETFs, indices, commodities) |

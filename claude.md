@@ -23,11 +23,11 @@ pip install -r requirements.txt
 
 ### 4. Run Strategy Analysis
 ```bash
-# Analyze complete trade setups
+# Analyze complete trade setups (default: 3-OB strategy)
 python3 scripts/analyze_strategy.py
 
-# Visualize partial setups (incomplete but close)
-python3 scripts/analyze_strategy.py --animate-partials
+# Run Magnet Chase strategy with visualization
+python3 scripts/analyze_strategy.py --strategy magnet-chase --visualize
 ```
 
 ### 5. Deactivate Virtual Environment (when done)
@@ -41,7 +41,7 @@ deactivate
 
 This project implements an automated trading system for TSLA (Tesla stock) using Smart Money Concepts (SMC) indicators. The system analyzes price action using institutional trading concepts like Order Blocks, Fair Value Gaps, Break of Structure, Change of Character, and Liquidity patterns to generate trading signals.
 
-**Current Status:** Phase 1 - Data & Visualization Setup
+**Current Status:** Phase 3-4 - Strategy Implementation & Optimization
 
 **Last Updated:** 2025-10-17
 
@@ -102,36 +102,74 @@ This project implements an automated trading system for TSLA (Tesla stock) using
 
 ```
 smart-money-concepts/
-├── claude.md                      # This file - project documentation
-├── strategy.md                    # Trading strategy documentation (to create)
+├── CLAUDE.md                          # This file - project documentation
+├── README.md                          # Project overview
+├── COMMANDS.md                        # CLI reference
 │
-├── smartmoneyconcepts/            # Core SMC indicator library
+├── scripts/
+│   ├── analyze_strategy.py            # Main strategy analyzer
+│   ├── batch_3ob_comparison.py        # Batch comparison across symbols
+│   ├── ob_mfe_viewer.py              # OB MFE highlight chart
+│   ├── price_distribution_indicators.py # Split-view walkthrough
+│   ├── analyze_1h_tv.py              # 1H TradingView walkthrough
+│   └── analyze_5m_tv.py              # 5M TradingView walkthrough
+│
+├── src/
+│   ├── data_loader.py                 # Data fetching (Twelve Data API)
+│   ├── tradingview_visualizer.py      # TradingView-style chart generation
+│   ├── strategy_visualizer.py         # Multi-TF sweep visualizer
+│   ├── arma_trend_analysis.py         # ARMA trend filter
+│   │
+│   ├── indicators/
+│   │   ├── smc.py                     # Standard SMC library (v0.0.26)
+│   │   └── smc_custom.py             # Inflexion points, trend-aware BOS
+│   │
+│   ├── strategy/
+│   │   ├── models.py                  # TradeSignal, enums, data classes
+│   │   ├── strategy_engine.py         # Multi-TF orchestrator
+│   │   ├── timeframe_manager.py       # Multi-TF data alignment
+│   │   ├── liquidity_detector.py      # Stage 1: 1H sweep detection
+│   │   ├── event_b_detector.py        # Stage 2: BOS/IFVG detection
+│   │   ├── confirmation_detector.py   # Stage 4: LTF confirmation
+│   │   ├── equilibrium_validator.py   # Premium/discount validation
+│   │   ├── exit_target_finder.py      # TP/SL calculation
+│   │   ├── gmm_zone_detector.py       # GMM-based zone detection
+│   │   ├── three_ob_strategy.py       # 3-OB strategy wrapper
+│   │   ├── three_ob_engine.py         # 3-OB state machine
+│   │   ├── magnet_chase_engine.py     # Magnet Chase strategy engine
+│   │   └── zone_proximity.py          # Zone proximity ranking
+│   │
+│   ├── backtesting/
+│   │   ├── backtester.py              # Backtest orchestrator
+│   │   ├── trade_simulator.py         # Trade execution simulator
+│   │   ├── performance_tracker.py     # Metrics calculation
+│   │   ├── trade_journal.py           # CSV trade log export
+│   │   └── models.py                  # TradeResult, PerformanceMetrics
+│   │
+│   └── visualization/
+│       ├── core.py                    # Shared visualization utilities
+│       ├── three_ob_walkthrough.py    # 3-OB candle walkthrough
+│       ├── three_ob_signal_viewer.py  # 3-OB signal dashboard
+│       └── magnet_chase_viewer.py     # Magnet Chase visualization
+│
+├── config/
+│   └── strategy_config.json           # All strategy & backtest settings
+│
+├── data/                              # Cached market data by symbol
+├── mds/                               # Strategy documentation
+├── results/                           # Generated outputs
+│   ├── trades/                        # Trade journal CSVs
+│   ├── summary/                       # Batch summary reports
+│   ├── visualizations/                # HTML signal viewers
+│   └── walkthroughs/                  # Candle-by-candle walkthroughs
+│
+├── smartmoneyconcepts/                # Original SMC library reference
 │   ├── __init__.py
-│   └── smc.py                     # All indicator implementations
+│   └── smc.py
 │
-├── tests/                         # Existing test files
-│   ├── generate_gif.py            # Visualization code (reference)
-│   └── test_data/EURUSD/          # Sample test data
-│
-├── src/                           # New - trading system code (to create)
-│   ├── data_loader.py             # TSLA data fetching via Twelve Data
-│   ├── visualizer.py              # Adapted visualization for TSLA
-│   ├── strategy.py                # Trading strategy implementation
-│   └── backtester.py              # Backtesting engine
-│
-├── data/                          # New - cached market data (to create)
-│   └── tsla/
-│       ├── tsla_1m.csv
-│       ├── tsla_5m.csv
-│       ├── tsla_15m.csv
-│       └── tsla_1h.csv
-│
-├── notebooks/                     # New - exploration notebooks (to create)
-│   └── visualization.ipynb        # Interactive analysis
-│
-└── results/                       # New - backtest outputs (to create)
-    ├── charts/
-    └── reports/
+└── tests/                             # Test files
+    ├── generate_gif.py                # Visualization code (reference)
+    └── test_data/EURUSD/              # Sample test data
 ```
 
 ---
@@ -273,56 +311,33 @@ liq_data['Swept'] != 0
 
 ## Development Phases
 
-### Phase 1: Data & Visualization ⏳ (Current)
+### Phase 1: Data & Visualization ✅ (Complete)
 **Goal:** Set up data pipeline and validate indicators on TSLA
-
-**Tasks:**
-- [ ] Create `src/data_loader.py` using Twelve Data API
-- [ ] Download historical TSLA data (2020-present recommended)
-- [ ] Cache data locally
-- [ ] Create `src/visualizer.py` adapted from `tests/generate_gif.py`
-- [ ] Generate TSLA charts with all SMC indicators
-- [ ] Visual validation of indicator functionality
 
 **Deliverable:** Interactive HTML charts showing TSLA with SMC indicators
 
 ---
 
-### Phase 2: Strategy Definition 📋 (Next)
+### Phase 2: Strategy Definition ✅ (Complete)
 **Goal:** Document clear trading rules
 
-**Tasks:**
-- [ ] Create `strategy.md` template
-- [ ] Define entry conditions
-- [ ] Define exit conditions (TP/SL)
-- [ ] Define filters and confluence requirements
-- [ ] Define risk management rules
-- [ ] Get user approval on strategy
-
-**Deliverable:** Complete `strategy.md` document
+**Deliverable:** Strategy docs in `mds/` — Multi-TF, 3-OB, Equilibrium, GMM Fibonacci, Magnet Chase
 
 ---
 
-### Phase 3: Implementation & Backtesting 💻 (Future)
-**Goal:** Code and test strategy
+### Phase 3: Implementation & Backtesting ✅ (Complete)
+**Goal:** Code and test strategies
 
-**Tasks:**
-- [ ] Implement strategy logic in `src/strategy.py`
-- [ ] Create backtesting framework in `src/backtester.py`
-- [ ] Run initial backtests
-- [ ] Generate performance reports
-- [ ] Analyze results and iterate
-
-**Deliverable:** Backtested strategy with performance metrics
+**Deliverable:** Three fully backtested strategies (Multi-TF, 3-OB, Magnet Chase) with trade journals and performance metrics
 
 ---
 
-### Phase 4: Optimization & Analysis 📊 (Future)
+### Phase 4: Optimization & Analysis ⏳ (In Progress)
 **Goal:** Refine and optimize
 
 **Tasks:**
-- [ ] Parameter optimization
-- [ ] Timeframe analysis
+- [x] Parameter optimization
+- [x] Timeframe analysis
 - [ ] Drawdown analysis
 - [ ] Win rate and risk/reward analysis
 - [ ] Forward testing preparation
@@ -333,24 +348,17 @@ liq_data['Swept'] != 0
 
 ## Key Files Reference
 
-### Existing Files
-- `smartmoneyconcepts/smc.py` (line 1-958) - All SMC indicator implementations
-- `tests/generate_gif.py` - Complete visualization code for all indicators
-  - `add_FVG()` - Fair Value Gap visualization
-  - `add_OB()` - Order Blocks visualization
-  - `add_bos_choch()` - BOS/CHoCH visualization
-  - `add_liquidity()` - Liquidity and sweeps visualization
-  - `add_swing_highs_lows()` - Swing points visualization
-  - `add_previous_high_low()` - Previous timeframe levels
-  - `add_sessions()` - Trading sessions
-  - `add_retracements()` - Retracement percentages
-
-### Files to Create
-- `strategy.md` - Trading strategy documentation
-- `src/data_loader.py` - TSLA data fetching
-- `src/visualizer.py` - TSLA visualization
-- `src/strategy.py` - Strategy implementation
-- `src/backtester.py` - Backtesting engine
+### Key Files
+- `scripts/analyze_strategy.py` - Main entry point for all strategies
+- `src/indicators/smc.py` - Standard SMC indicator library
+- `src/indicators/smc_custom.py` - Custom indicators (inflexion, trend-aware BOS)
+- `src/strategy/strategy_engine.py` - Multi-TF strategy orchestrator
+- `src/strategy/three_ob_engine.py` - 3-OB state machine
+- `src/strategy/magnet_chase_engine.py` - Magnet Chase strategy engine
+- `src/strategy/zone_proximity.py` - Zone proximity ranking for Magnet Chase
+- `src/backtesting/backtester.py` - Backtest orchestrator
+- `src/visualization/magnet_chase_viewer.py` - Magnet Chase visualization
+- `config/strategy_config.json` - All strategy & backtest settings
 
 ---
 
