@@ -1,89 +1,246 @@
-# Command Reference
+# Commands & Dashboard Reference
 
-All available terminal commands for running the trading strategy analysis.
+## Setup
+
+```bash
+python3 -m venv venv
+source venv/bin/activate      # macOS/Linux
+pip install -r requirements.txt
+```
 
 ---
 
-## 1. Main Strategy Analysis (`analyze_strategy.py`)
+## Strategies
 
-Scans historical data for complete trade setups and generates visual walkthroughs.
+| Strategy | Docs | Run Command |
+|----------|------|-------------|
+| **Multi-Timeframe** — 1H sweep → 5M Event B → 5M FVG → 1M confirm | `mds/STRATEGY.md` | `python3 scripts/analyze_strategy.py --strategy multi-tf` |
+| **Equilibrium Premium/Discount** — 1H sweep → 5M Event B → equilibrium zone → 1M confirm | `mds/STRATEGYII.md` | `python3 scripts/analyze_strategy.py --strategy multi-tf` (with equilibrium validation in config) |
+| **3-OB LTF Confirmation** — 3 order block confluence with LTF entry | `mds/THREE_OB_LTF_CONFIRMATION.md` | `python3 scripts/analyze_strategy.py --strategy 3-ob` |
+| **GMM Fibonacci** — GMM distribution + Fibonacci zones | `mds/gmm_fib_strategy.md` | `python3 scripts/curr.py` |
+
+---
+
+## Scripts & Commands
+
+### `analyze_strategy.py` — Strategy runner & backtester
 
 ```bash
-# Basic run (default: TSLA) - scans for setups AND runs backtest
+# Run 3-OB strategy (default) on TSLA
 python3 scripts/analyze_strategy.py
 
-# Analyze a different stock (backtest included by default)
-python3 scripts/analyze_strategy.py --symbol AAPL
-python3 scripts/analyze_strategy.py --symbol META
-python3 scripts/analyze_strategy.py --symbol AMZN
+# Multi-TF strategy with visualization
+python3 scripts/analyze_strategy.py --strategy multi-tf --visualize
 
-# Show partial setups (incomplete but close to triggering)
-python3 scripts/analyze_strategy.py --animate-partials
+# Custom symbol, no backtest
+python3 scripts/analyze_strategy.py --symbol META --no-backtest
 
-# Skip backtest (only show signals, no P&L simulation)
-python3 scripts/analyze_strategy.py --no-backtest
+# Batch mode — all symbols from config
+python3 scripts/analyze_strategy.py --all-symbols --summary-output results/summary/batch_summary.csv
 
-# Custom starting capital for backtest
-python3 scripts/analyze_strategy.py --initial-capital 50000
+# 3-OB walkthrough
+python3 scripts/analyze_strategy.py --strategy 3-ob --walkthrough-3ob
 
-# Export trade journal to CSV (auto-saves to results/{symbol}_trades.csv)
-python3 scripts/analyze_strategy.py --export-journal
+# Custom timeframes and capital
+python3 scripts/analyze_strategy.py --high-tf 1h --mid-tf 5min --low-tf 1min --initial-capital 25000
 
-# Export to custom path
-python3 scripts/analyze_strategy.py --export-journal my_trades.csv
+# Hold overnight (default is intraday exit at 21:59)
+python3 scripts/analyze_strategy.py --hold-overnight
 
-# Combine all options
-python3 scripts/analyze_strategy.py --symbol NVDA --initial-capital 25000 --animate-partials
+# Export trade journal
+python3 scripts/analyze_strategy.py --export-journal results/trades/my_trades.csv
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--strategy` | `3-ob` | `multi-tf` or `3-ob` |
+| `--symbol` | `TSLA` | Stock symbol |
+| `--high-tf` | `1h` | High timeframe |
+| `--mid-tf` | `5min` | Mid timeframe |
+| `--low-tf` | `1min` | Low timeframe |
+| `--initial-capital` | `10000.0` | Starting capital (USD) |
+| `--no-backtest` | off | Skip backtest simulation |
+| `--visualize` | off | Generate HTML visualization |
+| `--hold-overnight` | off | Allow overnight holds |
+| `--all-symbols` | off | Batch run all config symbols |
+| `--summary-output` | `results/summary/batch_summary.csv` | Batch summary path |
+| `--export-journal` | `auto` | Trade journal CSV path |
+| `--walkthrough-3ob` | off | Candle-by-candle walkthrough |
+
+**Output:** `results/trades/{symbol}_trades.csv`, `results/{symbol}_sweeps.html`
 
 ---
 
-## 2. 1H Timeframe Walkthrough (`analyze_1h_tv.py`)
-
-Generates an interactive candle-by-candle visualization of the 1-hour timeframe.
+### `smc_dashboard.py` — SMC indicator dashboard
 
 ```bash
-# Candle-by-candle 1H visualization (default: TSLA)
+python3 scripts/smc_dashboard.py
+python3 scripts/smc_dashboard.py --symbol META --timeframe 1h
+python3 scripts/smc_dashboard.py --no-open
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `TSLA` | Symbol |
+| `--timeframe` | `15min` | Timeframe |
+| `--no-open` | off | Don't auto-open browser |
+
+**Output:** `results/charts/smc_dashboard.html` — 3 tabs: zone lifecycle stats, reversal quality, OB analysis
+
+---
+
+### `curr.py` — GMM price distribution detector
+
+```bash
+python3 scripts/curr.py
+python3 scripts/curr.py --symbol AAPL --timeframe 1h
+python3 scripts/curr.py --save-plot results/charts/gmm.png --no-plot
+python3 scripts/curr.py --require-normality --alpha 0.01 --confidence 0.95
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `TSLA` | Symbol |
+| `--timeframe` | `1h` | Timeframe |
+| `--step` | auto | Price level step |
+| `--initial-window` | `30` | Initial window (candles) |
+| `--max-iterations` | `200` | Max iterations |
+| `--min-tests` | `2` | Min normality tests to pass |
+| `--alpha` | `0.05` | Significance level |
+| `--confidence` | `0.9` | Confidence threshold |
+| `--require-normality` | off | Only stop on normality pass |
+| `--save-plot` | none | Save plot to file |
+| `--no-plot` | off | Skip visualization |
+
+---
+
+### `ob_mfe_viewer.py` — OB MFE highlight chart
+
+```bash
+python3 scripts/ob_mfe_viewer.py
+python3 scripts/ob_mfe_viewer.py --symbol TSLA --timeframe 15min
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `META` | Symbol |
+| `--timeframe` | `15min` | Timeframe |
+
+**Output:** `results/charts/ob_mfe_highlight.html` — Zoomable candlestick with OB rectangles, high-MFE OBs highlighted
+
+---
+
+### `price_distribution_indicators.py` — Split-view walkthrough
+
+```bash
+python3 scripts/price_distribution_indicators.py
+python3 scripts/price_distribution_indicators.py --symbol AAPL --bins 100 --swing-length 30
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `TSLA` | Symbol |
+| `--timeframe` | `15min` | Timeframe |
+| `--bins` | `80` | Histogram bins |
+| `--swing-length` | `50` | Swing length for OB detection |
+| `--step` | `1` | Candles per frame |
+
+**Output:** `results/charts/price_distribution_indicators.html` — Left: candlestick, Right: zone histogram. Arrow key navigation.
+
+---
+
+### `batch_3ob_comparison.py` — Batch 3-OB comparison
+
+```bash
+python3 scripts/batch_3ob_comparison.py
+python3 scripts/batch_3ob_comparison.py --output results/my_comparison.csv
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output` | `results/batch_3ob_comparison.csv` | Output CSV path |
+
+**Output:** `results/batch_3ob_comparison.csv` + `results/batch_3ob_comparison.html` — All symbols, two timeframe combos, sorted by return/day
+
+---
+
+### `analyze_1h_tv.py` / `analyze_5m_tv.py` — TradingView walkthroughs
+
+```bash
 python3 scripts/analyze_1h_tv.py
+python3 scripts/analyze_1h_tv.py --symbol META
 
-# Different stock
-python3 scripts/analyze_1h_tv.py --symbol GOOGL
-```
-
-**Output:** `results/{symbol}_1h_tv_walkthrough/walkthrough.html`
-
----
-
-## 3. 5M Timeframe Walkthrough (`analyze_5m_tv.py`)
-
-Generates an interactive candle-by-candle visualization of the 5-minute timeframe.
-
-```bash
-# Candle-by-candle 5M visualization (default: TSLA)
 python3 scripts/analyze_5m_tv.py
-
-# Different stock
-python3 scripts/analyze_5m_tv.py --symbol MSFT
+python3 scripts/analyze_5m_tv.py --symbol AAPL
 ```
 
-**Output:** `results/{symbol}_5m_tv_walkthrough/walkthrough.html`
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol` | `TSLA` | Symbol |
+
+**Output:** `results/{symbol}_{tf}_tv_walkthrough/walkthrough.html`
 
 ---
 
-## Quick Reference Table
+## Dashboards & Visualizations
 
-| Argument | Script | Description |
-|----------|--------|-------------|
-| `--symbol TICKER` | All scripts | Use any stock symbol (AAPL, META, NVDA, etc.) |
-| `--animate-partials` | analyze_strategy.py | Visualize incomplete trade setups |
-| `--no-backtest` | analyze_strategy.py | Skip P&L simulation (backtest runs by default) |
-| `--initial-capital N` | analyze_strategy.py | Set starting capital for backtest (default: 10000) |
-| `--export-journal [FILE]` | analyze_strategy.py | Save trade log to CSV (default: results/{symbol}_trades.csv) |
+### SMC Dashboard (`smc_dashboard.html`)
+Three-tab dashboard:
+- **Zone Lifecycle** — FVG/OB mitigation rates, time-to-mitigation, respect vs disrespect stats
+- **Reversal Quality** — How well zones predict reversals, bounce magnitude
+- **OB Analysis** — Order block characteristics, MFE distribution, volume profiles
+
+### OB MFE Viewer (`ob_mfe_highlight.html`)
+Full-history zoomable candlestick chart with OB rectangles overlaid. High-MFE order blocks are highlighted to show which zones produced the largest favorable excursions.
+
+### Price Distribution Split-View (`price_distribution_indicators.html`)
+Left panel: candlestick chart building bar-by-bar. Right panel: zone histogram showing price distribution. Navigate with arrow keys to step through candles.
+
+### Batch Comparison (`batch_3ob_comparison.html`)
+Interactive Plotly charts comparing 3-OB strategy performance across all symbols. Sorted by return/day.
+
+### Strategy Visualizations (`results/visualizations/`)
+Per-symbol HTML charts showing sweep events, FVG zones, order blocks, and trade entries/exits overlaid on candlestick data.
+
+### TradingView Walkthroughs (`results/{symbol}_*_tv_walkthrough/`)
+Candle-by-candle replay using TradingView Lightweight Charts. Single self-contained HTML file per symbol/timeframe.
 
 ---
 
-## Notes
+## Configuration
 
-- Data is automatically fetched and cached in `data/{symbol}/` when running with a new symbol
-- Cached data is reused on subsequent runs (use `force_refresh=True` in code to bypass)
-- All visualizations are saved as interactive HTML files in the `results/` directory
+**`config/strategy_config.json`** — Central config for all strategies.
+
+| Section | Purpose |
+|---------|---------|
+| `symbol` | Default symbol (`TSLA`) |
+| `timeframes` | `high`, `mid`, `low` timeframe defaults |
+| `gmm_zones` | GMM detection: lookback, step, components, fib levels, zone thresholds |
+| `liquidity` | Sweep proximity threshold, lookback, FVG trigger toggle |
+| `validation` | FVG/equilibrium validation toggles |
+| `three_ob` | 3-OB timeframe, close break, min distance, shorts toggle |
+| `backtest` | Capital, overnight hold, trailing SL, min profit/RR, trend filters |
+| `output` | Visualize toggle, journal export mode |
+| `asset_options` | Symbol lists by category (stocks, forex, crypto, ETFs, indices, commodities) |
+
+---
+
+## Output Directory Structure
+
+```
+results/
+├── charts/                          # Dashboard & viewer HTML files
+│   ├── smc_dashboard.html
+│   ├── ob_mfe_highlight.html
+│   └── price_distribution_indicators.html
+├── trades/                          # Trade journal CSVs (per symbol)
+│   ├── tsla_trades.csv
+│   ├── tsla_3ob_trades.csv
+│   └── ...
+├── summary/                         # Batch summary CSVs
+│   └── batch_summary.csv
+├── visualizations/                  # Strategy sweep HTML charts
+├── walkthroughs/                    # Walkthrough HTML files
+├── batch_3ob_comparison.csv         # Batch comparison data
+└── batch_3ob_comparison.html        # Batch comparison charts
+```
