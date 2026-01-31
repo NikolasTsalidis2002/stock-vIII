@@ -185,6 +185,92 @@ smart-money-concepts/
 
 ---
 
+## How to Read SMC Indicator DataFrames
+
+This section explains how to correctly interpret the DataFrames returned by `smc.py`. These columns are easy to misread — pay close attention to what zero and None mean.
+
+### Shared Lifecycle Columns
+
+Most zone-based indicators (FVG, OB, Inflexion) share these columns:
+
+**MitigatedIndex** — The candle index where price first *touched* the zone.
+- `0` means "never touched yet" (it does NOT use NaN for this).
+- Mitigation does not mean broken. It just means price came back to the zone.
+
+**Respected** — What happened after mitigation. Three possible values:
+- `True` — Price touched the zone and bounced (held). The zone worked as support/resistance.
+- `False` — Price closed through the zone (broken/disrespected). The zone failed.
+- `None` — Price never reached the zone yet (pending).
+
+**StatusIndex** — The candle index where the Respected decision was made.
+- If `Respected=False`, StatusIndex points to the candle that broke through.
+- If `Respected=True`, StatusIndex points to the mitigation candle.
+- If `Respected=None`, StatusIndex is 0.
+
+**Key distinction:** MitigatedIndex and StatusIndex can differ. MitigatedIndex is when price *first touched* the zone. StatusIndex is when the final verdict (respect or disrespect) happened. For disrespected zones, StatusIndex > MitigatedIndex because price touched first, then later broke through.
+
+---
+
+### Per-Indicator Column Reference
+
+#### FVG — `FVG, Top, Bottom, MitigatedIndex, Respected, StatusIndex`
+
+Most rows are NaN. Only rows where `FVG=1` (bullish) or `FVG=-1` (bearish) have data.
+
+- **Bullish FVG (1):** Top = next candle's low, Bottom = previous candle's high. Disrespected if any future close < Bottom.
+- **Bearish FVG (-1):** Top = previous candle's low, Bottom = next candle's high. Disrespected if any future close > Top.
+
+#### OB — `OB, Top, Bottom, StartIndex, BOSIndex, MitigatedIndex, Respected, StatusIndex`
+
+Data is stored at the *inflexion* index (StartIndex), not the BOS candle.
+
+- **Bullish OB:** Top = the broken level, Bottom = min(low) from inflexion to BOS.
+- **Bearish OB:** Top = max(high) from inflexion to BOS, Bottom = the broken level.
+- Disrespect check uses candle *body* (min of close/open), not wicks.
+
+#### Inflexion — `InflexionType, Level, Respected, StatusIndex`
+
+No Top/Bottom — it is a single price `Level` (a point, not a range). No MitigatedIndex column.
+
+- **Peak (1):** Disrespected if any future close/open > Level. Respected if high reaches Level but doesn't close through.
+- **Valley (-1):** Disrespected if any future close/open < Level. Respected if low reaches Level but doesn't close through.
+
+#### Liquidity — `Liquidity, Level, End, Swept`
+
+Different pattern — no Respected/MitigatedIndex/StatusIndex columns.
+
+- `Swept` = index of candle that swept the liquidity (`0` if not swept).
+- `End` = index of the last swing high/low in the cluster.
+
+---
+
+### Common Recipes
+
+```python
+# Was this FVG mitigated?
+fvg_data['MitigatedIndex'] != 0
+
+# Is this zone still active (not broken)?
+data['Respected'] != False
+
+# Price touched and bounced?
+data['Respected'] == True
+
+# Price touched then broke through?
+data['Respected'] == False
+
+# How many candles until mitigation?
+fvg_data['MitigatedIndex'] - fvg_data.index
+
+# Get all bullish OBs that held
+ob_data[(ob_data['OB'] == 1) & (ob_data['Respected'] == True)]
+
+# Was liquidity swept?
+liq_data['Swept'] != 0
+```
+
+---
+
 ## Development Phases
 
 ### Phase 1: Data & Visualization ⏳ (Current)
