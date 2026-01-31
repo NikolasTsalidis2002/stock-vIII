@@ -108,6 +108,7 @@ Apply these filters to improve win rate. A trade must pass **all required filter
 | Filter | Required? | Rule |
 |--------|-----------|------|
 | Max distance | Yes | Target zone midpoint must be within `max_distance_pct` (default 1.0%) of current price |
+| Min distance | Optional | Target zone midpoint must be at least `min_distance_pct` (default 0.0%) from current price. Filters out zones too close to enter. |
 | Proximity rank | Yes | Target must be rank 1 on its side (closest zone) |
 | Min R:R | Yes | Risk:Reward ≥ 1.5:1 |
 | Trend alignment | Optional | Prefer zones where direction matches last 15min BOS direction |
@@ -152,6 +153,7 @@ Add to `config/strategy_config.json` under `"magnet_chase"`:
     "timeframe": "15min",
     "confirmation_timeframe": "5min",
     "max_distance_pct": 1.0,
+    "min_distance_pct": 0.0,
     "min_rr_ratio": 1.5,
     "timeout_hours": 4,
     "max_concurrent": 2,
@@ -169,6 +171,7 @@ Add to `config/strategy_config.json` under `"magnet_chase"`:
 | `timeframe` | str | "15min" | Zone detection timeframe |
 | `confirmation_timeframe` | str | "5min" | BOS/IFVG confirmation timeframe |
 | `max_distance_pct` | float | 1.0 | Max distance from price to target zone midpoint (%) |
+| `min_distance_pct` | float | 0.0 | Min distance from price to target zone midpoint (%). 0 = disabled. |
 | `min_rr_ratio` | float | 1.5 | Minimum risk:reward ratio to take a trade |
 | `timeout_hours` | int | 4 | Close trade if neither TP nor SL hit |
 | `max_concurrent` | int | 2 | Max simultaneous open positions |

@@ -1099,6 +1099,7 @@ def main():
             print(f"  Skipped (no confirmation): {mc_result.skipped_no_confirmation}")
             print(f"  Skipped (low R:R): {mc_result.skipped_low_rr}")
             print(f"  Skipped (zone mitigated): {mc_result.skipped_zone_mitigated}")
+            print(f"  Impulse avg candles — FVG: {engine.impulse_tracker.avg('FVG'):.1f}, OB: {engine.impulse_tracker.avg('OB'):.1f}")
             return
 
         print(f"\n✅ Found {len(mc_signals)} Magnet Chase signals!")
@@ -1149,6 +1150,8 @@ def main():
                 symbol=symbol,
                 trade_results=backtester.results if not args.no_backtest else [],
                 performance_metrics=backtester.metrics if not args.no_backtest else None,
+                trailing_sl_activation_pct=trailing_sl_activation_pct,
+                min_rr_ratio=min_rr_ratio,
             )
             viz_path = viewer.generate_html()
             print(f"\n✅ Signal viewer: {viz_path}")
@@ -1163,6 +1166,7 @@ def main():
         print(f"  Skipped (no confirmation): {mc_result.skipped_no_confirmation}")
         print(f"  Skipped (low R:R): {mc_result.skipped_low_rr}")
         print(f"  Skipped (zone mitigated): {mc_result.skipped_zone_mitigated}")
+        print(f"  Impulse avg candles — FVG: {engine.impulse_tracker.avg('FVG'):.1f}, OB: {engine.impulse_tracker.avg('OB'):.1f}")
         for i, sig in enumerate(mc_signals, 1):
             print(f"\n  Signal #{i}: {sig.entry_direction.upper()} via {sig.confirmation_type}")
             print(f"    Entry: ${sig.entry_price:.2f} @ {sig.entry_time}")

@@ -95,6 +95,7 @@ def rank_zones_by_proximity(
     active_zones: List[ZoneRecord],
     price: float,
     max_distance_pct: float = 100.0,
+    min_distance_pct: float = 0.0,
 ) -> tuple[List[RankedZone], List[RankedZone]]:
     """
     Rank active zones by distance to current price, split by side.
@@ -114,6 +115,8 @@ def rank_zones_by_proximity(
     for z in active_zones:
         dist_pct = abs(z.mid - price) / price * 100 if price != 0 else 0
         if dist_pct > max_distance_pct:
+            continue
+        if dist_pct < min_distance_pct:
             continue
         side = 'above' if z.mid > price else 'below'
         rz = RankedZone(zone=z, distance_pct=dist_pct, side=side, rank=0)
@@ -211,3 +214,21 @@ def compute_trade_direction(target: RankedZone) -> str:
     Zone above → LONG, zone below → SHORT.
     """
     return 'long' if target.side == 'above' else 'short'
+
+
+class ImpulseTracker:
+    """Tracks avg candles from zone creation to max-distance point (tilting point)."""
+
+    def __init__(self):
+        self._fvg_counts: List[int] = []
+        self._ob_counts: List[int] = []
+
+    def record(self, zone_type: str, candles_to_peak: int):
+        if zone_type == 'FVG':
+            self._fvg_counts.append(candles_to_peak)
+        else:
+            self._ob_counts.append(candles_to_peak)
+
+    def avg(self, zone_type: str) -> float:
+        counts = self._fvg_counts if zone_type == 'FVG' else self._ob_counts
+        return sum(counts) / len(counts) if counts else 0.0

@@ -64,7 +64,8 @@ def generate_candle_data(df: pd.DataFrame) -> List[Dict]:
 def generate_fvg_zones(
     df: pd.DataFrame,
     fvg: pd.DataFrame,
-    highlight_time: Optional[datetime] = None
+    highlight_time: Optional[datetime] = None,
+    slice_offset: int = 0
 ) -> List[Dict]:
     """
     Generate FVG (Fair Value Gap) zone data for visualization.
@@ -73,6 +74,9 @@ def generate_fvg_zones(
         df: DataFrame with OHLC data indexed by datetime
         fvg: DataFrame with FVG indicator data
         highlight_time: Optional datetime to highlight a specific FVG (e.g., Event B IFVG)
+        slice_offset: The iloc start index used to slice df/fvg from the full dataframe.
+                       StatusIndex/MitigatedIndex are absolute, so we subtract this to get
+                       positions within the slice.
 
     Returns:
         List of dicts with zone data (startTime, endTime, topPrice, bottomPrice, etc.)
@@ -88,13 +92,20 @@ def generate_fvg_zones(
         if pd.isna(fvg_value) or np.isnan(fvg_value):
             continue
 
-        # Get end index (mitigated or end of data)
+        # Get end index: use StatusIndex if disrespected, MitigatedIndex if mitigated, else end of slice
+        # StatusIndex and MitigatedIndex are absolute indices into the full dataframe,
+        # so subtract slice_offset to get the position within our slice.
+        respected = fvg["Respected"].iloc[i] if hasattr(fvg["Respected"], 'iloc') else fvg["Respected"][i]
+        status_idx = fvg["StatusIndex"].iloc[i] if hasattr(fvg["StatusIndex"], 'iloc') else fvg["StatusIndex"][i]
         mitigated_idx = fvg["MitigatedIndex"].iloc[i] if hasattr(fvg["MitigatedIndex"], 'iloc') else fvg["MitigatedIndex"][i]
-        if pd.notna(mitigated_idx) and mitigated_idx != 0:
-            end_idx = int(mitigated_idx)
+
+        if respected == False and pd.notna(status_idx) and int(status_idx) > 0:
+            end_idx = int(status_idx) - slice_offset
+        elif pd.notna(mitigated_idx) and int(mitigated_idx) > 0:
+            end_idx = int(mitigated_idx) - slice_offset
         else:
             end_idx = len(df) - 1
-        end_idx = min(end_idx, len(df) - 1)
+        end_idx = max(0, min(end_idx, len(df) - 1))
 
         # Check if this FVG should be highlighted (Event B IFVG)
         is_highlighted = False
@@ -117,13 +128,14 @@ def generate_fvg_zones(
     return fvg_zones
 
 
-def generate_ob_zones(df: pd.DataFrame, ob: pd.DataFrame) -> List[Dict]:
+def generate_ob_zones(df: pd.DataFrame, ob: pd.DataFrame, slice_offset: int = 0) -> List[Dict]:
     """
     Generate Order Block zone data for visualization.
 
     Args:
         df: DataFrame with OHLC data indexed by datetime
         ob: DataFrame with Order Block indicator data
+        slice_offset: The iloc start index used to slice df/ob from the full dataframe.
 
     Returns:
         List of dicts with zone data (startTime, endTime, topPrice, bottomPrice, obType)
@@ -140,10 +152,10 @@ def generate_ob_zones(df: pd.DataFrame, ob: pd.DataFrame) -> List[Dict]:
 
         end_idx_val = ob["StatusIndex"].iloc[i]
         if end_idx_val > 0:
-            end_idx = int(end_idx_val)
+            end_idx = int(end_idx_val) - slice_offset
         else:
             end_idx = len(df) - 1
-        end_idx = min(end_idx, len(df) - 1)
+        end_idx = max(0, min(end_idx, len(df) - 1))
 
         ob_zones.append({
             'startTime': int(df.index[i].timestamp()),

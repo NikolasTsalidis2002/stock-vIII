@@ -30,6 +30,7 @@ from .zone_proximity import (
     extract_zone_records, get_active_zones,
     rank_zones_by_proximity, select_target_zone,
     compute_tp_price, compute_trade_direction,
+    ImpulseTracker,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class MagnetChaseSignal:
 
     # Metadata
     target_identified_time: Optional[datetime] = None
+    zone_age_bars: int = 0
+    impulse_avg_candles: float = 0.0
 
     def to_trade_signal(self):
         """Convert to a TradeSignal for use with the Backtester."""
@@ -131,12 +134,15 @@ class MagnetChaseEngine:
         """
         config = config or {}
         self.max_distance_pct = config.get('max_distance_pct', 1.0)
+        self.min_distance_pct = config.get('min_distance_pct', 0.0)
         self.min_rr_ratio = config.get('min_rr_ratio', 1.5)
         self.timeout_hours = config.get('timeout_hours', 4)
         self.prefer_ob = config.get('prefer_ob_over_fvg', True)
         self.require_trend_alignment = config.get('require_trend_alignment', False)
         self.confirmation_timeout_hours = config.get('confirmation_timeout_hours', 2)
         self.close_break = config.get('close_break', True)
+        self.use_impulse_filter = config.get('enable_impulse_filter', False)
+        self.impulse_tracker = ImpulseTracker()
 
         # Prepare detection TF
         if 'time' in df_detect.columns:
@@ -236,6 +242,24 @@ class MagnetChaseEngine:
 
         return None
 
+    def _compute_peak_bar(self, zone: ZoneRecord) -> int:
+        """
+        For a mitigated zone, find candles from creation to max-distance point.
+
+        Bullish zone (below price): peak = bar with max(high) between zone.idx and mit_idx.
+        Bearish zone (above price): peak = bar with min(low) between zone.idx and mit_idx.
+        Returns candle count from zone.idx to peak bar.
+        """
+        start = zone.idx
+        end = zone.mit_idx
+        if end <= start:
+            return 0
+        if zone.direction == 1:  # bullish zone (below price) → price moves up then back
+            peak_pos = int(self.df_detect['high'].iloc[start:end].values.argmax())
+        else:  # bearish zone (above price) → price moves down then back
+            peak_pos = int(self.df_detect['low'].iloc[start:end].values.argmin())
+        return peak_pos
+
     def scan(self, max_signals: int = 50, scan_step: int = 1) -> MagnetChaseResult:
         """
         Scan for Magnet Chase signals.
@@ -270,6 +294,13 @@ class MagnetChaseEngine:
 
             price = float(self.df_detect['close'].iloc[bar])
 
+            # Update impulse tracker: record zones newly mitigated at this bar
+            for z in self.fvg_records + self.ob_records:
+                if z.mit_idx == bar and z.mit_idx > z.idx:
+                    candles = self._compute_peak_bar(z)
+                    if candles > 0:
+                        self.impulse_tracker.record(z.zone_type, candles)
+
             # Step 1: Get active zones
             active_zones = get_active_zones(self.fvg_records, self.ob_records, bar)
             if not active_zones:
@@ -278,7 +309,7 @@ class MagnetChaseEngine:
             result.total_zones_scanned += len(active_zones)
 
             # Step 2: Rank by proximity
-            above, below = rank_zones_by_proximity(active_zones, price, self.max_distance_pct)
+            above, below = rank_zones_by_proximity(active_zones, price, self.max_distance_pct, self.min_distance_pct)
 
             # Step 3: Select target
             bos_dir = int(self._last_bos_dir[bar])
@@ -297,6 +328,15 @@ class MagnetChaseEngine:
                 continue
 
             result.total_targets_identified += 1
+
+            # Compute impulse avg (always, so it's available on the signal)
+            avg_wait = self.impulse_tracker.avg(target.zone.zone_type)
+
+            # Impulse duration filter: skip zone if it hasn't aged past avg tilting point
+            if self.use_impulse_filter:
+                candles_since_creation = bar - target.zone.idx
+                if avg_wait > 0 and candles_since_creation < avg_wait:
+                    continue
 
             # Step 4: Determine direction and TP
             direction = compute_trade_direction(target)
@@ -394,6 +434,8 @@ class MagnetChaseEngine:
                     confirmation_level=round(conf_level, 2),
                     detection_bar_idx=bar,
                     target_identified_time=detect_time,
+                    zone_age_bars=bar - target.zone.idx,
+                    impulse_avg_candles=round(avg_wait, 1),
                 )
                 result.signals.append(signal)
                 logger.info(

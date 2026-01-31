@@ -40,8 +40,12 @@ class MagnetChaseSignalViewer:
         trade_results: Optional[List[TradeResult]] = None,
         performance_metrics: Optional[PerformanceMetrics] = None,
         bars_around: int = 50,
+        trailing_sl_activation_pct: float = 50.0,
+        min_rr_ratio: float = 0.0,
     ):
         self.symbol = symbol
+        self.trailing_sl_activation_pct = trailing_sl_activation_pct
+        self.min_rr_ratio = min_rr_ratio
         self.signals = signals
         self.engine = engine
         self.trade_results = trade_results or []
@@ -68,7 +72,8 @@ class MagnetChaseSignalViewer:
 
         signals_data = self._build_signals_data()
         performance_data = self._generate_performance_data()
-        html = self._create_html(signals_data, performance_data)
+        htf_trades_data = self._generate_htf_trades_data()
+        html = self._create_html(signals_data, performance_data, htf_trades_data)
         safe_symbol = self.symbol.replace('/', '_')
         output_path = out_dir / f'{safe_symbol.lower()}_magnet_chase_signals.html'
         with open(output_path, 'w') as f:
@@ -98,6 +103,8 @@ class MagnetChaseSignalViewer:
             tab_detect = self._generate_tab_detect(sig, trade_result)
             tab_confirm = self._generate_tab_confirm(sig, trade_result)
             tab_pnl = self._generate_tab_pnl(trade_result)
+            tab_sl_history = self._generate_tab_sl_history(trade_result, sig)
+            tab_context = self._generate_tab_context(sig, trade_result)
 
             # P&L info
             pnl_dollars = trade_result.pnl_dollars if trade_result else None
@@ -119,7 +126,7 @@ class MagnetChaseSignalViewer:
                 {'label': f'Target Zone ({sig.target_zone_type})', 'met': True, 'value': f'${sig.target_zone_bottom:.2f}-${sig.target_zone_top:.2f}'},
                 {'label': f'Zone Side ({sig.target_zone_side})', 'met': True, 'value': f'dist {sig.target_distance_pct:.2f}%'},
                 {'label': f'Confirmation ({sig.confirmation_type})', 'met': True, 'value': f'@ ${sig.confirmation_level:.2f}'},
-                {'label': f'R:R Ratio', 'met': sig.rr_ratio >= 1.5, 'value': f'{sig.rr_ratio:.1f}'},
+                {'label': f'R:R Ratio (>={self.min_rr_ratio:.1f})', 'met': sig.rr_ratio >= self.min_rr_ratio, 'value': f'{sig.rr_ratio:.1f}'},
             ]
 
             signals_data.append({
@@ -127,6 +134,8 @@ class MagnetChaseSignalViewer:
                 'tabDetect': tab_detect,
                 'tabConfirm': tab_confirm,
                 'tabPnL': tab_pnl,
+                'tabSLHistory': tab_sl_history,
+                'tabContext': tab_context,
                 'direction': sig.entry_direction,
                 'entryPrice': float(sig.entry_price),
                 'tpPrice': float(sig.take_profit),
@@ -146,6 +155,8 @@ class MagnetChaseSignalViewer:
                 'targetZoneSide': sig.target_zone_side,
                 'targetDistancePct': round(sig.target_distance_pct, 3),
                 'targetRank': sig.target_rank,
+                'zoneAgeBars': sig.zone_age_bars,
+                'impulseAvgCandles': sig.impulse_avg_candles,
                 'rrRatio': round(sig.rr_ratio, 2),
                 'confirmationType': sig.confirmation_type,
                 'confirmationTime': sig.confirmation_time.strftime('%Y-%m-%d %H:%M') if hasattr(sig.confirmation_time, 'strftime') else str(sig.confirmation_time),
@@ -175,8 +186,8 @@ class MagnetChaseSignalViewer:
         candle_data = generate_candle_data(df_slice)
 
         # Generate FVG and OB zones from engine's precomputed data
-        fvg_zones = generate_fvg_zones(self.df_detect.iloc[start_idx:end_idx], self.engine.fvg_detect.iloc[start_idx:end_idx])
-        ob_zones = generate_ob_zones(self.df_detect.iloc[start_idx:end_idx], self.engine.ob_detect.iloc[start_idx:end_idx])
+        fvg_zones = generate_fvg_zones(self.df_detect.iloc[start_idx:end_idx], self.engine.fvg_detect.iloc[start_idx:end_idx], slice_offset=start_idx)
+        ob_zones = generate_ob_zones(self.df_detect.iloc[start_idx:end_idx], self.engine.ob_detect.iloc[start_idx:end_idx], slice_offset=start_idx)
 
         # Highlighted target zone
         target_zone = {
@@ -243,7 +254,7 @@ class MagnetChaseSignalViewer:
             fvg_slice = self.engine.fvg_confirm.iloc[start_idx:end_idx]
 
             bos_lines = generate_bos_lines(df_slice, bos_slice, inflexions_slice)
-            fvg_zones = generate_fvg_zones(df_slice, fvg_slice)
+            fvg_zones = generate_fvg_zones(df_slice, fvg_slice, slice_offset=start_idx)
         except Exception:
             bos_lines = []
             fvg_zones = []
@@ -294,6 +305,286 @@ class MagnetChaseSignalViewer:
             'direction': trade_result.entry_direction,
             'outcome': trade_result.outcome.value if trade_result.outcome else None,
             'exitType': trade_result.exit_type.value if trade_result.exit_type else None,
+        }
+
+    def _generate_tab_sl_history(self, trade_result: Optional[TradeResult], sig: MagnetChaseSignal) -> Optional[Dict]:
+        if not trade_result:
+            return None
+        if not trade_result.sl_history or len(trade_result.sl_history) == 0:
+            return None
+
+        sl_entries = []
+        for i, (ts, price, reason) in enumerate(trade_result.sl_history):
+            is_last = (i == len(trade_result.sl_history) - 1)
+            sl_entries.append({
+                'time': int(ts.timestamp()),
+                'price': float(price),
+                'reason': reason,
+                'isActive': is_last,
+            })
+
+        exit_time_unix = int(trade_result.exit_time.timestamp()) if trade_result.exit_time else None
+
+        # Use confirmation TF for finer-grained SL visualization
+        sl_df = self.df_confirm
+        entry_time = sig.entry_time
+        entry_idx = sl_df.index.get_indexer([entry_time], method='nearest')[0]
+        pre_padding = 10
+        start_idx = max(0, entry_idx - pre_padding)
+
+        if trade_result.exit_time:
+            exit_idx = sl_df.index.get_indexer([trade_result.exit_time], method='nearest')[0]
+            post_padding = 10
+            end_idx = min(len(sl_df), exit_idx + post_padding)
+        else:
+            end_idx = min(len(sl_df), entry_idx + 60)
+
+        end_idx = max(end_idx, entry_idx + 20)
+        df_slice = sl_df.iloc[start_idx:end_idx]
+        candle_data = generate_candle_data(df_slice)
+
+        entry_price = trade_result.entry_price
+        tp_price = trade_result.take_profit_price
+        if trade_result.entry_direction == 'long':
+            activation_price = entry_price + (tp_price - entry_price) * (self.trailing_sl_activation_pct / 100.0)
+        else:
+            activation_price = entry_price - (entry_price - tp_price) * (self.trailing_sl_activation_pct / 100.0)
+
+        return {
+            'tabName': 'Stop Loss',
+            'slHistory': sl_entries,
+            'entryPrice': float(trade_result.entry_price),
+            'direction': trade_result.entry_direction,
+            'exitTime': exit_time_unix,
+            'exitType': trade_result.exit_type.value if trade_result.exit_type else None,
+            'candleData': candle_data,
+            'activationPrice': float(activation_price),
+            'activationPct': self.trailing_sl_activation_pct,
+            'tpPrice': float(tp_price),
+        }
+
+    def _generate_tab_context(self, sig: MagnetChaseSignal, trade_result: Optional[TradeResult]) -> Dict:
+        """Wide-context view on detection TF: all FVG/OB zones, target zone, entry/exit markers."""
+        entry_time = sig.entry_time
+        detect_bar = sig.detection_bar_idx
+
+        # Window: start well before detection, extend past exit
+        pre_padding = 50
+        start_idx = max(0, detect_bar - pre_padding)
+
+        entry_idx = self.df_detect.index.get_indexer([entry_time], method='nearest')[0]
+        if trade_result and trade_result.exit_time:
+            exit_idx = self.df_detect.index.get_indexer([trade_result.exit_time], method='nearest')[0]
+            end_idx = min(len(self.df_detect), exit_idx + 10)
+        else:
+            end_idx = min(len(self.df_detect), entry_idx + 30)
+        end_idx = max(end_idx, entry_idx + 20)
+
+        df_slice = self.df_detect.iloc[start_idx:end_idx]
+        candle_data = generate_candle_data(df_slice)
+
+        # All FVG and OB zones on the slice
+        fvg_zones = generate_fvg_zones(df_slice, self.engine.fvg_detect.iloc[start_idx:end_idx], slice_offset=start_idx)
+        ob_zones = generate_ob_zones(df_slice, self.engine.ob_detect.iloc[start_idx:end_idx], slice_offset=start_idx)
+
+        # Compute all OBs from raw indicators for context overlay
+        all_obs = []
+        try:
+            ob_data = self.engine.ob_detect.iloc[start_idx:end_idx]
+            ob_vals = ob_data['OB'].values
+            ob_tops = ob_data['Top'].values
+            ob_bottoms = ob_data['Bottom'].values
+            ob_starts = ob_data['StartIndex'].values
+            ob_mitigated = ob_data['MitigatedIndex'].values
+
+            ob_respected = ob_data['Respected'].values
+            ob_status = ob_data['StatusIndex'].values
+
+            for j in range(len(ob_data)):
+                if np.isnan(ob_vals[j]):
+                    continue
+                s_idx = int(ob_starts[j])
+                mit_idx = int(ob_mitigated[j]) if ob_mitigated[j] and not np.isnan(float(ob_mitigated[j])) else 0
+
+                # Determine zone end: use StatusIndex for disrespected, MitigatedIndex for mitigated
+                status_val = int(ob_status[j]) if not np.isnan(float(ob_status[j])) else 0
+                respected_val = ob_respected[j]
+
+                if respected_val == False and status_val > 0:
+                    zone_end_abs = status_val
+                elif mit_idx > 0:
+                    zone_end_abs = mit_idx
+                else:
+                    zone_end_abs = start_idx + len(df_slice) - 1
+
+                ob_start_abs = max(0, min(s_idx - start_idx, len(df_slice) - 1))
+                ob_end_abs = max(0, min(zone_end_abs - start_idx, len(df_slice) - 1))
+
+                satisfied = bool(mit_idx > 0)
+                all_obs.append({
+                    'topPrice': float(ob_tops[j]),
+                    'bottomPrice': float(ob_bottoms[j]),
+                    'startTime': int(df_slice.index[ob_start_abs].timestamp()),
+                    'endTime': int(df_slice.index[ob_end_abs].timestamp()),
+                    'satisfied': satisfied,
+                    'direction': int(ob_vals[j]),
+                })
+        except Exception:
+            pass
+
+        # Highlighted target zone
+        target_zone = {
+            'topPrice': float(sig.target_zone_top),
+            'bottomPrice': float(sig.target_zone_bottom),
+            'startTime': int(df_slice.index[0].timestamp()),
+            'endTime': int(df_slice.index[-1].timestamp()),
+            'zoneType': sig.target_zone_type,
+            'direction': sig.target_zone_direction,
+        }
+
+        # Entry marker
+        entry_marker = {
+            'time': int(entry_time.timestamp()) if hasattr(entry_time, 'timestamp') else int(pd.Timestamp(entry_time).timestamp()),
+            'price': float(sig.entry_price),
+            'direction': sig.entry_direction,
+        }
+
+        # Exit marker
+        exit_marker = None
+        if trade_result and trade_result.exit_time and trade_result.exit_price:
+            exit_marker = {
+                'time': int(trade_result.exit_time.timestamp()),
+                'price': float(trade_result.exit_price),
+                'direction': sig.entry_direction,
+                'exitType': trade_result.exit_type.value if trade_result.exit_type else None,
+                'isWin': trade_result.pnl_dollars >= 0 if trade_result.pnl_dollars is not None else False,
+            }
+
+        # Focus window for zoom-in view
+        focus_start_idx = max(0, detect_bar - 10)
+        if trade_result and trade_result.exit_time:
+            focus_exit_idx = self.df_detect.index.get_indexer([trade_result.exit_time], method='nearest')[0]
+            focus_end_idx = min(len(self.df_detect) - 1, focus_exit_idx + 5)
+        else:
+            focus_end_idx = min(len(self.df_detect) - 1, entry_idx + self.bars_around)
+        focus_end_idx = max(focus_end_idx, entry_idx + 10)
+        focus_end_idx = min(focus_end_idx, len(self.df_detect) - 1)
+        focus_start_idx = min(focus_start_idx, len(self.df_detect) - 1)
+
+        return {
+            'candleData': candle_data,
+            'fvgZones': fvg_zones,
+            'obZones': ob_zones,
+            'allOBs': all_obs,
+            'targetZone': target_zone,
+            'entryMarker': entry_marker,
+            'exitMarker': exit_marker,
+            'tpPrice': float(sig.take_profit),
+            'slPrice': float(sig.stop_loss),
+            'focusTime': int(entry_time.timestamp()) if hasattr(entry_time, 'timestamp') else int(pd.Timestamp(entry_time).timestamp()),
+            'contextCandles': end_idx - start_idx,
+            'focusWindow': {
+                'startTime': int(self.df_detect.index[focus_start_idx].timestamp()),
+                'endTime': int(self.df_detect.index[focus_end_idx].timestamp()),
+            },
+        }
+
+    def _generate_htf_trades_data(self) -> Optional[Dict]:
+        """Full detection TF chart with ALL trades marked (for zoom-out view)."""
+        if not self.trade_results:
+            return None
+
+        candle_data = generate_candle_data(self.df_detect)
+        if not candle_data:
+            return None
+
+        markers = []
+        trade_lines = []
+
+        for tr in self.trade_results:
+            is_long = tr.entry_direction == 'long'
+            is_win = tr.pnl_dollars >= 0 if tr.pnl_dollars is not None else False
+            win_color = '#089981'
+            loss_color = '#f23645'
+            outcome_color = win_color if is_win else loss_color
+
+            entry_ts = int(tr.entry_time.timestamp()) if hasattr(tr.entry_time, 'timestamp') else int(pd.Timestamp(tr.entry_time).timestamp())
+
+            markers.append({
+                'time': entry_ts,
+                'position': 'belowBar' if is_long else 'aboveBar',
+                'color': win_color if is_long else loss_color,
+                'shape': 'arrowUp' if is_long else 'arrowDown',
+                'text': f'${tr.entry_price:.0f}',
+            })
+
+            if tr.exit_time and tr.exit_price:
+                exit_ts = int(tr.exit_time.timestamp()) if hasattr(tr.exit_time, 'timestamp') else int(pd.Timestamp(tr.exit_time).timestamp())
+                label_map = {'tp_hit': 'TP', 'sl_hit': 'SL', 'trailing_sl': 'TSL', 'timeout': 'TIME'}
+                exit_label = label_map.get(tr.exit_type.value, tr.exit_type.value.upper()) if tr.exit_type else ''
+
+                markers.append({
+                    'time': exit_ts,
+                    'position': 'aboveBar' if is_long else 'belowBar',
+                    'color': outcome_color,
+                    'shape': 'circle',
+                    'text': exit_label,
+                })
+
+                trade_lines.append({
+                    'entryTime': entry_ts,
+                    'exitTime': exit_ts,
+                    'entryPrice': float(tr.entry_price),
+                    'exitPrice': float(tr.exit_price),
+                    'color': outcome_color,
+                    'isWin': is_win,
+                })
+
+        markers.sort(key=lambda m: m['time'])
+
+        # Consecutive win/loss clusters
+        trade_clusters = []
+        if trade_lines:
+            sorted_trades = sorted(trade_lines, key=lambda t: t['entryTime'])
+            streak_type = sorted_trades[0]['isWin']
+            streak_start = 0
+            for i in range(1, len(sorted_trades)):
+                if sorted_trades[i]['isWin'] != streak_type:
+                    streak_len = i - streak_start
+                    if streak_len >= 1:
+                        trade_clusters.append({
+                            'startTime': sorted_trades[streak_start]['entryTime'],
+                            'endTime': sorted_trades[i - 1]['exitTime'],
+                            'isWin': streak_type,
+                            'count': streak_len,
+                        })
+                    streak_type = sorted_trades[i]['isWin']
+                    streak_start = i
+            streak_len = len(sorted_trades) - streak_start
+            if streak_len >= 1:
+                trade_clusters.append({
+                    'startTime': sorted_trades[streak_start]['entryTime'],
+                    'endTime': sorted_trades[-1]['exitTime'],
+                    'isWin': streak_type,
+                    'count': streak_len,
+                })
+
+        # BOS lines and liquidity on full detect TF
+        bos_lines = []
+        liquidity_lines = []
+        try:
+            bos_lines = generate_bos_lines(self.df_detect, self.engine.bos_detect, self.engine.inflexions_detect)
+            liquidity_lines = generate_liquidity_lines(self.df_detect, self.engine.inflexions_detect)
+        except Exception:
+            pass
+
+        return {
+            'candleData': candle_data,
+            'markers': markers,
+            'tradeLines': trade_lines,
+            'bosLines': bos_lines,
+            'liquidityLines': liquidity_lines,
+            'tradeClusters': trade_clusters,
         }
 
     def _generate_performance_data(self) -> Optional[Dict]:
@@ -359,6 +650,8 @@ class MagnetChaseSignalViewer:
             'shortTrades': int(metrics.short_trades),
             'longWins': int(metrics.long_wins),
             'shortWins': int(metrics.short_wins),
+            'impulseAvgFVG': round(self.engine.impulse_tracker.avg('FVG'), 1),
+            'impulseAvgOB': round(self.engine.impulse_tracker.avg('OB'), 1),
             'equityCurve': equity_curve_data,
             'trades': [
                 {
@@ -380,9 +673,10 @@ class MagnetChaseSignalViewer:
             ]
         }
 
-    def _create_html(self, signals_data: List[Dict], performance_data: Optional[Dict]) -> str:
+    def _create_html(self, signals_data: List[Dict], performance_data: Optional[Dict], htf_trades_data: Optional[Dict] = None) -> str:
         data_json = json.dumps(signals_data, cls=NumpyEncoder)
         performance_json = json.dumps(performance_data, cls=NumpyEncoder) if performance_data else 'null'
+        htf_trades_json = json.dumps(htf_trades_data, cls=NumpyEncoder) if htf_trades_data else 'null'
 
         return f"""<!DOCTYPE html>
 <html>
@@ -776,11 +1070,17 @@ class MagnetChaseSignalViewer:
             <div class="tab" data-tab="DETECT" onclick="switchTab('DETECT')">Detection TF</div>
             <div class="tab" data-tab="CONFIRM" onclick="switchTab('CONFIRM')">Confirm TF</div>
             <div class="tab" data-tab="PNL" onclick="switchTab('PNL')">P&L</div>
+            <div class="tab" data-tab="SL_HISTORY" onclick="switchTab('SL_HISTORY')">Stop Loss</div>
+            <div class="tab" data-tab="CONTEXT" onclick="switchTab('CONTEXT')">Context</div>
             <div class="tab" data-tab="DASHBOARD" onclick="switchTab('DASHBOARD')">Dashboard</div>
         </div>
 
         <div id="main">
             <div id="chart-area">
+                <button id="context-zoom-toggle" style="display:none; position:absolute; top:8px; right:8px; z-index:10; padding:4px 12px; cursor:pointer; background:#2a2a3e; color:#e0e0e0; border:1px solid #555; border-radius:4px; font-size:13px;" onclick="toggleContextZoom()">Zoom Out</button>
+                <div id="cluster-threshold-control" style="display:none; position:absolute; top:8px; right:140px; z-index:10; background:#2a2a3e; color:#e0e0e0; border:1px solid #555; border-radius:4px; padding:4px 8px; font-size:13px;">
+                    Cluster >= <input id="cluster-threshold" type="number" min="2" max="20" value="3" style="width:36px; background:#1a1a2e; color:#e0e0e0; border:1px solid #555; border-radius:3px; text-align:center; font-size:13px;" onchange="onClusterThresholdChange()">
+                </div>
                 <div id="chart-container"></div>
                 <div id="dashboard-container"></div>
             </div>
@@ -815,6 +1115,14 @@ class MagnetChaseSignalViewer:
                     <div class="info-row">
                         <span class="info-label">Rank</span>
                         <span class="info-value" id="zone-rank">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Zone Age</span>
+                        <span class="info-value" id="zone-age">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Impulse Avg</span>
+                        <span class="info-value" id="impulse-avg">-</span>
                     </div>
                 </div>
 
@@ -851,6 +1159,10 @@ class MagnetChaseSignalViewer:
                     <div class="info-row">
                         <span class="info-label">Level</span>
                         <span class="info-value" id="confirm-level">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Min Wait</span>
+                        <span class="info-value" id="confirm-min-wait">-</span>
                     </div>
                 </div>
 
@@ -899,7 +1211,7 @@ class MagnetChaseSignalViewer:
                     </div>
                     <div class="shortcut-item">
                         <span>Switch tab</span>
-                        <span class="shortcut-key">1-4</span>
+                        <span class="shortcut-key">1-6</span>
                     </div>
                 </div>
             </div>
@@ -909,6 +1221,7 @@ class MagnetChaseSignalViewer:
     <script>
         const signalsData = {data_json};
         const performanceData = {performance_json};
+        const htfTradesData = {htf_trades_json};
 
         let currentSignalIdx = 0;
         let currentTab = 'DETECT';
@@ -917,6 +1230,8 @@ class MagnetChaseSignalViewer:
         let candlestickSeries = null;
         let activeLineSeries = [];
         let dashboardRendered = false;
+        let contextZoomedOut = false;
+        let clusterThreshold = 3;
 
         const chartOptions = {{
             layout: {{
@@ -984,7 +1299,9 @@ class MagnetChaseSignalViewer:
                 if (e.key === '1') switchTab('DETECT');
                 if (e.key === '2') switchTab('CONFIRM');
                 if (e.key === '3') switchTab('PNL');
-                if (e.key === '4') switchTab('DASHBOARD');
+                if (e.key === '4') switchTab('SL_HISTORY');
+                if (e.key === '5') switchTab('CONTEXT');
+                if (e.key === '6') switchTab('DASHBOARD');
             }});
 
             const resizeObserver = new ResizeObserver(() => {{
@@ -1021,6 +1338,8 @@ class MagnetChaseSignalViewer:
             document.getElementById('zone-side').textContent = sig.targetZoneSide;
             document.getElementById('zone-distance').textContent = sig.targetDistancePct + '%';
             document.getElementById('zone-rank').textContent = '#' + sig.targetRank;
+            document.getElementById('zone-age').textContent = sig.zoneAgeBars + ' bars';
+            document.getElementById('impulse-avg').textContent = sig.impulseAvgCandles > 0 ? sig.impulseAvgCandles.toFixed(1) + ' bars' : 'N/A';
 
             // Trade params
             const tradeInfo = document.getElementById('trade-info');
@@ -1038,6 +1357,7 @@ class MagnetChaseSignalViewer:
             document.getElementById('confirm-type').textContent = sig.confirmationType;
             document.getElementById('confirm-time').textContent = sig.confirmationTime;
             document.getElementById('confirm-level').textContent = '$' + sig.confirmationLevel.toFixed(2);
+            document.getElementById('confirm-min-wait').textContent = sig.impulseAvgCandles > 0 ? sig.impulseAvgCandles + ' bars' : 'N/A';
 
             // P&L info
             const pnlInfo = document.getElementById('pnl-info');
@@ -1111,6 +1431,8 @@ class MagnetChaseSignalViewer:
                 if (tabId === 'DETECT' && sig.tabDetect) hasData = true;
                 if (tabId === 'CONFIRM' && sig.tabConfirm) hasData = true;
                 if (tabId === 'PNL' && sig.tabPnL) hasData = true;
+                if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
+                if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
                 if (tabId === 'DASHBOARD') hasData = true;
 
                 if (!hasData) tab.classList.add('disabled');
@@ -1124,6 +1446,8 @@ class MagnetChaseSignalViewer:
             if (tabId === 'DETECT' && sig.tabDetect) hasData = true;
             if (tabId === 'CONFIRM' && sig.tabConfirm) hasData = true;
             if (tabId === 'PNL' && sig.tabPnL) hasData = true;
+            if (tabId === 'SL_HISTORY' && sig.tabSLHistory) hasData = true;
+            if (tabId === 'CONTEXT' && sig.tabContext) hasData = true;
             if (tabId === 'DASHBOARD') hasData = true;
             if (!hasData) return;
 
@@ -1132,6 +1456,11 @@ class MagnetChaseSignalViewer:
                 if (tab.dataset.tab === tabId) tab.classList.add('active');
             }});
             currentTab = tabId;
+            contextZoomedOut = false;
+            const zoomBtn = document.getElementById('context-zoom-toggle');
+            zoomBtn.style.display = (tabId === 'CONTEXT' && htfTradesData) ? 'block' : 'none';
+            zoomBtn.textContent = 'Zoom Out';
+            document.getElementById('cluster-threshold-control').style.display = 'none';
 
             if (tabId === 'DASHBOARD') {{
                 showDashboard();
@@ -1184,11 +1513,18 @@ class MagnetChaseSignalViewer:
             if (currentTab === 'DETECT') tabData = sig.tabDetect;
             else if (currentTab === 'CONFIRM') tabData = sig.tabConfirm;
             else if (currentTab === 'PNL') tabData = sig.tabPnL;
+            if (currentTab === 'SL_HISTORY') tabData = sig.tabSLHistory;
+            else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
 
             if (!tabData) return;
 
             if (currentTab === 'PNL') {{
                 showPnLChart(tabData);
+                return;
+            }}
+
+            if (currentTab === 'SL_HISTORY') {{
+                showSLHistoryChart(tabData);
                 return;
             }}
 
@@ -1344,13 +1680,119 @@ class MagnetChaseSignalViewer:
             chart.priceScale('right').applyOptions({{ autoScale: true }});
         }}
 
-        function redrawOverlays() {{
-            if (currentTab === 'PNL' || currentTab === 'DASHBOARD') return;
+        function showSLHistoryChart(slData) {{
+            clearLineSeries();
+            d3.select('#svg-overlay').selectAll('*').remove();
+            candlestickSeries.setData(slData && slData.candleData ? slData.candleData : []);
+            candlestickSeries.setMarkers([]);
 
-            const sig = signalsData[currentSignalIdx];
+            if (!slData || !slData.slHistory || slData.slHistory.length === 0) return;
+
+            const history = slData.slHistory;
+            const exitTime = slData.exitTime;
+            const isLong = slData.direction === 'long';
+            const dimColor = isLong ? 'rgba(242,54,69,0.25)' : 'rgba(8,153,129,0.25)';
+            const activeColor = isLong ? '#f23645' : '#089981';
+
+            const firstTime = history[0].time;
+            const lastTime = exitTime || history[history.length - 1].time;
+            const entryLine = chart.addLineSeries({{
+                color: '#787b86', lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dotted,
+                priceLineVisible: false, lastValueVisible: true, title: 'Entry',
+            }});
+            entryLine.setData([
+                {{ time: firstTime, value: slData.entryPrice }},
+                {{ time: lastTime, value: slData.entryPrice }}
+            ]);
+            activeLineSeries.push(entryLine);
+
+            if (slData.activationPrice) {{
+                const actLine = chart.addLineSeries({{
+                    color: '#ff9800', lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                    priceLineVisible: false, lastValueVisible: true,
+                    title: 'Activation (' + slData.activationPct + '%)',
+                }});
+                actLine.setData([
+                    {{ time: firstTime, value: slData.activationPrice }},
+                    {{ time: lastTime, value: slData.activationPrice }}
+                ]);
+                activeLineSeries.push(actLine);
+            }}
+
+            if (slData.tpPrice) {{
+                const tpLine = chart.addLineSeries({{
+                    color: '#089981', lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                    priceLineVisible: false, lastValueVisible: true,
+                    title: 'TP',
+                }});
+                tpLine.setData([
+                    {{ time: firstTime, value: slData.tpPrice }},
+                    {{ time: lastTime, value: slData.tpPrice }}
+                ]);
+                activeLineSeries.push(tpLine);
+            }}
+
+            for (let i = 0; i < history.length; i++) {{
+                const sl = history[i];
+                const startTime = sl.time;
+                const endTime = (i < history.length - 1) ? history[i + 1].time : (exitTime || sl.time + 3600);
+                const isActive = sl.isActive;
+
+                const color = isActive ? activeColor : dimColor;
+                const lineWidth = isActive ? 3 : 1;
+
+                const slLine = chart.addLineSeries({{
+                    color: color,
+                    lineWidth: lineWidth,
+                    lineStyle: isActive ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+                    priceLineVisible: false,
+                    lastValueVisible: isActive,
+                    title: isActive ? 'SL (active)' : '',
+                }});
+                slLine.setData([
+                    {{ time: startTime, value: sl.price }},
+                    {{ time: endTime, value: sl.price }}
+                ]);
+                activeLineSeries.push(slLine);
+
+                const markerSeries = chart.addLineSeries({{
+                    color: color, lineWidth: 0,
+                    priceLineVisible: false, lastValueVisible: false,
+                }});
+                markerSeries.setData([{{ time: startTime, value: sl.price }}]);
+                markerSeries.setMarkers([{{
+                    time: startTime,
+                    position: isLong ? 'belowBar' : 'aboveBar',
+                    color: isActive ? activeColor : (isLong ? 'rgba(242,54,69,0.6)' : 'rgba(8,153,129,0.6)'),
+                    shape: 'circle',
+                    text: sl.reason,
+                }}]);
+                activeLineSeries.push(markerSeries);
+            }}
+
+            chart.timeScale().fitContent();
+            chart.priceScale('right').applyOptions({{ autoScale: true }});
+        }}
+
+        function redrawOverlays() {{
+            if (currentTab === 'PNL' || currentTab === 'SL_HISTORY' || currentTab === 'DASHBOARD') return;
+
             let tabData = null;
-            if (currentTab === 'DETECT') tabData = sig.tabDetect;
-            else if (currentTab === 'CONFIRM') tabData = sig.tabConfirm;
+            if (currentTab === 'CONTEXT' && contextZoomedOut) {{
+                tabData = htfTradesData;
+                const sig = signalsData[currentSignalIdx];
+                if (sig && sig.tabContext && sig.tabContext.focusWindow) {{
+                    tabData = Object.assign({{}}, tabData, {{ focusWindow: sig.tabContext.focusWindow }});
+                }}
+            }} else {{
+                const sig = signalsData[currentSignalIdx];
+                if (currentTab === 'DETECT') tabData = sig.tabDetect;
+                else if (currentTab === 'CONFIRM') tabData = sig.tabConfirm;
+                else if (currentTab === 'CONTEXT') tabData = sig.tabContext;
+            }}
             if (!tabData) return;
 
             const chartContainer = document.getElementById('chart-container');
@@ -1470,6 +1912,203 @@ class MagnetChaseSignalViewer:
                         .text(em.direction.toUpperCase() + ' $' + em.price.toFixed(2));
                 }}
             }}
+
+            // Draw exit marker
+            if (tabData.exitMarker) {{
+                const ex = tabData.exitMarker;
+                const xEx = ts.timeToCoordinate(ex.time);
+                const yEx = candlestickSeries.priceToCoordinate(ex.price);
+                if (xEx != null && yEx != null) {{
+                    const isLong = ex.direction === 'long';
+                    const exitColor = ex.isWin ? '#089981' : '#f23645';
+                    const exitLabelMap = {{'tp_hit': 'TP', 'sl_hit': 'SL', 'trailing_sl': 'TSL', 'timeout': 'TIME'}};
+                    const exitLabel = exitLabelMap[ex.exitType] || 'EXIT';
+
+                    svg.append('circle')
+                        .attr('cx', xEx).attr('cy', yEx).attr('r', 6)
+                        .attr('fill', exitColor).attr('stroke', '#fff').attr('stroke-width', 1);
+
+                    svg.append('text')
+                        .attr('x', xEx + 10).attr('y', yEx + 4)
+                        .attr('fill', exitColor).attr('font-size', '11px')
+                        .attr('font-weight', 'bold').attr('font-family', 'sans-serif')
+                        .text(exitLabel + ' $' + ex.price.toFixed(2));
+                }}
+            }}
+
+            // Draw all OBs (Context tab) — background layer
+            if (tabData.allOBs) {{
+                tabData.allOBs.forEach(ob => {{
+                    const x1 = ts.timeToCoordinate(ob.startTime);
+                    const x2 = ts.timeToCoordinate(ob.endTime);
+                    const y1 = candlestickSeries.priceToCoordinate(ob.topPrice);
+                    const y2 = candlestickSeries.priceToCoordinate(ob.bottomPrice);
+                    if (x1 == null || x2 == null || y1 == null || y2 == null) return;
+
+                    const x = Math.min(x1, x2);
+                    const y = Math.min(y1, y2);
+                    const w = Math.max(Math.abs(x2 - x1), 4);
+                    const h = Math.max(Math.abs(y2 - y1), 2);
+
+                    const isBull = ob.direction === 1;
+                    const sat = ob.satisfied;
+                    const fillColor = sat
+                        ? (isBull ? 'rgba(0,188,212,0.07)' : 'rgba(255,87,34,0.07)')
+                        : (isBull ? 'rgba(0,188,212,0.20)' : 'rgba(255,87,34,0.20)');
+                    const strokeColor = isBull ? '#00bcd4' : '#ff5722';
+                    const strokeOpacity = sat ? 0.3 : 1.0;
+                    const dashArray = sat ? '4,3' : 'none';
+
+                    svg.append('rect')
+                        .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
+                        .attr('fill', fillColor)
+                        .attr('stroke', strokeColor)
+                        .attr('stroke-opacity', strokeOpacity)
+                        .attr('stroke-width', 1)
+                        .attr('stroke-dasharray', dashArray);
+                }});
+            }}
+
+            // Draw focus window rectangle (Context tab)
+            if (tabData.focusWindow) {{
+                const x1 = ts.timeToCoordinate(tabData.focusWindow.startTime);
+                const x2 = ts.timeToCoordinate(tabData.focusWindow.endTime);
+                if (x1 != null && x2 != null) {{
+                    const x = Math.min(x1, x2);
+                    const w = Math.abs(x2 - x1);
+                    svg.append('rect')
+                        .attr('x', x).attr('y', 0)
+                        .attr('width', w).attr('height', rect.height)
+                        .attr('fill', 'rgba(100,180,255,0.08)')
+                        .attr('stroke', 'rgba(100,180,255,0.5)')
+                        .attr('stroke-width', 2)
+                        .attr('stroke-dasharray', '6,4');
+                    svg.append('text')
+                        .attr('x', x + 4).attr('y', 16)
+                        .attr('fill', 'rgba(100,180,255,0.7)')
+                        .attr('font-size', '11px').attr('font-weight', 'bold')
+                        .attr('font-family', 'sans-serif')
+                        .text('Detection view');
+                }}
+            }}
+
+            // Draw trade clusters (consecutive win/loss streaks)
+            if (tabData.tradeClusters) {{
+                tabData.tradeClusters.forEach(cl => {{
+                    if (cl.count < clusterThreshold) return;
+                    const x1 = ts.timeToCoordinate(cl.startTime);
+                    const x2 = ts.timeToCoordinate(cl.endTime);
+                    if (x1 == null || x2 == null) return;
+                    const x = Math.min(x1, x2);
+                    const w = Math.max(Math.abs(x2 - x1), 4);
+                    const color = cl.isWin ? 'rgba(8,153,129,' : 'rgba(242,54,69,';
+                    svg.append('rect')
+                        .attr('x', x).attr('y', 0)
+                        .attr('width', w).attr('height', rect.height)
+                        .attr('fill', color + '0.07)')
+                        .attr('stroke', color + '0.4)')
+                        .attr('stroke-width', 2)
+                        .attr('stroke-dasharray', '6,4');
+                    svg.append('text')
+                        .attr('x', x + 4).attr('y', 32)
+                        .attr('fill', color + '0.8)')
+                        .attr('font-size', '11px').attr('font-weight', 'bold')
+                        .attr('font-family', 'sans-serif')
+                        .text((cl.isWin ? 'W' : 'L') + 'x' + cl.count);
+                }});
+            }}
+        }}
+
+        function toggleContextZoom() {{
+            contextZoomedOut = !contextZoomedOut;
+            const btn = document.getElementById('context-zoom-toggle');
+            btn.textContent = contextZoomedOut ? 'Zoom In' : 'Zoom Out';
+            document.getElementById('cluster-threshold-control').style.display = contextZoomedOut ? 'block' : 'none';
+
+            if (contextZoomedOut) {{
+                showHTFTradesChart();
+            }} else {{
+                const sig = signalsData[currentSignalIdx];
+                showChart(sig);
+            }}
+        }}
+
+        function onClusterThresholdChange() {{
+            clusterThreshold = parseInt(document.getElementById('cluster-threshold').value) || 3;
+            if (contextZoomedOut) {{
+                redrawOverlays();
+            }}
+        }}
+
+        function showHTFTradesChart() {{
+            if (!htfTradesData) return;
+            clearLineSeries();
+            d3.select('#svg-overlay').selectAll('*').remove();
+
+            candlestickSeries.setData(htfTradesData.candleData);
+            candlestickSeries.setMarkers(htfTradesData.markers || []);
+
+            chart.priceScale('right').applyOptions({{
+                autoScale: true,
+                scaleMargins: {{ top: 0.15, bottom: 0.15 }},
+            }});
+
+            // Draw entry-to-exit trade lines
+            if (htfTradesData.tradeLines) {{
+                htfTradesData.tradeLines.forEach(tl => {{
+                    const lineSeries = chart.addLineSeries({{
+                        color: tl.color,
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                    }});
+                    lineSeries.setData([
+                        {{ time: tl.entryTime, value: tl.entryPrice }},
+                        {{ time: tl.exitTime, value: tl.exitPrice }}
+                    ]);
+                    activeLineSeries.push(lineSeries);
+                }});
+            }}
+
+            // BOS lines
+            if (htfTradesData.bosLines) {{
+                htfTradesData.bosLines.forEach(bos => {{
+                    const lineSeries = chart.addLineSeries({{
+                        color: bos.color,
+                        lineWidth: bos.lineWidth || 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                    }});
+                    lineSeries.setData([
+                        {{ time: bos.startTime, value: bos.price }},
+                        {{ time: bos.endTime, value: bos.price }}
+                    ]);
+                    activeLineSeries.push(lineSeries);
+                }});
+            }}
+
+            // Liquidity lines
+            if (htfTradesData.liquidityLines) {{
+                htfTradesData.liquidityLines.forEach(liq => {{
+                    const lineSeries = chart.addLineSeries({{
+                        color: liq.color,
+                        lineWidth: liq.lineWidth,
+                        lineStyle: liq.swept ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dotted,
+                        priceLineVisible: false,
+                        lastValueVisible: false,
+                    }});
+                    lineSeries.setData([
+                        {{ time: liq.startTime, value: liq.price }},
+                        {{ time: liq.endTime, value: liq.price }}
+                    ]);
+                    activeLineSeries.push(lineSeries);
+                }});
+            }}
+
+            chart.timeScale().fitContent();
+            setTimeout(redrawOverlays, 50);
         }}
 
         // Dashboard functions
@@ -1582,6 +2221,11 @@ class MagnetChaseSignalViewer:
                         <div class="stats-row"><span class="stats-label">Average Loss</span><span class="stats-value negative">${{formatDollars(data.avgLossDollars)}}</span></div>
                         <div class="stats-row"><span class="stats-label">Largest Win</span><span class="stats-value positive">${{formatDollars(data.largestWin)}}</span></div>
                         <div class="stats-row"><span class="stats-label">Largest Loss</span><span class="stats-value negative">${{formatDollars(data.largestLoss)}}</span></div>
+                    </div>
+                    <div class="stats-card">
+                        <div class="stats-card-title">Impulse Duration (debug)</div>
+                        <div class="stats-row"><span class="stats-label">Avg FVG candles</span><span class="stats-value">${{data.impulseAvgFVG}}</span></div>
+                        <div class="stats-row"><span class="stats-label">Avg OB candles</span><span class="stats-value">${{data.impulseAvgOB}}</span></div>
                     </div>
                 </div>
                 <div class="transactions-container">
