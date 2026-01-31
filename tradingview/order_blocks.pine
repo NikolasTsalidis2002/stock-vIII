@@ -154,7 +154,7 @@ var bool[] ob_mitigated = array.new_bool(0)  // true=touched (mitigated), false=
 if bos_dir == 1
     // Bullish BOS → Bullish OB
     if not na(bos_inflexion_bar)
-        int bars_back = bar_index - bos_inflexion_bar
+        int bars_back = math.min(bar_index - bos_inflexion_bar, 20)
         float zone_bottom = low
         for k = 0 to bars_back
             zone_bottom := math.min(zone_bottom, low[k])
@@ -167,7 +167,7 @@ if bos_dir == 1
 if bos_dir == -1
     // Bearish BOS → Bearish OB
     if not na(bos_inflexion_bar)
-        int bars_back = bar_index - bos_inflexion_bar
+        int bars_back = math.min(bar_index - bos_inflexion_bar, 20)
         float zone_top = high
         for k = 0 to bars_back
             zone_top := math.max(zone_top, high[k])
