@@ -325,7 +325,8 @@ class TradeSimulator:
 
                 # Once activated, check every candle for a better swing level
                 if trailing_activated:
-                    new_sl = self._find_trailing_sl_level(idx, entry_price, current_sl, direction)
+                    trail_price = candle_low if direction == 'long' else candle_high
+                    new_sl = self._find_trailing_sl_level(idx, entry_price, current_sl, direction, trail_price)
                     if new_sl is not None and new_sl != current_sl:
                         # Ensure SL only moves in the profitable direction
                         if (direction == 'long' and new_sl < current_sl) or (direction == 'short' and new_sl > current_sl):
@@ -479,7 +480,8 @@ class TradeSimulator:
         current_idx: int,
         entry_price: float,
         current_sl: float,
-        direction: str
+        direction: str,
+        current_price: Optional[float] = None
     ) -> Optional[float]:
         """
         Find the best swing level to move trailing SL to.
@@ -496,7 +498,7 @@ class TradeSimulator:
             for swing_idx, swing_price in self.swing_lows:
                 if swing_idx >= current_idx:
                     break
-                if swing_price > current_sl:
+                if swing_price > current_sl and (current_price is None or swing_price < current_price):
                     best_level = swing_price
             if best_level is not None:
                 return best_level * (1 - buffer_pct)
@@ -505,7 +507,7 @@ class TradeSimulator:
             for swing_idx, swing_price in self.swing_highs:
                 if swing_idx >= current_idx:
                     break
-                if swing_price < current_sl:
+                if swing_price < current_sl and (current_price is None or swing_price > current_price):
                     best_level = swing_price
             if best_level is not None:
                 return best_level * (1 + buffer_pct)

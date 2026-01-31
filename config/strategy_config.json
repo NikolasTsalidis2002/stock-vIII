@@ -1,5 +1,5 @@
 {
-  "symbol": "GOOGL",
+  "symbol": "TSLA",
   "timeframes": {
     "high": "1h",
     "mid": "15min",
@@ -90,7 +90,7 @@
     }
   },
   "three_ob": {    
-    "timeframe": "5min",
+    "timeframe": "15min",
     "confirmation_timeframe": null,
     "timeframe_copy": "5min",
     "confirmation_timeframe_copy": "1min",

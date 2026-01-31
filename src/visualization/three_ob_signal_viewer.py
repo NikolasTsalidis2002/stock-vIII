@@ -86,6 +86,11 @@ class ThreeOBSignalViewer:
         for tr in self.trade_results:
             trade_result_map[tr.entry_time] = tr
 
+        # Build reverse lookup: entry_time -> signal index (for navigating from dashboard)
+        self._entry_time_to_signal_idx = {}
+        for i, ctx in enumerate(self.signal_contexts):
+            self._entry_time_to_signal_idx[ctx.signal.timestamp_entry] = i
+
         # Build lookup of skipped trades by entry time
         skipped_map = {}
         for st in self.skipped_trades:
@@ -741,6 +746,7 @@ class ThreeOBSignalViewer:
                     'outcome': result.outcome.value if result.outcome else None,
                     'exitType': result.exit_type.value if result.exit_type else None,
                     'durationMin': result.duration_minutes,
+                    'signalIdx': self._entry_time_to_signal_idx.get(result.entry_time, -1),
                 }
                 for i, result in enumerate(self.trade_results)
             ]
@@ -1107,6 +1113,7 @@ class ThreeOBSignalViewer:
             border-bottom: 1px solid #2b2b43;
             color: #d1d4dc;
         }}
+        .transactions-table tbody tr {{ cursor: pointer; }}
         .transactions-table tr.win-row {{ background-color: rgba(8, 153, 129, 0.05); }}
         .transactions-table tr.win-row:hover {{ background-color: rgba(8, 153, 129, 0.1); }}
         .transactions-table tr.loss-row {{ background-color: rgba(242, 54, 69, 0.05); }}
@@ -1538,6 +1545,14 @@ class ThreeOBSignalViewer:
                 document.getElementById('chart-container').style.display = 'block';
                 showChart(sig);
             }}
+        }}
+
+        function navigateToSignal(signalIdx) {{
+            if (signalIdx < 0 || signalIdx >= signalsData.length) return;
+            currentSignalIdx = signalIdx;
+            document.getElementById('signal-select').value = signalIdx;
+            showSignal(signalIdx);
+            switchTab('15M');
         }}
 
         function clearLineSeries() {{
@@ -2422,7 +2437,8 @@ class ThreeOBSignalViewer:
                 else if (trade.exitType === 'sl_hit') {{ exitClass = 'sl'; exitText = 'SL'; }}
                 else if (trade.exitType === 'trailing_sl') {{ exitClass = 'trailing-sl'; exitText = 'TSL'; }}
 
-                html += `<tr class="${{rowClass}}">
+                html += `<tr class="${{rowClass}}" onclick="navigateToSignal(${{trade.signalIdx}})">`
+                html += `
                     <td class="trade-num">${{trade.tradeNum}}</td>
                     <td>${{trade.entryTime}}</td>
                     <td><span class="direction-badge ${{dirClass}}">${{trade.direction.toUpperCase()}}</span></td>

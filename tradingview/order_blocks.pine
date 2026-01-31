@@ -144,8 +144,9 @@ if current_trend == 1
         trend_min_bar   := bar_index - 1
 
 // ========== ORDER BLOCK STORAGE ==========
-var box[]  ob_boxes = array.new_box(0)
-var int[]  ob_dirs  = array.new_int(0)   // 1=bullish, -1=bearish
+var box[]  ob_boxes     = array.new_box(0)
+var int[]  ob_dirs      = array.new_int(0)   // 1=bullish, -1=bearish
+var bool[] ob_mitigated = array.new_bool(0)  // true=touched (mitigated), false=untouched
 
 // ========== ORDER BLOCK CREATION ==========
 // On BOS, find the most recent relevant inflexion and create OB zone
@@ -161,6 +162,7 @@ if bos_dir == 1
              bgcolor=bull_ob_color, border_color=bull_ob_border,
              border_width=1, extend=extend.right, text="Bullish OB", text_color=color.new(color.aqua, 50), text_size=size.tiny))
         array.push(ob_dirs, 1)
+        array.push(ob_mitigated, false)
 
 if bos_dir == -1
     // Bearish BOS → Bearish OB
@@ -173,32 +175,44 @@ if bos_dir == -1
              bgcolor=bear_ob_color, border_color=bear_ob_border,
              border_width=1, extend=extend.right, text="Bearish OB", text_color=color.new(color.orange, 50), text_size=size.tiny))
         array.push(ob_dirs, -1)
+        array.push(ob_mitigated, false)
 
-// ========== TOUCH HIGHLIGHT + INVALIDATION ==========
+// ========== MITIGATION + DISRESPECT (TWO-TIER) ==========
 if array.size(ob_boxes) > 0
     for i = array.size(ob_boxes) - 1 to 0
         b = array.get(ob_boxes, i)
         int dir = array.get(ob_dirs, i)
+        bool mitigated = array.get(ob_mitigated, i)
         float b_top = box.get_top(b)
         float b_bottom = box.get_bottom(b)
 
         float break_low = math.min(close, open)
         float break_high = math.max(close, open)
-        bool invalidated = dir == 1 ? break_low < b_bottom : break_high > b_top
-        if invalidated
+
+        // Tier 2: Disrespected — body breaks through opposite boundary
+        bool disrespected = dir == 1 ? break_low <= b_bottom : break_high >= b_top
+        if disrespected
             box.set_right(b, bar_index)
             box.set_extend(b, extend.none)
             box.set_bgcolor(b, dir == 1 ? color.new(color.aqua, 93) : color.new(color.orange, 93))
             box.set_border_color(b, dir == 1 ? color.new(color.aqua, 85) : color.new(color.orange, 85))
-            box.set_text(b, dir == 1 ? "Bullish OB - Invalidated" : "Bearish OB - Invalidated")
+            box.set_text(b, dir == 1 ? "Bullish OB - Disrespected" : "Bearish OB - Disrespected")
             array.remove(ob_boxes, i)
             array.remove(ob_dirs, i)
+            array.remove(ob_mitigated, i)
         else
+            // Tier 1: Mitigation — wick enters zone (first touch)
             bool touching = low <= b_top and high >= b_bottom
-            if touching
+            if touching and not mitigated
+                array.set(ob_mitigated, i, true)
                 box.set_bgcolor(b, dir == 1 ? color.new(color.green, 50) : color.new(color.purple, 50))
                 box.set_border_color(b, dir == 1 ? color.green : color.purple)
-                box.set_text(b, dir == 1 ? "Bullish OB - Touched" : "Bearish OB - Touched")
+                box.set_text(b, dir == 1 ? "Bullish OB - Mitigated" : "Bearish OB - Mitigated")
+            else if mitigated
+                // Keep mitigated style (sticky — does not revert)
+                box.set_bgcolor(b, dir == 1 ? color.new(color.green, 50) : color.new(color.purple, 50))
+                box.set_border_color(b, dir == 1 ? color.green : color.purple)
+                box.set_text(b, dir == 1 ? "Bullish OB - Mitigated" : "Bearish OB - Mitigated")
             else
                 box.set_bgcolor(b, dir == 1 ? bull_ob_color : bear_ob_color)
                 box.set_border_color(b, dir == 1 ? bull_ob_border : bear_ob_border)

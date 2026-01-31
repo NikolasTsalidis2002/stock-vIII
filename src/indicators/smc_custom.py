@@ -493,13 +493,14 @@ class smc_custom:
                         break
                 mitigated_idx_arr[inflexion_idx] = mitigated_idx
 
-                # Disrespected: first bar where body breaks below bottom
+                # Disrespected: first bar where body breaks below bottom AFTER mitigation
                 disrespect_idx = 0
-                for k in range(bos_idx + 1, n):
-                    break_low = min(close_prices[k], open_prices[k])
-                    if break_low <= zone_bottom:
-                        disrespect_idx = k
-                        break
+                if mitigated_idx > 0:
+                    for k in range(mitigated_idx, n):
+                        break_low = min(close_prices[k], open_prices[k])
+                        if break_low <= zone_bottom:
+                            disrespect_idx = k
+                            break
 
                 # Respected logic (FVG semantics)
                 if disrespect_idx > 0:
@@ -529,13 +530,14 @@ class smc_custom:
                         break
                 mitigated_idx_arr[inflexion_idx] = mitigated_idx
 
-                # Disrespected: first bar where body breaks above top
+                # Disrespected: first bar where body breaks above top AFTER mitigation
                 disrespect_idx = 0
-                for k in range(bos_idx + 1, n):
-                    break_high = max(close_prices[k], open_prices[k])
-                    if break_high >= zone_top:
-                        disrespect_idx = k
-                        break
+                if mitigated_idx > 0:
+                    for k in range(mitigated_idx, n):
+                        break_high = max(close_prices[k], open_prices[k])
+                        if break_high >= zone_top:
+                            disrespect_idx = k
+                            break
 
                 # Respected logic (FVG semantics)
                 if disrespect_idx > 0:
