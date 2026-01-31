@@ -89,7 +89,33 @@
       ]
     }
   },
-  "three_ob": {    
+  "magnet_chase": {
+    "timeframe": "15min",
+    "confirmation_timeframe": "5min",
+    "max_distance_pct": 1.0,
+    "min_rr_ratio": 1.5,
+    "timeout_hours": 4,
+    "max_concurrent": 2,
+    "risk_per_trade_pct": 2.0,
+    "prefer_ob_over_fvg": true,
+    "require_trend_alignment": false,
+    "confirmation_timeout_hours": 2,
+    "close_break": true,
+    "_descriptions": {
+      "timeframe": "Zone detection timeframe (FVG + OB computed here)",
+      "confirmation_timeframe": "BOS/IFVG confirmation timeframe",
+      "max_distance_pct": "Max distance from price to target zone midpoint (%)",
+      "min_rr_ratio": "Minimum risk:reward ratio to take a trade",
+      "timeout_hours": "Close trade if neither TP nor SL hit within this window",
+      "max_concurrent": "Max simultaneous open positions",
+      "risk_per_trade_pct": "Account risk per trade (%)",
+      "prefer_ob_over_fvg": "When equidistant, prefer OB targets over FVG",
+      "require_trend_alignment": "Only trade zones aligned with 15min BOS direction",
+      "confirmation_timeout_hours": "Abandon if no 5min confirmation within this window",
+      "close_break": "Require close/open break for BOS detection (conservative)"
+    }
+  },
+  "three_ob": {
     "timeframe": "15min",
     "confirmation_timeframe": null,
     "timeframe_copy": "5min",

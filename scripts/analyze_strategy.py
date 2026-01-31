@@ -35,7 +35,7 @@ from datetime import datetime
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from data_loader import DataLoader
-from strategy import MultiTimeframeStrategy, ThreeOBStrategy
+from strategy import MultiTimeframeStrategy, ThreeOBStrategy, MagnetChaseEngine
 from strategy_visualizer import StrategySweepVisualizer
 from backtesting import Backtester
 from backtesting.models import SkippedTrade, SkipReason
@@ -642,10 +642,10 @@ def main():
     parser.add_argument(
         '--strategy',
         type=str,
-        choices=['multi-tf', '3-ob'],
+        choices=['multi-tf', '3-ob', 'magnet-chase'],
         # default='multi-tf',
         default='3-ob',
-        help='Strategy to run: multi-tf (default multi-timeframe) or 3-ob (3-OB state machine)'
+        help='Strategy to run: multi-tf (multi-timeframe), 3-ob (3-OB state machine), or magnet-chase (zone proximity)'
     )
     parser.add_argument(
         '--no-backtest',
@@ -1071,6 +1071,103 @@ def main():
             print(f"    Entry: ${sig.price_entry:.2f} @ {sig.timestamp_entry}")
             print(f"    TP: ${sig.take_profit_price:.2f}" if sig.take_profit_price else "    TP: N/A")
             print(f"    SL: ${sig.stop_loss_price:.2f}" if sig.stop_loss_price else "    SL: N/A")
+        print("="*80 + "\n")
+        return
+
+    # ===== magnet-chase strategy branch =====
+    if args.strategy == 'magnet-chase':
+        mc_cfg = config.get('magnet_chase', {})
+        detect_tf = mc_cfg.get('timeframe', '15min')
+        confirm_tf = mc_cfg.get('confirmation_timeframe', '5min')
+
+        print(f"\n🔧 Initializing Magnet Chase engine (detect: {detect_tf}, confirm: {confirm_tf})...")
+        df_detect = loader.get_data(detect_tf, force_refresh=False)
+        df_confirm = loader.get_data(confirm_tf, force_refresh=False)
+        print(f"  ✓ {detect_tf.upper()}: {len(df_detect)} candles")
+        print(f"  ✓ {confirm_tf.upper()}: {len(df_confirm)} candles")
+
+        engine = MagnetChaseEngine(df_detect, df_confirm, mc_cfg)
+
+        print("\n🔍 Scanning for Magnet Chase signals...")
+        mc_result = engine.scan(max_signals=999_999)
+        mc_signals = mc_result.signals
+
+        if len(mc_signals) == 0:
+            print("\n⚠️  No Magnet Chase signals found.")
+            print(f"  Zones scanned: {mc_result.total_zones_scanned}")
+            print(f"  Targets identified: {mc_result.total_targets_identified}")
+            print(f"  Skipped (no confirmation): {mc_result.skipped_no_confirmation}")
+            print(f"  Skipped (low R:R): {mc_result.skipped_low_rr}")
+            print(f"  Skipped (zone mitigated): {mc_result.skipped_zone_mitigated}")
+            return
+
+        print(f"\n✅ Found {len(mc_signals)} Magnet Chase signals!")
+
+        # Convert to TradeSignal for backtester
+        trade_signals = [s.to_trade_signal() for s in mc_signals]
+
+        # Run backtest
+        if not args.no_backtest:
+            print("\n" + "="*80)
+            print("RUNNING BACKTEST SIMULATION (Magnet Chase)")
+            print("="*80)
+
+            df_confirm_indexed = df_confirm.set_index('time') if 'time' in df_confirm.columns else df_confirm
+
+            backtester = Backtester(
+                df_low=df_confirm_indexed,
+                initial_capital=args.initial_capital,
+                symbol=symbol,
+                intraday_only=not args.hold_overnight,
+                min_profit_percent=min_profit_percent,
+                min_rr_ratio=min_rr_ratio,
+                trailing_sl_enabled=trailing_sl_enabled,
+                trailing_sl_activation_pct=trailing_sl_activation_pct,
+                trailing_sl_swing_length=trailing_sl_swing_length,
+            )
+
+            _results = backtester.run(trade_signals)
+            backtester.print_summary()
+
+            if args.export_journal:
+                os.makedirs("results/trades", exist_ok=True)
+                journal_path = f"results/trades/{symbol.lower().replace('/', '_')}_magnet_chase_trades.csv" if args.export_journal == 'auto' else args.export_journal
+                backtester.export_journal(journal_path)
+
+        # Visualization
+        if args.visualize and len(mc_signals) > 0:
+            print("\n" + "="*80)
+            print("GENERATING MAGNET CHASE VISUALIZATION")
+            print("="*80)
+
+            from src.visualization.magnet_chase_viewer import MagnetChaseSignalViewer
+            viewer = MagnetChaseSignalViewer(
+                df_detect=df_detect,
+                df_confirm=df_confirm,
+                signals=mc_signals,
+                engine=engine,
+                symbol=symbol,
+                trade_results=backtester.results if not args.no_backtest else [],
+                performance_metrics=backtester.metrics if not args.no_backtest else None,
+            )
+            viz_path = viewer.generate_html()
+            print(f"\n✅ Signal viewer: {viz_path}")
+            print("   Open the HTML file in your browser to explore signals!")
+
+        # Summary
+        print("\n" + "="*80)
+        print("✅ MAGNET CHASE ANALYSIS COMPLETE!")
+        print("="*80)
+        print(f"  Zones scanned: {mc_result.total_zones_scanned}")
+        print(f"  Targets identified: {mc_result.total_targets_identified}")
+        print(f"  Skipped (no confirmation): {mc_result.skipped_no_confirmation}")
+        print(f"  Skipped (low R:R): {mc_result.skipped_low_rr}")
+        print(f"  Skipped (zone mitigated): {mc_result.skipped_zone_mitigated}")
+        for i, sig in enumerate(mc_signals, 1):
+            print(f"\n  Signal #{i}: {sig.entry_direction.upper()} via {sig.confirmation_type}")
+            print(f"    Entry: ${sig.entry_price:.2f} @ {sig.entry_time}")
+            print(f"    TP: ${sig.take_profit:.2f} | SL: ${sig.stop_loss:.2f} | R:R: {sig.rr_ratio:.1f}")
+            print(f"    Target: {sig.target_zone_type} {sig.target_zone_side} (dist: {sig.target_distance_pct:.2f}%)")
         print("="*80 + "\n")
         return
 

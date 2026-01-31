@@ -23,6 +23,12 @@ from .exit_target_finder import ExitTargetFinder
 from .gmm_zone_detector import GMMZoneDetector, GMMZoneInfo
 from .strategy_engine import StrategyEngine
 from .three_ob_strategy import ThreeOBStrategy
+from .magnet_chase_engine import MagnetChaseEngine, MagnetChaseSignal, MagnetChaseResult
+from .zone_proximity import (
+    ZoneRecord, RankedZone,
+    extract_zone_records, get_active_zones,
+    rank_zones_by_proximity, select_target_zone,
+)
 
 
 class MultiTimeframeStrategy:
@@ -240,4 +246,14 @@ __all__ = [
     # Convenience wrappers
     'MultiTimeframeStrategy',
     'ThreeOBStrategy',
+    # Magnet Chase
+    'MagnetChaseEngine',
+    'MagnetChaseSignal',
+    'MagnetChaseResult',
+    'ZoneRecord',
+    'RankedZone',
+    'extract_zone_records',
+    'get_active_zones',
+    'rank_zones_by_proximity',
+    'select_target_zone',
 ]
