@@ -650,10 +650,10 @@ def main():
         ohlc = ohlc.set_index('time')
     print(f"Loaded {len(ohlc)} candles for {args.symbol} ({args.timeframe})")
 
-    # Use first quarter only
-    quarter = len(ohlc) // 4
-    ohlc = ohlc.iloc[:quarter].copy()
-    print(f"Using first quarter: {len(ohlc)} candles")
+    # Use first 200 candles (smaller file for GitHub Pages hosting)
+    max_candles = 200
+    ohlc = ohlc.iloc[:max_candles].copy()
+    print(f"Using first {len(ohlc)} candles")
 
     # Build bar-by-bar frames (every `step` bars)
     total = len(ohlc)

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Money Concepts Trading System</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #131722;
+    color: #d1d4dc;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    padding: 40px 20px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 2rem; color: #fff; margin-bottom: 8px; }
+  .subtitle { color: #787b86; font-size: 1rem; margin-bottom: 12px; }
+  .description {
+    color: #9598a1; font-size: 0.95rem; line-height: 1.6;
+    margin-bottom: 40px; max-width: 700px;
+  }
+  .tech { color: #2962ff; font-size: 0.85rem; margin-bottom: 40px; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 600px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: #1e222d;
+    border: 1px solid #2b2b43;
+    border-radius: 8px;
+    padding: 24px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { border-color: #2962ff; transform: translateY(-2px); }
+  .card h3 { color: #fff; font-size: 1.1rem; margin-bottom: 8px; }
+  .card .tag {
+    display: inline-block; background: #2962ff22; color: #2962ff;
+    font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; margin-bottom: 10px;
+  }
+  .card p { color: #787b86; font-size: 0.88rem; line-height: 1.5; }
+  .footer { margin-top: 50px; color: #3b3b4f; font-size: 0.8rem; text-align: center; }
+  .footer a { color: #2962ff; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Smart Money Concepts Trading System</h1>
+  <p class="subtitle">Multi-timeframe institutional trading analysis engine</p>
+  <p class="description">
+    A 5,500+ line Python system implementing Smart Money Concepts (FVG, Order Blocks, BOS, liquidity sweeps)
+    across multiple timeframes. Features ARMA trend filtering, Gaussian Mixture Models for regime detection,
+    a comprehensive backtesting engine with 15+ risk metrics, and 3 distinct trading strategies tested on 90+ symbols.
+  </p>
+  <p class="tech">Python &middot; pandas &middot; statsmodels &middot; scikit-learn &middot; Plotly &middot; TradingView LightweightCharts &middot; Numba</p>
+
+  <div class="cards">
+    <a class="card" href="results/charts/smc_dashboard.html">
+      <span class="tag">Dashboard</span>
+      <h3>SMC Zone Analytics</h3>
+      <p>Full dashboard for XAU/USD (1H) with 6 tabs: zone statistics, reversal quality, Order Block analysis, FVG/OB magnet analysis, and GMM price distribution. 5,000 candles, 3,322 zones.</p>
+    </a>
+
+    <a class="card" href="results/charts/price_distribution_indicators.html">
+      <span class="tag">Walkthrough</span>
+      <h3>Price Distribution + Indicators</h3>
+      <p>Bar-by-bar walkthrough of META (15min) showing candlestick chart with SMC indicators alongside a live GMM price distribution histogram. Navigate frame-by-frame with arrow keys.</p>
+    </a>
+
+    <a class="card" href="results/walkthroughs/xau/usd_5m_tv_walkthrough/walkthrough.html">
+      <span class="tag">Walkthrough</span>
+      <h3>XAU/USD Candle-by-Candle</h3>
+      <p>TradingView-style walkthrough of Gold (5min) showing inflexion points, FVGs, Order Blocks, BOS, and liquidity sweeps building up candle by candle. 300 candles, 8 sweeps detected.</p>
+    </a>
+
+    <a class="card" href="results/visualizations/tsla_3ob_signals.html">
+      <span class="tag">Strategy</span>
+      <h3>TSLA 3-Order Block Signals</h3>
+      <p>Multi-timeframe visualization of the 3-OB state machine strategy on Tesla. Shows how three Order Blocks align across timeframes to generate high-probability trade signals.</p>
+    </a>
+  </div>
+
+  <p class="footer">
+    Built by Nikolas Tsalidis &middot;
+    <a href="https://github.com/NikolasTsalidis2002/smart-money-concepts">View source on GitHub</a>
+  </p>
+</div>
+</body>
+</html>

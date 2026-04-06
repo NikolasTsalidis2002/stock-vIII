@@ -105,6 +105,12 @@ def main():
     if 'time' in df_5m.columns:
         df_5m = df_5m.set_index('time')
 
+    # Limit candles for GitHub Pages hosting (keep file under 30MB)
+    max_candles = 300
+    if len(df_5m) > max_candles:
+        df_5m = df_5m.iloc[:max_candles]
+        print(f"  Limited to {max_candles} candles for hosting")
+
     # Run analysis using unified visualizer
     visualizer = TradingViewVisualizer(
         timeframe_name="5M",
